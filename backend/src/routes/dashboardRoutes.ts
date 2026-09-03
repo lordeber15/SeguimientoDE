@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getEmpleados,
   getOficinas,
+  getPendientesDetalle,
   getPendientesOficinas,
   getPesosTipoDocumento,
   getResumenEstado,
@@ -22,6 +23,12 @@ router.get('/empleados', requierePermiso('dashboard.ver'), getEmpleados);
 router.get('/tipos-documento', requierePermiso('dashboard.ver'), getTiposDocumento);
 // Carga laboral (Fase 2): backlog vigente hoy, sin acotar por desde/hasta — ver dashboardService.
 router.get('/pendientes/oficinas', requierePermiso('dashboard.ver'), getPendientesOficinas);
+// Drill-down: los documentos concretos detrás de un número de la tabla anterior.
+router.get(
+  '/pendientes/oficinas/:coDependencia/detalle',
+  requierePermiso('dashboard.ver'),
+  getPendientesDetalle,
+);
 router.get('/resumen/estado', requierePermiso('dashboard.ver'), getResumenEstado);
 
 // Administración: forzar un refresco es una operación de ~8-10 s contra el SGD, no una consulta.

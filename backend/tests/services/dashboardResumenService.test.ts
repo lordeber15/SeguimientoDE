@@ -210,6 +210,45 @@ describe('refrescarResumen — camino feliz', () => {
     expect(claves[2]).not.toBe(claves[0]);
   });
 
+  it('migración 014: el insert de participación incluye la identidad del documento y el cierre del expediente', async () => {
+    prepararRefrescoExitoso(
+      [{
+        coEmpDes: '00061', coDepDes: '00012', feEnvio: '2026-01-01', atendido: false,
+        nuAnn: '2026', nuEmi: '0000012345', nuDes: '1', esDocRec: '1',
+        nuExpediente: 'OGAUL02026000058', nuDoc: '007-2026', feArchivoExpediente: null,
+      }],
+      [],
+    );
+
+    await refrescarResumen('manual');
+
+    const insercionParticipacion = appQuery.mock.calls.find(
+      ([sql]) => String(sql).includes('INSERT INTO dashboard.participacion'),
+    );
+    expect(insercionParticipacion?.[0]).toEqual(expect.stringContaining('nu_ann'));
+    expect(insercionParticipacion?.[0]).toContain('fe_archivo_expediente');
+    expect(insercionParticipacion?.[1]?.bind).toEqual(expect.arrayContaining([
+      '0000012345', '1', 'OGAUL02026000058', '007-2026',
+    ]));
+  });
+
+  it('migración 014: la consulta de participaciones arma un cierre de expediente (archivos) a partir de es_doc_rec = \'3\'', async () => {
+    prepararRefrescoExitoso([], []);
+
+    await refrescarResumen('manual');
+
+    const consultaParticipaciones = sgdQuery.mock.calls.find(
+      ([sql]) => String(sql).includes('rhtm_per_empleados'),
+    );
+    const sql = String(consultaParticipaciones?.[0]);
+    expect(sql).toContain('archivos AS');
+    expect(sql).toContain("d.es_doc_rec = '3'");
+    expect(sql).toContain('"feArchivoExpediente"');
+    // El expediente visible y el número de documento salen del mismo JOIN que ya usa
+    // `seguimientoService.ts` — `tdtx_remitos_resumen`, no una tabla nueva.
+    expect(sql).toContain('tdtx_remitos_resumen');
+  });
+
   it('si el error ocurre a mitad de camino, lo registra en resumen_refresco y relanza en vez de tragárselo', async () => {
     appQuery.mockImplementation((sql: string) => {
       if (sql.includes('pg_try_advisory_lock')) return Promise.resolve([{ ok: true }]);

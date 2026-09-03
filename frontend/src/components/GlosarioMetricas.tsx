@@ -22,7 +22,8 @@ export type ClaveMetrica =
   | 'rutaExacta'
   | 'espera'
   | 'trabajo'
-  | 'objetivoPercentil';
+  | 'objetivoPercentil'
+  | 'backlogPendientes';
 
 const DEFINICIONES: Record<ClaveMetrica, { termino: string; resumen: string; detalle?: string }> = {
   recibidos: {
@@ -116,6 +117,12 @@ const DEFINICIONES: Record<ClaveMetrica, { termino: string; resumen: string; det
     resumen: 'El percentil bajo (10 por defecto) del tiempo de esa misma tarea en todas las oficinas que la hacen.',
     detalle:
       'Misma tarea = mismo motivo de derivación y mismo tipo de documento. No es el mínimo absoluto, que suele ser un caso atípico. Sin muestra suficiente en ese universo, se usa en cambio el propio mejor cuartil de la oficina.',
+  },
+  backlogPendientes: {
+    termino: 'Pendientes (backlog)',
+    resumen: 'Recibidos que siguen sin respuesta HOY, sin límite de cuándo llegaron — distinto del "Pendientes" de "Por oficina"/"Por empleado", que sí se acota al período elegido.',
+    detalle:
+      'No cuenta los documentos informativos (copia, para conocimiento y fines, circular) ni los que quedaron abiertos en un expediente que después se archivó: en ambos casos ya no hay respuesta que esperar. Los buckets (0-7, 8-30, 31+ días) miden la antigüedad contra el momento actual, no contra un rango fijo.',
   },
 };
 

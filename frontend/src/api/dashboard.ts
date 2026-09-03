@@ -131,6 +131,47 @@ export function fetchPendientesOficinas(filtro: FiltroPendientes): Promise<Pendi
   );
 }
 
+/** `'todos'` es el bucket que abre "Más antiguo": sin acotar antigüedad, ordenado del más viejo
+ *  al más nuevo, así que el primer ítem es justo el que se ve en esa columna. */
+export type BucketPendientes = 'todos' | '0a7' | '8a30' | '31mas';
+
+export interface PendienteDetalle {
+  nuAnnExp: string;
+  nuSecExp: string;
+  numeroExpediente: string | null;
+  nuAnn: string;
+  nuEmi: string;
+  nuDes: string;
+  numeroDocumento: string | null;
+  coTipDoc: string | null;
+  asunto: string | null;
+  coEmpleado: string;
+  nombreEmpleado: string | null;
+  esDocRec: string | null;
+  fechaRecepcion: string;
+  dias: number;
+}
+
+export interface RespuestaPendientesDetalle {
+  total: number;
+  items: PendienteDetalle[];
+}
+
+/** Drill-down de un número de la tabla de Pendientes: los documentos concretos detrás de esa
+ *  oficina/bucket. Mismo filtro de tipo de documento que el resto de la pestaña. */
+export function fetchPendientesDetalle(
+  coDependencia: string,
+  bucket: BucketPendientes,
+  tipoDocumento?: string,
+): Promise<RespuestaPendientesDetalle> {
+  const params = new URLSearchParams({ bucket });
+  if (tipoDocumento) params.set('tipoDocumento', tipoDocumento);
+  return apiJson(
+    `/api/dashboard/pendientes/oficinas/${coDependencia}/detalle?${params}`,
+    'obtener el detalle de pendientes',
+  );
+}
+
 /** Todos los indicadores del dashboard salen de un espejo local, refrescado periódicamente en
  *  background — no en vivo contra el SGD. Esto es lo que alimenta la nota "Datos actualizados
  *  hace X min". */

@@ -4,6 +4,7 @@ jest.mock('../../src/services/dashboardService', () => ({
   desempenoPorOficina: jest.fn(),
   desempenoPorEmpleado: jest.fn(),
   pendientesAntiguosPorOficina: jest.fn(),
+  pendientesDetalleOficina: jest.fn(),
   tiposDocumento: jest.fn(),
 }));
 jest.mock('../../src/services/dashboardResumenService', () => ({
@@ -19,6 +20,7 @@ jest.mock('../../src/services/dashboardPesosService', () => ({
 import {
   getEmpleados,
   getOficinas,
+  getPendientesDetalle,
   getPendientesOficinas,
   getPesosTipoDocumento,
   getResumenEstado,
@@ -31,6 +33,7 @@ import {
   desempenoPorEmpleado,
   desempenoPorOficina,
   pendientesAntiguosPorOficina,
+  pendientesDetalleOficina,
   tiposDocumento,
 } from '../../src/services/dashboardService';
 import { estadoResumen, refrescarResumen, RefrescoOcupado } from '../../src/services/dashboardResumenService';
@@ -38,6 +41,7 @@ import { estadoResumen, refrescarResumen, RefrescoOcupado } from '../../src/serv
 const mockOficinas = desempenoPorOficina as jest.Mock;
 const mockEmpleados = desempenoPorEmpleado as jest.Mock;
 const mockPendientes = pendientesAntiguosPorOficina as jest.Mock;
+const mockPendientesDetalle = pendientesDetalleOficina as jest.Mock;
 const mockEstado = estadoResumen as jest.Mock;
 const mockRefrescar = refrescarResumen as jest.Mock;
 const mockTipos = tiposDocumento as jest.Mock;
@@ -50,6 +54,10 @@ function fakeResponse() {
 
 function fakeRequest(query: Record<string, unknown>) {
   return { query } as unknown as Request;
+}
+
+function fakeRequestConParams(params: Record<string, string>, query: Record<string, unknown> = {}) {
+  return { params, query } as unknown as Request;
 }
 
 /**
@@ -235,6 +243,67 @@ describe('getPendientesOficinas — carga laboral (Fase 2), sin exigir desde/has
     await getPendientesOficinas(fakeRequest({}), res);
 
     expect(res.json).toHaveBeenCalledWith([{ coDependencia: '00003', pendientes: 90 }]);
+  });
+});
+
+describe('getPendientesDetalle — drill-down de un número de la pestaña Pendientes', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('normaliza coDependencia a 5 dígitos y usa "todos" como bucket por defecto', async () => {
+    mockPendientesDetalle.mockResolvedValue({ total: 0, items: [] });
+    const res = fakeResponse();
+
+    await getPendientesDetalle(fakeRequestConParams({ coDependencia: '9' }), res);
+
+    expect(mockPendientesDetalle).toHaveBeenCalledWith('00009', 'todos', undefined);
+    expect(res.status).not.toHaveBeenCalledWith(400);
+  });
+
+  it('con coDependencia de formato inválido, devuelve 400 y no consulta', async () => {
+    const res = fakeResponse();
+
+    await getPendientesDetalle(fakeRequestConParams({ coDependencia: 'abc' }), res);
+
+    expect(mockPendientesDetalle).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it.each(['0a7', '8a30', '31mas', 'todos'])('acepta el bucket válido "%s"', async (bucket) => {
+    mockPendientesDetalle.mockResolvedValue({ total: 0, items: [] });
+    const res = fakeResponse();
+
+    await getPendientesDetalle(fakeRequestConParams({ coDependencia: '00009' }, { bucket }), res);
+
+    expect(mockPendientesDetalle).toHaveBeenCalledWith('00009', bucket, undefined);
+    expect(res.status).not.toHaveBeenCalledWith(400);
+  });
+
+  it('con un bucket que no está en la lista blanca, devuelve 400 y no consulta', async () => {
+    const res = fakeResponse();
+
+    await getPendientesDetalle(fakeRequestConParams({ coDependencia: '00009' }, { bucket: '60mas' }), res);
+
+    expect(mockPendientesDetalle).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it('pasa tipoDocumento al servicio cuando viene en el query', async () => {
+    mockPendientesDetalle.mockResolvedValue({ total: 0, items: [] });
+    const res = fakeResponse();
+
+    await getPendientesDetalle(fakeRequestConParams({ coDependencia: '00009' }, { tipoDocumento: '232' }), res);
+
+    expect(mockPendientesDetalle).toHaveBeenCalledWith('00009', 'todos', '232');
+  });
+
+  it('devuelve el resultado tal cual lo entrega el servicio', async () => {
+    const resultado = { total: 231, items: [{ nuAnnExp: '2026', nuSecExp: '000058' }] };
+    mockPendientesDetalle.mockResolvedValue(resultado);
+    const res = fakeResponse();
+
+    await getPendientesDetalle(fakeRequestConParams({ coDependencia: '00009' }), res);
+
+    expect(res.json).toHaveBeenCalledWith(resultado);
   });
 });
 

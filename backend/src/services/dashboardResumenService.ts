@@ -51,6 +51,20 @@ interface FilaParticipacionCruda {
    *  MISMO asunto dentro del expediente, no cada vez que el expediente le pasa por delante con un
    *  asunto distinto (etapas normales del trámite). Ver migración 012. */
   asunto: string | null;
+  /** Identidad del documento recibido — Fase "Pendientes: drill-down", migración 014. Hasta acá
+   *  el espejo solo servía para agregar; con esto ya se puede resolver el documento concreto
+   *  detrás de un pendiente (`dashboardService.pendientesDetalleOficina`). */
+  nuAnn: string;
+  nuEmi: string;
+  nuDes: string;
+  esDocRec: string | null;
+  nuExpediente: string | null;
+  nuDoc: string | null;
+  /** MAX(fe_emi) entre los destinos ARCHIVADOS (es_doc_rec = '3') del mismo expediente, o `null`
+   *  si el expediente nunca se archivó. Ver comentario de la migración 014: si esta fecha es
+   *  posterior a `feEnvio`, el trámite se cerró después de que este documento llegara y ya no
+   *  cuenta como pendiente vigente. */
+  feArchivoExpediente: string | null;
 }
 
 /** Se movió a `procesoAgrupamiento.ts` (junto al resto del tratamiento de asuntos) cuando la vista
@@ -75,11 +89,14 @@ async function leerParticipacionesSgd(): Promise<FilaParticipacionCruda[]> {
     WITH recepciones AS (
       SELECT
         a.nu_ann_exp, a.nu_sec_exp,
+        a.nu_ann, a.nu_emi, d.nu_des,
         d.co_emp_des, d.co_dep_des, d.es_doc_rec, d.co_mot,
         a.co_tip_doc_adm, a.co_dep_emi, a.de_asu,
+        res.nu_expediente, res.nu_doc,
         a.fe_emi AS fe_envio
       FROM ${S}.tdtv_destinos d
       JOIN ${S}.tdtv_remitos a ON a.nu_ann = d.nu_ann AND a.nu_emi = d.nu_emi
+      LEFT JOIN ${S}.tdtx_remitos_resumen res ON res.nu_ann = a.nu_ann AND res.nu_emi = a.nu_emi
       WHERE a.es_doc_emi NOT IN (${ESTADOS_REMITO_EXCLUIDOS})
         AND a.es_eli = '0'
         AND d.es_eli = '0'
@@ -102,6 +119,20 @@ async function leerParticipacionesSgd(): Promise<FilaParticipacionCruda[]> {
         AND a.es_doc_emi NOT IN ('5','9')
         AND COALESCE(a.nu_ann_exp, '') <> ''
         AND COALESCE(a.nu_sec_exp, '') <> ''
+    ),
+    -- Última fecha en que el expediente quedó ARCHIVADO (es_doc_rec = '3') en cualquier destino —
+    -- el cierre explícito del trámite. Ver migración 014: sirve para excluir del backlog los
+    -- pendientes cuyo expediente ya se cerró después de que ese documento llegara.
+    archivos AS (
+      SELECT a.nu_ann_exp, a.nu_sec_exp, MAX(a.fe_emi) AS fe_archivo
+      FROM ${S}.tdtv_destinos d
+      JOIN ${S}.tdtv_remitos a ON a.nu_ann = d.nu_ann AND a.nu_emi = d.nu_emi
+      WHERE d.es_doc_rec = '3'
+        AND d.es_eli = '0'
+        AND a.es_eli = '0'
+        AND COALESCE(a.nu_ann_exp, '') <> ''
+        AND COALESCE(a.nu_sec_exp, '') <> ''
+      GROUP BY 1, 2
     )
     SELECT
       r.co_emp_des AS "coEmpDes",
@@ -121,7 +152,14 @@ async function leerParticipacionesSgd(): Promise<FilaParticipacionCruda[]> {
       END AS "segundosHabiles",
       r.nu_ann_exp AS "nuAnnExp",
       r.nu_sec_exp AS "nuSecExp",
-      r.de_asu AS asunto
+      r.de_asu AS asunto,
+      r.nu_ann AS "nuAnn",
+      r.nu_emi AS "nuEmi",
+      r.nu_des::text AS "nuDes",
+      r.es_doc_rec AS "esDocRec",
+      r.nu_expediente AS "nuExpediente",
+      r.nu_doc AS "nuDoc",
+      ar.fe_archivo AS "feArchivoExpediente"
     FROM recepciones_ventana r
     LEFT JOIN LATERAL (
       SELECT em.fe_emi
@@ -151,6 +189,7 @@ async function leerParticipacionesSgd(): Promise<FilaParticipacionCruda[]> {
     ) fds ON TRUE
     LEFT JOIN ${S}.rhtm_per_empleados emp ON emp.cemp_codemp = r.co_emp_des
     LEFT JOIN ${S}.rhtm_dependencia dep ON dep.co_dependencia = r.co_dep_des
+    LEFT JOIN archivos ar ON ar.nu_ann_exp = r.nu_ann_exp AND ar.nu_sec_exp = r.nu_sec_exp
     `,
     { type: QueryTypes.SELECT },
   );
@@ -450,11 +489,15 @@ export async function refrescarResumen(disparo: 'automatico' | 'manual' = 'manua
           'co_emp_des', 'nombre_empleado', 'co_dep_des', 'nombre_dependencia', 'co_dep_emi', 'co_tip_doc',
           'es_informativo', 'fe_envio', 'atendido', 'segundos_corridos', 'segundos_habiles',
           'nu_ann_exp', 'nu_sec_exp', 'asunto_norm',
+          'nu_ann', 'nu_emi', 'nu_des', 'es_doc_rec', 'asunto', 'nu_expediente', 'nu_doc',
+          'fe_archivo_expediente',
         ],
         participaciones.map((p) => [
           p.coEmpDes, p.nombreEmpleado, p.coDepDes, p.nombreDependencia, p.coDepEmi, p.coTipDoc,
           p.esInformativo, p.feEnvio, p.atendido, p.segundosCorridos, p.segundosHabiles,
           p.nuAnnExp, p.nuSecExp, normalizarAsunto(p.asunto),
+          p.nuAnn, p.nuEmi, p.nuDes, p.esDocRec, p.asunto, p.nuExpediente, p.nuDoc,
+          p.feArchivoExpediente,
         ]),
         tx,
       );

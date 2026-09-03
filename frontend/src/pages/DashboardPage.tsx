@@ -18,6 +18,7 @@ import {
   fetchTiposDocumento,
   guardarPesoTipoDocumento,
   refrescarResumenAhora,
+  type BucketPendientes,
   type EstadoResumen,
   type FiltroResumen,
   type KpiEmpleado,
@@ -49,7 +50,9 @@ import {
   NivelDesempenoBadge,
 } from '../components/NivelDesempenoBadge';
 import { idPanel, idPestana, Pestanas } from '../components/Pestanas';
+import { ModalPendientesDetalle } from '../components/ModalPendientesDetalle';
 import { TableSkeleton } from '../components/TableSkeleton';
+import { VisorDocumento } from '../components/VisorDocumento';
 
 type EstadoOficinas =
   | { tipo: 'cargando' }
@@ -464,6 +467,21 @@ export function DashboardPage() {
     setIntentoPendientes((n) => n + 1);
   }, []);
 
+  // Drill-down de "Pendientes": qué oficina/bucket se abrió (`ModalPendientesDetalle`) y qué
+  // documento se está viendo desde ahí (`VisorDocumento`) — mismo patrón de estado que
+  // `SeguimientoPage`, solo que ambos modales viven acá porque el drill-down es exclusivo de esta
+  // pestaña.
+  const [detallePendientes, setDetallePendientes] = useState<{
+    coDependencia: string;
+    nombreDependencia: string | null;
+    bucket: BucketPendientes;
+  } | null>(null);
+  const [documentoAbierto, setDocumentoAbierto] = useState<{
+    url: string;
+    titulo: string;
+    visualizable: boolean;
+  } | null>(null);
+
   /**
    * Pesos por tipo de documento (Fase 3) — sin filtro propio, así que a diferencia de empleados/
    * pendientes no necesita una "clave": basta con pedirlo una vez al entrar a la pestaña. Solo se
@@ -811,8 +829,10 @@ export function DashboardPage() {
         {pestana === 'pendientes' && (
           <>
             <p className="exp-nota">
-              Backlog vigente HOY: ignora el rango "Desde"/"Hasta" a propósito — solo respeta el
-              filtro de oficina y tipo de documento.
+              Backlog vigente HOY: ignora el rango "Desde"/"Hasta" a propósito. No cuenta los
+              documentos informativos (copia, para conocimiento) ni los que quedaron abiertos en un
+              expediente que después se archivó — en ambos casos ya no hay respuesta que esperar.
+              Hacé clic en cualquier número para ver los expedientes.
             </p>
 
             {(estadoPendientes.tipo === 'error') && (
@@ -827,7 +847,14 @@ export function DashboardPage() {
               <TableSkeleton rows={5} columnas={5} etiqueta="Calculando pendientes" />
             )}
 
-            {pendientes && <TablaPendientes pendientes={pendientes} />}
+            {pendientes && (
+              <TablaPendientes
+                pendientes={pendientes}
+                onAbrirDetalle={(coDep, nombreDep, bucket) =>
+                  setDetallePendientes({ coDependencia: coDep, nombreDependencia: nombreDep, bucket })
+                }
+              />
+            )}
           </>
         )}
 
@@ -913,6 +940,27 @@ export function DashboardPage() {
           </>
         )}
       </div>
+
+      {detallePendientes && (
+        <ModalPendientesDetalle
+          coDependencia={detallePendientes.coDependencia}
+          nombreDependencia={detallePendientes.nombreDependencia}
+          bucket={detallePendientes.bucket}
+          tipoDocumento={tipoDocumento || undefined}
+          tipos={tipos}
+          onCerrar={() => setDetallePendientes(null)}
+          onAbrirDocumento={(url, titulo, visualizable) => setDocumentoAbierto({ url, titulo, visualizable })}
+        />
+      )}
+
+      {documentoAbierto && (
+        <VisorDocumento
+          url={documentoAbierto.url}
+          titulo={documentoAbierto.titulo}
+          visualizable={documentoAbierto.visualizable}
+          onCerrar={() => setDocumentoAbierto(null)}
+        />
+      )}
     </main>
   );
 }
@@ -1239,46 +1287,111 @@ function TablaEmpleados({
   );
 }
 
+const CLAVES_GLOSARIO_PENDIENTES: ClaveMetrica[] = ['backlogPendientes'];
+
+/** Una celda numérica de "Pendientes": botón que abre el detalle si hay algo que ver, texto plano
+ *  en 0 (no hay nada que abrir) — ambas ramas llevan `celda-pendiente` para alinearse igual,
+ *  porque un 0 sin botón no hereda la alineación a la derecha que sí trae `.boton-enlace`. */
+function CeldaPendiente({
+  cantidad, etiqueta, onAbrir,
+}: {
+  cantidad: number;
+  etiqueta: string;
+  onAbrir: () => void;
+}) {
+  if (cantidad === 0) return <td className="celda-tiempo celda-pendiente">0</td>;
+
+  return (
+    <td className="celda-tiempo celda-pendiente">
+      <button className="boton-enlace" onClick={onAbrir} aria-label={etiqueta}>
+        {cantidad}
+      </button>
+    </td>
+  );
+}
+
 /**
  * Backlog vigente HOY por oficina (Fase 2) — sin niveles ni referencias: a diferencia de
  * productividad/oportunidad, todavía no hay un umbral "bueno/malo" definido para esto, así que se
  * muestra el número crudo y se deja el juicio a quien lo lee.
+ *
+ * Cada número (salvo un 0, donde no hay nada que ver) abre el detalle de los documentos concretos
+ * detrás de esa cifra (`ModalPendientesDetalle`, montado en `DashboardPage`). "Más antiguo" abre
+ * el bucket `todos`: como el detalle sale ordenado de más viejo a más nuevo, ese documento queda
+ * como primera fila.
  */
-function TablaPendientes({ pendientes }: { pendientes: PendientesAntiguos[] }) {
+function TablaPendientes({
+  pendientes, onAbrirDetalle,
+}: {
+  pendientes: PendientesAntiguos[];
+  onAbrirDetalle: (coDependencia: string, nombreDependencia: string | null, bucket: BucketPendientes) => void;
+}) {
   if (pendientes.length === 0) {
     return <div className="state-message">Ninguna oficina tiene documentos pendientes en este momento.</div>;
   }
 
   return (
-    <div className="table-card">
-      <div className="table-scroll">
-        <table className="tabla-expedientes">
-          <thead>
-            <tr>
-              <th scope="col">Oficina</th>
-              <th scope="col">Pendientes</th>
-              <th scope="col">0-7 días</th>
-              <th scope="col">8-30 días</th>
-              <th scope="col">31+ días</th>
-              <th scope="col">Más antiguo</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pendientes.map((p) => (
-              <tr key={p.coDependencia}>
-                <td>{p.nombreDependencia ?? p.coDependencia}</td>
-                <td className="celda-tiempo">{p.pendientes}</td>
-                <td className="celda-tiempo">{p.pendientes0a7}</td>
-                <td className="celda-tiempo">{p.pendientes8a30}</td>
-                <td className="celda-tiempo">{p.pendientes31Mas}</td>
-                <td className="celda-tiempo">
-                  {p.diasPendienteMasAntiguo === null ? '—' : `${p.diasPendienteMasAntiguo} d`}
-                </td>
+    <div>
+      <div className="table-card">
+        <div className="table-scroll">
+          <table className="tabla-expedientes">
+            <thead>
+              <tr>
+                <th scope="col">Oficina</th>
+                <th scope="col">Pendientes</th>
+                <th scope="col">0-7 días</th>
+                <th scope="col">8-30 días</th>
+                <th scope="col">31+ días</th>
+                <th scope="col">Más antiguo</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {pendientes.map((p) => {
+                const nombre = p.nombreDependencia ?? p.coDependencia;
+                return (
+                  <tr key={p.coDependencia}>
+                    <td>{nombre}</td>
+                    <CeldaPendiente
+                      cantidad={p.pendientes}
+                      etiqueta={`Ver los ${p.pendientes} pendientes de ${nombre}`}
+                      onAbrir={() => onAbrirDetalle(p.coDependencia, p.nombreDependencia, 'todos')}
+                    />
+                    <CeldaPendiente
+                      cantidad={p.pendientes0a7}
+                      etiqueta={`Ver los ${p.pendientes0a7} pendientes de 0 a 7 días de ${nombre}`}
+                      onAbrir={() => onAbrirDetalle(p.coDependencia, p.nombreDependencia, '0a7')}
+                    />
+                    <CeldaPendiente
+                      cantidad={p.pendientes8a30}
+                      etiqueta={`Ver los ${p.pendientes8a30} pendientes de 8 a 30 días de ${nombre}`}
+                      onAbrir={() => onAbrirDetalle(p.coDependencia, p.nombreDependencia, '8a30')}
+                    />
+                    <CeldaPendiente
+                      cantidad={p.pendientes31Mas}
+                      etiqueta={`Ver los ${p.pendientes31Mas} pendientes de 31+ días de ${nombre}`}
+                      onAbrir={() => onAbrirDetalle(p.coDependencia, p.nombreDependencia, '31mas')}
+                    />
+                    <td className="celda-tiempo celda-pendiente">
+                      {p.diasPendienteMasAntiguo === null ? (
+                        '—'
+                      ) : (
+                        <button
+                          className="boton-enlace"
+                          onClick={() => onAbrirDetalle(p.coDependencia, p.nombreDependencia, 'todos')}
+                          aria-label={`Ver el pendiente más antiguo de ${nombre}, ${p.diasPendienteMasAntiguo} días`}
+                        >
+                          {p.diasPendienteMasAntiguo} d
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
+      <GlosarioMetricas claves={CLAVES_GLOSARIO_PENDIENTES} />
     </div>
   );
 }

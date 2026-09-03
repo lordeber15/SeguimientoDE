@@ -454,6 +454,39 @@ export interface PendientesAntiguos {
   diasPendienteMasAntiguo: number | null;
 }
 
+/**
+ * Qué cuenta como "pendiente" HOY — una sola definición, compartida por el agregado
+ * (`pendientesAntiguosPorOficina`) y el detalle (`pendientesDetalleOficina`), para que nunca
+ * puedan divergir en cuántos hay.
+ *
+ * Dos exclusiones se suman a `NOT atendido` (Fase 1/migración 014):
+ *  - `NOT es_informativo`: un documento informativo (copia, para conocimiento y fines, circular)
+ *    no espera respuesta por definición — el resto del dashboard ya lo separa con este mismo
+ *    filtro (ver `construirFiltroParticipacion` más abajo); esta pestaña era la única que no.
+ *  - `fe_archivo_expediente IS NULL OR fe_archivo_expediente < fe_envio`: si el expediente se
+ *    archivó DESPUÉS de que este documento llegara, el trámite ya se cerró y nadie va a
+ *    responderlo — contarlo como pendiente es lo que antes inflaba el backlog medido (2.847) a
+ *    más del doble del real (1.076 tras esta y la exclusión de informativos).
+ */
+const CONDICIONES_BACKLOG = [
+  'NOT atendido',
+  'NOT es_informativo',
+  '(fe_archivo_expediente IS NULL OR fe_archivo_expediente < fe_envio)',
+];
+
+/** Antigüedad en buckets, medida contra `now()` — compartida por agregado y detalle. */
+const BUCKETS_PENDIENTES = {
+  '0a7': "antiguedad < interval '8 days'",
+  '8a30': "antiguedad >= interval '8 days' AND antiguedad < interval '31 days'",
+  '31mas': "antiguedad >= interval '31 days'",
+} as const;
+
+export type BucketPendientes = keyof typeof BUCKETS_PENDIENTES | 'todos';
+
+/** Tope de filas devueltas por el detalle — con las reglas nuevas la oficina más cargada ronda
+ *  las 230, pero el tope evita que un dato anómalo tire el modal del frontend. */
+const LIMITE_DETALLE_PENDIENTES = 500;
+
 interface FilaPendientes {
   coDependencia: string;
   nombreDependencia: string | null;
@@ -481,16 +514,14 @@ function mapearPendientes(f: FilaPendientes): PendientesAntiguos {
  * EN el rango elegido), esto ignora `desde`/`hasta` a propósito: mira TODO lo recibido, sin
  * límite de fecha, que sigue sin atenderse, bucketizado por antigüedad contra `now()`.
  *
- * Usa el mismo `atendido` de `dashboard.participacion` que `desempenoPorOficina` — hasta la Fase 2
- * este endpoint tenía su propia definición de "pendiente" (un `NOT EXISTS` sin la ventana que sí
- * usa `atendido`, para no emparejar dos recepciones cercanas con la misma respuesta). Con el
- * espejo ya emparejado una sola vez en el refresco, mantener dos nociones de "atendido" solo
- * sumaba confusión sin cambiar el resultado salvo en casos extremos de re-participación — se
- * unificaron a propósito.
+ * "Pendiente" = `atendido` de `dashboard.participacion` MÁS las dos exclusiones de
+ * `CONDICIONES_BACKLOG` (informativos y expedientes ya archivados) — ver el comentario ahí para
+ * el detalle de por qué. El detalle por documento (`pendientesDetalleOficina`) usa exactamente
+ * la misma condición y los mismos buckets, así que agregado y detalle nunca pueden divergir.
  */
 export async function pendientesAntiguosPorOficina(filtro: FiltroPendientes): Promise<PendientesAntiguos[]> {
   const binds: unknown[] = [];
-  const condiciones = ['NOT atendido'];
+  const condiciones = [...CONDICIONES_BACKLOG];
   if (filtro.coDependencia) {
     binds.push(filtro.coDependencia);
     condiciones.push(`co_dep_des = $${binds.length}`);
@@ -510,9 +541,9 @@ export async function pendientesAntiguosPorOficina(filtro: FiltroPendientes): Pr
       co_dep_des AS "coDependencia",
       MAX(nombre_dependencia) AS "nombreDependencia",
       count(*)::text AS pendientes,
-      count(*) FILTER (WHERE antiguedad < interval '8 days')::text AS pendientes0a7,
-      count(*) FILTER (WHERE antiguedad >= interval '8 days' AND antiguedad < interval '31 days')::text AS pendientes8a30,
-      count(*) FILTER (WHERE antiguedad >= interval '31 days')::text AS pendientes31mas,
+      count(*) FILTER (WHERE ${BUCKETS_PENDIENTES['0a7']})::text AS pendientes0a7,
+      count(*) FILTER (WHERE ${BUCKETS_PENDIENTES['8a30']})::text AS pendientes8a30,
+      count(*) FILTER (WHERE ${BUCKETS_PENDIENTES['31mas']})::text AS pendientes31mas,
       round(EXTRACT(EPOCH FROM max(antiguedad)) / 86400)::text AS "diasPendienteMasAntiguo"
     FROM pendientes
     GROUP BY co_dep_des
@@ -521,4 +552,107 @@ export async function pendientesAntiguosPorOficina(filtro: FiltroPendientes): Pr
   );
 
   return filas.map(mapearPendientes);
+}
+
+export interface PendienteDetalle {
+  nuAnnExp: string;
+  nuSecExp: string;
+  numeroExpediente: string | null;
+  nuAnn: string;
+  nuEmi: string;
+  nuDes: string;
+  numeroDocumento: string | null;
+  coTipDoc: string | null;
+  asunto: string | null;
+  coEmpleado: string;
+  nombreEmpleado: string | null;
+  esDocRec: string | null;
+  fechaRecepcion: string;
+  dias: number;
+}
+
+interface FilaPendienteDetalle {
+  nuAnnExp: string;
+  nuSecExp: string;
+  numeroExpediente: string | null;
+  nuAnn: string;
+  nuEmi: string;
+  nuDes: string;
+  numeroDocumento: string | null;
+  coTipDoc: string | null;
+  asunto: string | null;
+  coEmpleado: string;
+  nombreEmpleado: string | null;
+  esDocRec: string | null;
+  fechaRecepcion: string;
+  dias: string;
+}
+
+/**
+ * Los documentos concretos detrás de un número de la pestaña Pendientes — mismo filtro de
+ * backlog y mismos buckets que `pendientesAntiguosPorOficina` (`CONDICIONES_BACKLOG`,
+ * `BUCKETS_PENDIENTES`), acotado además a una oficina y, opcionalmente, a un bucket de
+ * antigüedad. Ordenado por antigüedad descendente: lo más viejo primero, que es lo que se busca
+ * al abrir el detalle (y coincide con lo que muestra la columna "Más antiguo").
+ */
+export async function pendientesDetalleOficina(
+  coDependencia: string,
+  bucket: BucketPendientes,
+  tipoDocumento?: string,
+): Promise<{ total: number; items: PendienteDetalle[] }> {
+  const binds: unknown[] = [coDependencia];
+  const condiciones = [...CONDICIONES_BACKLOG, 'co_dep_des = $1'];
+  if (tipoDocumento) {
+    binds.push(tipoDocumento);
+    condiciones.push(`co_tip_doc = $${binds.length}`);
+  }
+
+  /**
+   * `antiguedad` es un alias calculado en el SELECT del CTE (`(now() - fe_envio) AS antiguedad`):
+   * no existe todavía dentro del WHERE de ESE MISMO CTE, así que el bucket no puede sumarse a
+   * `condiciones` de arriba (ahí adentro, Postgres lo rechaza con "column antiguedad does not
+   * exist" — el bug real que reportó el usuario). Tiene que filtrar la consulta EXTERIOR, que
+   * selecciona DESDE `pendientes`, donde `antiguedad` ya es una columna real de salida.
+   */
+  const condicionBucket = bucket === 'todos' ? 'true' : BUCKETS_PENDIENTES[bucket];
+  const cte = `WITH pendientes AS (
+      SELECT *, (now() - fe_envio) AS antiguedad
+      FROM dashboard.participacion
+      WHERE ${condiciones.join(' AND ')}
+    )`;
+
+  const filas = await appSequelize.query<FilaPendienteDetalle>(
+    `${cte}
+    SELECT
+      nu_ann_exp AS "nuAnnExp",
+      nu_sec_exp AS "nuSecExp",
+      nu_expediente AS "numeroExpediente",
+      nu_ann AS "nuAnn",
+      nu_emi AS "nuEmi",
+      nu_des AS "nuDes",
+      nu_doc AS "numeroDocumento",
+      co_tip_doc AS "coTipDoc",
+      asunto,
+      co_emp_des AS "coEmpleado",
+      nombre_empleado AS "nombreEmpleado",
+      es_doc_rec AS "esDocRec",
+      to_char(fe_envio, 'YYYY-MM-DD HH24:MI:SS') AS "fechaRecepcion",
+      round(EXTRACT(EPOCH FROM antiguedad) / 86400)::text AS dias
+    FROM pendientes
+    WHERE ${condicionBucket}
+    ORDER BY antiguedad DESC
+    LIMIT ${LIMITE_DETALLE_PENDIENTES}`,
+    { bind: binds, type: QueryTypes.SELECT },
+  );
+
+  const totalFilas = await appSequelize.query<{ total: string }>(
+    `${cte}
+    SELECT count(*)::text AS total FROM pendientes WHERE ${condicionBucket}`,
+    { bind: binds, type: QueryTypes.SELECT },
+  );
+
+  return {
+    total: Number(totalFilas[0]?.total ?? 0),
+    items: filas.map((f) => ({ ...f, dias: Number(f.dias) })),
+  };
 }

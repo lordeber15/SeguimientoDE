@@ -621,6 +621,57 @@ tbody tr:hover {
   white-space: normal;
 }
 
+/* --- Presupuesto de anchos de la tabla de detalle de Pendientes (`ModalPendientesDetalle`) ---
+ *
+ * Mismo problema y misma solución que `.tabla-seguimiento` arriba: `.tabla-expedientes` trae
+ * `min-width: 1180px`, más ancho que el propio modal (`.modal-caja` topa en 1100px), así que sin
+ * esto la tabla SIEMPRE fuerza scroll horizontal, tenga el contenido que tenga. `table-layout:
+ * fixed` + un presupuesto fijo para las columnas cortas deja "Documento" y "Asunto" (sin `width`,
+ * se reparten lo que sobra) con espacio acotado, que es lo que necesita `.celda-asunto` para
+ * recortar a 2 líneas — sin `fixed` no tiene contra qué acotarse y crece sin límite.
+ *
+ * 40 (expandir) + 150 + 150 + 110 + 70 + 120 = 640; con 1000 de mínimo quedan 360 para repartir
+ * entre Documento y Asunto (180 cada una). 1000 + el padding del modal (40px) caben de sobra en
+ * los 1100px de `.modal-caja` — por debajo de eso, manda el `overflow` de `.table-scroll`.
+ * Va después de `.tabla-expedientes` a propósito: misma especificidad, gana por orden.
+ */
+.tabla-pendientes-detalle {
+  table-layout: fixed;
+  min-width: 1000px;
+}
+
+.tabla-pendientes-detalle .col-numero {
+  width: 150px;
+}
+
+.tabla-pendientes-detalle .col-responsable {
+  width: 150px;
+}
+
+.tabla-pendientes-detalle .col-fecha {
+  width: 110px;
+}
+
+.tabla-pendientes-detalle .col-dias {
+  width: 70px;
+}
+
+.tabla-pendientes-detalle .col-estado {
+  width: 120px;
+}
+
+.tabla-pendientes-detalle tbody td {
+  overflow-wrap: anywhere;
+}
+
+/* `.celda-fecha` es `white-space: nowrap` por defecto (para que una fecha no se parta a mitad de
+   número); acá la fecha va pegada a la hora en un solo string ("23/06/2026 17:57", sin las dos
+   líneas separadas que arma `CeldaFecha` en otras tablas), así que a 110px necesita poder partir
+   en el espacio entre una y otra. */
+.tabla-pendientes-detalle .celda-fecha {
+  white-space: normal;
+}
+
 .exp-numero {
   font-weight: 600;
   color: var(--color-card-foreground);
@@ -875,6 +926,30 @@ tbody tr:hover {
   white-space: nowrap;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+
+/* Los números de "Pendientes" que abren el detalle (`ModalPendientesDetalle`) son botones, pero
+   deben seguir leyéndose como la cifra de una tabla, no como un enlace de texto: mismo peso que
+   `.celda-tiempo`. Sin `width`: un botón es `inline-block` por defecto, así que ya se posiciona
+   solo con el `text-align: right` de `.celda-pendiente` en la celda — ponerlo a 100% de ancho
+   anulaba eso, porque entonces el texto se alineaba según el `text-align: left` del propio botón
+   (heredado de `.boton-enlace`), no según la celda, y el dígito quedaba pegado a la izquierda de
+   un botón que ocupaba toda la celda: el mismo desalineo que el 0 sin botón, solo que del otro lado. */
+.celda-tiempo .boton-enlace {
+  font: inherit;
+  color: inherit;
+  padding: 0;
+}
+
+.celda-tiempo .boton-enlace:hover {
+  color: var(--color-primary);
+}
+
+/* La alineación va en la CELDA, no en el botón: un 0 (sin botón, texto plano) o el "—" de "Más
+   antiguo" también deben quedar a la derecha, igual que el resto de la columna — antes solo el
+   botón se alineaba, y esos dos casos se veían corridos hacia la izquierda. */
+.celda-pendiente {
+  text-align: right;
 }
 
 .celda-vacia {
@@ -1536,6 +1611,38 @@ tbody tr.fila-destacada > td {
   display: block;
   padding: 16px 20px 20px;
   overflow-y: auto;
+}
+
+/* El scroll vive en `.table-scroll` (ver reglas de abajo), no acá: si el propio `.modal-cuerpo`
+   también hiciera `overflow-y: auto`, quedarían dos contenedores con scroll anidados y el `thead`
+   con `position: sticky` no sabría contra cuál de los dos pegarse — a veces terminaba sin pegarse
+   contra ninguno, que es la mitad del reporte de "no hay scroll vertical". La nota "Mostrando los
+   N más antiguos…" queda arriba, fuera del área que se desplaza. */
+.modal-cuerpo--pendientes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px 20px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.modal-cuerpo--pendientes .table-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Único contenedor de scroll de la tabla, en los dos ejes: vertical siempre que la lista no
+   entre entera (antes dependía de que el `overflow-y` del modal completo alcanzara hasta acá, y
+   con el `overflow: hidden` de `.table-card` de por medio el `sticky` del `thead` no tenía una
+   referencia clara) y horizontal solo como red de seguridad en ventanas angostas — con el
+   presupuesto de `.tabla-pendientes-detalle` no debería activarse en un monitor de escritorio. */
+.modal-cuerpo--pendientes .table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .markdown-crudo {

@@ -18,6 +18,7 @@ import {
   desempenoPorEmpleado,
   desempenoPorOficina,
   pendientesAntiguosPorOficina,
+  pendientesDetalleOficina,
   reiniciarCacheTiposDependenciaParaTests,
   tiposDocumento,
 } from '../../src/services/dashboardService';
@@ -553,5 +554,114 @@ describe('pendientesAntiguosPorOficina — carga laboral (Fase 2), sin acotar po
     const [oficina] = await pendientesAntiguosPorOficina({});
 
     expect(oficina.diasPendienteMasAntiguo).toBeNull();
+  });
+
+  /** Migración 014 — "Pendientes: drill-down": el backlog ya no es solo `NOT atendido`, así que
+   *  estos dos casos reemplazan al viejo "usa el mismo atendido, sin NOT EXISTS propio" de arriba
+   *  en lo que a exclusiones se refiere (ese test sigue valiendo: `NOT atendido` sigue ahí). */
+  it('excluye los documentos informativos del backlog', async () => {
+    await pendientesAntiguosPorOficina({});
+
+    const [sql] = unicaLlamada();
+    expect(String(sql)).toContain('NOT es_informativo');
+  });
+
+  it('excluye los pendientes cuyo expediente ya se archivó después de que el documento llegara', async () => {
+    await pendientesAntiguosPorOficina({});
+
+    const [sql] = unicaLlamada();
+    expect(String(sql)).toContain('fe_archivo_expediente IS NULL OR fe_archivo_expediente < fe_envio');
+  });
+});
+
+describe('pendientesDetalleOficina — drill-down de un número de la pestaña Pendientes', () => {
+  beforeEach(() => mockAppQuery.mockReset().mockResolvedValue([]));
+
+  /** Hace dos consultas (los ítems y el total) — a diferencia del resto de este archivo, no puede
+   *  usar `unicaLlamada()`. */
+  function llamadas(): { sql: string; opts: { bind: unknown[] } }[] {
+    return mockAppQuery.mock.calls.map(([sql, opts]) => ({ sql: String(sql), opts }));
+  }
+
+  it('bindea la oficina primero y comparte las mismas exclusiones del backlog que el agregado', async () => {
+    await pendientesDetalleOficina('00009', 'todos');
+
+    const [items, total] = llamadas();
+    expect(items.opts.bind).toEqual(['00009']);
+    for (const sql of [items.sql, total.sql]) {
+      expect(sql).toContain('co_dep_des = $1');
+      expect(sql).toContain('NOT atendido');
+      expect(sql).toContain('NOT es_informativo');
+      expect(sql).toContain('fe_archivo_expediente IS NULL OR fe_archivo_expediente < fe_envio');
+    }
+    // Mismos binds en las dos consultas: nunca pueden contar oficinas distintas.
+    expect(total.opts.bind).toEqual(items.opts.bind);
+  });
+
+  it('con un bucket puntual, agrega su condición de antigüedad — "todos" no agrega ninguna', async () => {
+    await pendientesDetalleOficina('00009', '31mas');
+    const [conBucket] = llamadas();
+    expect(conBucket.sql).toContain("antiguedad >= interval '31 days'");
+
+    mockAppQuery.mockClear();
+    await pendientesDetalleOficina('00009', 'todos');
+    const [sinBucket] = llamadas();
+    expect(sinBucket.sql).not.toContain('antiguedad >=');
+    expect(sinBucket.sql).not.toContain('antiguedad <');
+  });
+
+  /** Bug real reportado en producción: `antiguedad` es un alias calculado en el SELECT del CTE
+   *  (`(now() - fe_envio) AS antiguedad`) — Postgres lo rechaza con "column antiguedad does not
+   *  exist" si el bucket se cuela en el WHERE de ESE MISMO CTE, porque ahí el alias todavía no
+   *  existe. Tiene que filtrar la consulta EXTERIOR, que selecciona DESDE `pendientes`, donde
+   *  `antiguedad` ya es una columna real de salida. */
+  it('filtra el bucket DESPUÉS del CTE (consulta exterior), nunca dentro de su propio WHERE', async () => {
+    await pendientesDetalleOficina('00009', '31mas');
+
+    const [items, total] = llamadas();
+    for (const sql of [items.sql, total.sql]) {
+      const indiceCte = sql.indexOf('FROM dashboard.participacion');
+      const indiceFromPendientes = sql.indexOf('FROM pendientes');
+      const indiceBucket = sql.indexOf("antiguedad >= interval '31 days'");
+      expect(indiceCte).toBeGreaterThanOrEqual(0);
+      expect(indiceFromPendientes).toBeGreaterThan(indiceCte);
+      expect(indiceBucket).toBeGreaterThan(indiceFromPendientes);
+    }
+  });
+
+  it('con tipoDocumento, lo bindea en segundo lugar', async () => {
+    await pendientesDetalleOficina('00009', 'todos', '232');
+
+    const [items] = llamadas();
+    expect(items.opts.bind).toEqual(['00009', '232']);
+    expect(items.sql).toContain('co_tip_doc = $2');
+  });
+
+  it('ordena por antigüedad descendente — el más viejo primero', async () => {
+    await pendientesDetalleOficina('00009', 'todos');
+
+    const [items] = llamadas();
+    expect(items.sql).toContain('ORDER BY antiguedad DESC');
+  });
+
+  it('acota los ítems devueltos, pero el total sale de una consulta aparte sin ese límite', async () => {
+    mockAppQuery.mockImplementation((sql: string) => {
+      if (String(sql).includes('ORDER BY antiguedad DESC')) {
+        return Promise.resolve(Array.from({ length: 3 }, (_, i) => ({
+          nuAnnExp: '2026', nuSecExp: '000058', numeroExpediente: null,
+          nuAnn: '2026', nuEmi: String(i), nuDes: '1', numeroDocumento: null, coTipDoc: null,
+          asunto: null, coEmpleado: '00061', nombreEmpleado: null, esDocRec: '1',
+          fechaRecepcion: '2026-01-01 00:00:00', dias: '90',
+        })));
+      }
+      return Promise.resolve([{ total: '231' }]);
+    });
+
+    const resultado = await pendientesDetalleOficina('00009', 'todos');
+
+    expect(resultado.total).toBe(231);
+    expect(resultado.items).toHaveLength(3);
+    const [items] = llamadas();
+    expect(items.sql).toContain('LIMIT 500');
   });
 });

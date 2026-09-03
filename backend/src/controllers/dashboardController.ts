@@ -9,7 +9,9 @@ import {
   desempenoPorEmpleado,
   desempenoPorOficina,
   pendientesAntiguosPorOficina,
+  pendientesDetalleOficina,
   tiposDocumento,
+  type BucketPendientes,
   type FiltroPendientes,
   type FiltroResumen,
 } from '../services/dashboardService';
@@ -151,6 +153,35 @@ export async function getPendientesOficinas(req: Request, res: Response) {
   } catch (error) {
     console.error('Error al calcular los pendientes antiguos por oficina:', error);
     res.status(500).json({ message: 'Error al calcular los pendientes antiguos por oficina' });
+  }
+}
+
+const BUCKETS_VALIDOS: BucketPendientes[] = ['todos', '0a7', '8a30', '31mas'];
+
+/** El detalle detrás de un número de la pestaña Pendientes — misma oficina, mismo bucket de
+ *  antigüedad que la celda en la que se hizo clic. Reutiliza `parsearFiltroPendientes` solo para
+ *  `tipoDocumento`; `coDependencia` viene de la ruta, no del query string, así que se valida
+ *  aparte con el mismo patrón. */
+export async function getPendientesDetalle(req: Request, res: Response) {
+  const coDependenciaCruda = req.params.coDependencia.trim();
+  if (!CODIGO_DEPENDENCIA_VALIDO.test(coDependenciaCruda)) {
+    return res.status(400).json({ message: 'El código de dependencia debe ser numérico de hasta 5 dígitos' });
+  }
+  const coDependencia = coDependenciaCruda.padStart(5, '0');
+
+  const bucketCrudo = typeof req.query.bucket === 'string' ? req.query.bucket.trim() : 'todos';
+  const bucket = (bucketCrudo || 'todos') as BucketPendientes;
+  if (!BUCKETS_VALIDOS.includes(bucket)) {
+    return res.status(400).json({ message: `bucket debe ser uno de: ${BUCKETS_VALIDOS.join(', ')}` });
+  }
+
+  const tipoDocumento = typeof req.query.tipoDocumento === 'string' ? req.query.tipoDocumento.trim() : '';
+
+  try {
+    res.json(await pendientesDetalleOficina(coDependencia, bucket, tipoDocumento || undefined));
+  } catch (error) {
+    console.error('Error al obtener el detalle de pendientes:', error);
+    res.status(500).json({ message: 'Error al obtener el detalle de pendientes' });
   }
 }
 

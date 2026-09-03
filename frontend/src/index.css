@@ -814,6 +814,35 @@ tbody tr:hover {
   color: var(--color-muted-foreground);
 }
 
+.glosario-detalle {
+  margin-top: 4px;
+}
+
+.glosario-detalle summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-primary);
+  list-style: none;
+}
+
+.glosario-detalle summary::-webkit-details-marker {
+  display: none;
+}
+
+.glosario-detalle summary::before {
+  content: '▸ ';
+}
+
+.glosario-detalle[open] summary::before {
+  content: '▾ ';
+}
+
+.glosario-detalle p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
 .doc-nombre {
   color: var(--color-card-foreground);
   font-variant-numeric: tabular-nums;

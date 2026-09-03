@@ -301,11 +301,9 @@ export function CalidadProcesosPage() {
         <span>{formatearFrescura(estadoResumenEspejo)}</span>
       </p>
       <p className="exp-nota">
-        Cada proceso se descubre automáticamente agrupando expedientes por el asunto con el que
-        ENTRARON (no el de cada etapa, que cambia en el camino). El flujo mostrado es la "columna
-        vertebral" — el camino de oficinas por el que pasa más gente, aunque ninguna ruta exacta,
-        paso a paso, sea mayoría — y no la simple secuencia más repetida, que casi siempre representa
-        a muy pocos expedientes.
+        Cada proceso se agrupa automáticamente por el asunto con el que ENTRÓ el expediente, no el de
+        cada etapa. El flujo mostrado es la "columna vertebral" — el camino con más gente, no la
+        secuencia exacta más repetida.
       </p>
 
       <Pestanas pestanas={PESTANAS} activa={pestana} onCambiar={setPestana} etiqueta="Secciones de calidad de procesos" />
@@ -507,9 +505,9 @@ function PanelFlujo({
         <div className="flujograma-opcionales">
           <h3>Pasos opcionales frecuentes</h3>
           <p className="exp-nota">
-            Oficinas por las que pasa una parte relevante de los expedientes pero que no forman parte
-            de la columna principal — ninguna, por sí sola, es mayoría. Aquí es donde se compara, por
-            ejemplo, una conformidad técnica que distintas oficinas resuelven en tiempos distintos.
+            Oficinas por las que pasa una parte relevante de expedientes, sin ser mayoría por sí
+            solas — útil para comparar, por ejemplo, una conformidad que distintas oficinas resuelven
+            en tiempos distintos.
           </p>
           <div className="table-card table-scroll">
             <table>
@@ -597,9 +595,8 @@ function PanelPropuesta({
       </div>
 
       <p className="exp-nota">
-        Objetivo: percentil {datos.percentilObjetivo} del tiempo que toma la MISMA tarea (mismo
-        motivo de derivación y tipo de documento) en todas las oficinas que la hacen — no el mínimo
-        absoluto, que suele ser un caso atípico.
+        Objetivo: percentil {datos.percentilObjetivo} del tiempo de la misma tarea (mismo motivo y
+        tipo de documento) en todas las oficinas que la hacen — no el mínimo absoluto.
       </p>
 
       <div className="table-card table-scroll">

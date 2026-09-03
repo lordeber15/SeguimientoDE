@@ -727,14 +727,9 @@ export function DashboardPage() {
       </p>
 
       <p className="exp-nota">
-        Tiempo de atención calculado entre la recepción y la primera respuesta del mismo empleado en
-        el expediente — el SGD no guarda un vínculo explícito entre ambos documentos. "Días hábiles"
-        solo excluye fines de semana: no hay calendario de feriados cargado en esta instalación.
-        Los documentos con motivo COPIA, INFORMAR, PARA CONOCIMIENTO Y FINES, CIRCULAR o NOTIFICAR
-        no exigen una respuesta y se cuentan aparte, como "Informativos", para no penalizar a quien
-        recibe muchas copias. "Reproceso" es un proxy — el mismo empleado volvió a recibir el mismo
-        expediente con el mismo asunto — no un "devuelto" confirmado; que un expediente le pase
-        varias veces con asuntos distintos es circulación normal del trámite y no cuenta.
+        Tiempo de atención: entre la recepción y la primera respuesta del mismo empleado en el
+        expediente. "Días hábiles" solo excluye fines de semana — no hay feriados cargados en esta
+        instalación.
       </p>
 
       <Pestanas
@@ -816,9 +811,8 @@ export function DashboardPage() {
         {pestana === 'pendientes' && (
           <>
             <p className="exp-nota">
-              Backlog vigente HOY: todo lo recibido, sin límite de fecha, que sigue sin atenderse —
-              ignora el rango "Desde"/"Hasta" de arriba a propósito, solo respeta el filtro de
-              oficina y tipo de documento.
+              Backlog vigente HOY: ignora el rango "Desde"/"Hasta" a propósito — solo respeta el
+              filtro de oficina y tipo de documento.
             </p>
 
             {(estadoPendientes.tipo === 'error') && (
@@ -840,11 +834,9 @@ export function DashboardPage() {
         {pestana === 'pesos' && (
           <>
             <p className="exp-nota">
-              Peso de complejidad por tipo de documento — multiplica cada documento en
-              "Productividad ponderada"/"Carga ponderada" (pestañas "Por oficina"/"Por empleado").
-              La sugerencia sale del tiempo mediano de atención de ese tipo frente al resto: el más
-              lento sugiere ~2.0, el más rápido ~1.0. Sin muestra suficiente (menos de 5 atendidos)
-              no hay sugerencia, pero el peso se puede fijar a mano igual.
+              Multiplica cada documento en "Prod./Carga ponderada". La sugerencia sale del tiempo
+              mediano de atención de ese tipo frente al resto (más lento ≈ 2.0, más rápido ≈ 1.0); sin
+              muestra suficiente no hay sugerencia, pero se puede fijar a mano igual.
             </p>
 
             {estadoPesos.tipo === 'error' && (
@@ -866,11 +858,9 @@ export function DashboardPage() {
         {pestana === 'insights' && (
           <>
             <p className="exp-nota">
-              Hallazgos automáticos (Fase 5) sobre los KPIs ya calculados arriba: carga de trabajo
-              desigual, productividad alta con reproceso alto, baja productividad explicada por
-              complejidad, y tendencias del índice global (Fase 4) contra el período inmediatamente
-              anterior de igual duración. Ningún hallazgo es un juicio automático — cada uno dice
-              contra qué se comparó, igual que los badges de nivel.
+              Hallazgos automáticos sobre los KPIs de arriba: carga desigual, productividad con
+              reproceso alto, baja productividad por complejidad, y tendencias del índice global.
+              Cada uno dice contra qué se comparó.
             </p>
 
             {estadoEmpleados.tipo === 'error' && estadoEmpleados.clave === claveFiltro && (
@@ -909,8 +899,8 @@ export function DashboardPage() {
                     />
                     {subPestanaHallazgo === 'tendencia' && (!filtro.desde || !filtro.hasta) && (
                       <p className="exp-nota">
-                        La tendencia necesita un rango de fechas elegido ("Desde" y "Hasta"), para
-                        compararlo contra el período inmediatamente anterior de igual duración.
+                        La tendencia necesita "Desde" y "Hasta" elegidos, para compararlo contra el
+                        período inmediatamente anterior.
                       </p>
                     )}
                     <InsightsPanel

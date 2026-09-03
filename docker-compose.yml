@@ -1,0 +1,60 @@
+services:
+  # Base de datos PROPIA del sistema: usuarios de la aplicación, roles, auditoría y (más
+  # adelante) los embeddings del RAG. Aquí SÍ se escribe — no contradice la política de solo
+  # lectura, que aplica exclusivamente a la BD del SGD (`idosgd`, servidor remoto).
+  # La imagen trae pgvector ya instalado para no tener que cambiarla en la Fase 3.
+  db-app:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${APP_DB_USER:-seguimiento}
+      POSTGRES_PASSWORD: ${APP_DB_PASS}
+      POSTGRES_DB: ${APP_DB_NAME:-seguimiento_app}
+    ports:
+      - '${APP_DB_HOST_PORT:-5442}:5432'
+    volumes:
+      - db_app_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${APP_DB_USER:-seguimiento} -d ${APP_DB_NAME:-seguimiento_app}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    env_file: .env
+    # host.docker.internal resuelve solo en Docker Desktop (Windows/Mac); en el host Linux de
+    # producción hace falta esta línea para que OLLAMA_URL / MARKITDOWN_URL sigan apuntando a
+    # servicios que corren en la propia máquina, fuera de Docker.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    depends_on:
+      db-app:
+        condition: service_healthy
+    ports:
+      - '${BACKEND_HOST_PORT:-3012}:${PORT:-3012}'
+    volumes:
+      # Repositorio de documentos y anexos del SGD, montado en SOLO LECTURA (:ro).
+      # El SGD es la fuente de verdad de estos archivos y este sistema nunca los modifica;
+      # el :ro lo garantiza a nivel de Docker, no solo por convención del código.
+      - ${STORAGE_HOST_PATH}:${STORAGE_PATH:-/mnt/sgd/storage}:ro
+      # Temporales del PDF unificado. Lectura/escritura: es nuestro directorio de trabajo, no
+      # el repositorio del SGD. El servicio solo crea y borra ahí archivos "Union_*.pdf".
+      - ${UNION_TMP_DIR}:${UNION_TMP_PATH:-/mnt/sgd/tmp}
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    env_file: .env
+    ports:
+      - '${FRONTEND_HOST_PORT:-5177}:${FRONTEND_PORT:-5177}'
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  db_app_data:

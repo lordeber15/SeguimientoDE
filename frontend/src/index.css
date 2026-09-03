@@ -1,0 +1,2273 @@
+:root {
+  /* Paleta "Government Portal / Civic Services" — profesional, alto contraste, confianza */
+  --color-primary: #1e40af;
+  --color-on-primary: #ffffff;
+  --color-accent: #16a34a;
+  --color-background: #eff6ff;
+  --color-foreground: #1e3a8a;
+  --color-card: #ffffff;
+  --color-card-foreground: #1e3a8a;
+  --color-muted: #e9eff5;
+  --color-muted-foreground: #475569;
+  --color-border: #bfdbfe;
+  --color-destructive: #dc2626;
+  --color-on-destructive: #ffffff;
+  --color-ring: #1e40af;
+
+  /* Badges de tipo de encargatura: color + texto, nunca solo color */
+  --badge-titular-bg: #dcfce7;
+  --badge-titular-fg: #166534;
+  --badge-encargado-bg: #fef3c7;
+  --badge-encargado-fg: #92400e;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+button,
+input {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+a {
+  color: var(--color-primary);
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* El azul de marca vive ahora en el sidebar; la cabecera queda clara sobre el contenido para no
+   apilar dos bandas de color a lo largo del borde superior. */
+.app-header {
+  background: var(--color-card);
+  color: var(--color-card-foreground);
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.app-header p {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: var(--color-muted-foreground);
+}
+
+.app-main {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 240px;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-card);
+  color: var(--color-foreground);
+}
+
+.result-count {
+  color: var(--color-muted-foreground);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.table-card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.expediente-completo {
+  margin-bottom: 20px;
+}
+
+.expediente-completo-cuerpo {
+  padding: 12px 16px 16px;
+}
+
+/* `.interacciones-estado` trae `padding-left: 56px` pensado para alinear bajo la columna de
+   expandir de la tabla; en esta vista independiente no hay tal columna. */
+.expediente-completo .interacciones-estado {
+  padding: 16px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 640px;
+}
+
+thead th {
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 12px 16px;
+  background: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+}
+
+tbody td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+  font-size: 14px;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr:hover {
+  background: var(--color-background);
+}
+
+.dep-name {
+  font-weight: 500;
+  color: var(--color-card-foreground);
+}
+
+.dep-sigla {
+  color: var(--color-muted-foreground);
+  font-size: 13px;
+}
+
+.dep-code {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-muted-foreground);
+  font-size: 13px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.badge-titular {
+  background: var(--badge-titular-bg);
+  color: var(--badge-titular-fg);
+}
+
+.badge-encargado {
+  background: var(--badge-encargado-bg);
+  color: var(--badge-encargado-fg);
+}
+
+.state-message {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--color-muted-foreground);
+}
+
+.state-message .retry-button {
+  margin-top: 16px;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.state-message.is-error {
+  color: var(--color-destructive);
+}
+
+.skeleton-row td {
+  padding: 14px 16px;
+}
+
+.skeleton-block {
+  height: 14px;
+  border-radius: 4px;
+  background: var(--color-muted);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* ==========================================================================
+   Seguimiento por usuario
+   ========================================================================== */
+
+:root {
+  /* Estados de TDTV_DESTINOS. Cada badge lleva color + texto, nunca solo color. */
+  --badge-atendido-bg: #dcfce7;
+  --badge-atendido-fg: #166534;
+  --badge-progreso-bg: #dbeafe;
+  --badge-progreso-fg: #1e40af;
+  --badge-pendiente-bg: #fef3c7;
+  --badge-pendiente-fg: #92400e;
+  --badge-neutro-bg: #e9eff5;
+  --badge-neutro-fg: #475569;
+  --badge-anulado-bg: #fee2e2;
+  --badge-anulado-fg: #991b1b;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- Sidebar de navegación + cabecera --- */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  min-height: 100vh;
+}
+
+/* `min-width: 0` no es opcional: un ítem de rejilla vale por defecto `min-width: auto`, que impide
+   encogerse por debajo del contenido. Sin esto, `.table-scroll { overflow-x: auto }` no llega a
+   desplazarse — la tabla ensancha la columna `1fr` y desborda la página entera. */
+.app-contenido {
+  min-width: 0;
+}
+
+.app-sidebar {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  padding: 20px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.app-marca {
+  padding: 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.app-header {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.app-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.app-nav button {
+  border: none;
+  background: transparent;
+  color: #dbe6fb;
+  padding: 9px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  text-align: left;
+  width: 100%;
+}
+
+.app-nav button:hover {
+  background: rgb(255 255 255 / 0.1);
+  color: var(--color-on-primary);
+}
+
+.app-nav button.is-activo {
+  background: var(--color-card);
+  color: var(--color-primary);
+}
+
+/* Pantallas angostas: el sidebar pasa a barra horizontal arriba en vez de comerse el ancho útil. */
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .app-sidebar {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    overflow-x: auto;
+  }
+
+  .app-marca {
+    padding: 0;
+    white-space: nowrap;
+  }
+
+  .app-nav {
+    flex-direction: row;
+  }
+
+  .app-nav button {
+    width: auto;
+    white-space: nowrap;
+  }
+}
+
+/* --- Sub-pestañas (componente Pestanas) --- */
+
+.pestanas {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 20px;
+}
+
+.pestanas button {
+  border: none;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  padding: 10px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.pestanas button:hover {
+  color: var(--color-foreground);
+}
+
+.pestanas button.is-activo {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+/* --- Combos en cascada --- */
+
+.filtros {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.campo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 260px;
+}
+
+.campo label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.campo select {
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  font-family: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.campo select:disabled {
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
+  cursor: not-allowed;
+}
+
+.busqueda-expediente {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  max-width: 420px;
+}
+
+.busqueda-expediente label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.busqueda-expediente-campo {
+  display: flex;
+  gap: 8px;
+}
+
+.busqueda-expediente-campo input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  font-family: inherit;
+  font-size: 15px;
+}
+
+.busqueda-expediente-campo button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.resultados-expediente {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.resultados-expediente li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* --- Conmutador corridas / hábiles --- */
+
+.segmentado {
+  display: flex;
+  gap: 2px;
+  margin: 0;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-muted);
+}
+
+.segmentado button {
+  border: none;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  padding: 7px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.segmentado button.is-activo {
+  background: var(--color-card);
+  color: var(--color-primary);
+  box-shadow: 0 1px 2px rgb(30 58 138 / 0.12);
+}
+
+.resumen {
+  margin: 0 0 16px;
+  white-space: normal;
+}
+
+/* --- Tabla de expedientes --- */
+
+/* El contenedor de esta vista es más ancho que el resto: con 9 columnas, a 1120px la columna
+   de tiempo de atención — la razón de ser del reporte — quedaba fuera de la vista.
+   Ancho efectivo = min(1600, viewport − 232), porque `.app-shell` reserva 232px de sidebar. */
+.app-main--ancho {
+  max-width: 1600px;
+}
+
+.tabla-expedientes {
+  /* 1040px + la columna "Chat" (icono + badge + acción): sin el margen, esa columna le robaba
+     ancho a `.celda-asunto` (que ya tiene su propio `min-width` y recorte de línea) en vez de
+     activar el scroll horizontal de `.table-scroll`. */
+  min-width: 1180px;
+}
+
+/* --- Presupuesto de anchos de la tabla de Seguimiento ---
+ *
+ * `table-layout: auto` (el defecto) reparte el ancho según el contenido real, así que un solo
+ * `<span>` sin cota podía llevarse 260px y dejar la columna "Chat" fuera de la vista. Con `fixed`
+ * el ancho lo decide el `<thead>` y el cuerpo ya no vota.
+ *
+ * Siete columnas en px suman 840px (40+148+120+124+124+132+152); `Documento` y `Asunto` van
+ * DELIBERADAMENTE sin `width`, porque en `fixed` las columnas sin ancho se reparten a partes
+ * iguales lo que sobre (CSS 2.1 §17.5.2.1). Así la suma cuadra sola a cualquier ancho de ventana
+ * y también con 8 columnas (sin permiso `rag.consultar`), sin recalcular nada — que es justo lo
+ * que fallaba en los dos ajustes anteriores, cuadrados a mano para un ancho concreto.
+ *
+ * Si añades una columna: réstale su ancho al presupuesto o se lo robará en silencio a esas dos.
+ *
+ * Va después de `.tabla-expedientes` a propósito: misma especificidad (0,1,0), gana por orden.
+ */
+.tabla-seguimiento {
+  table-layout: fixed;
+  /* 840 de columnas rígidas + 2×150 de suelo de legibilidad para las dos flexibles. Por debajo
+     de esto manda el `overflow-x` de `.table-scroll`. */
+  min-width: 1140px;
+}
+
+.tabla-seguimiento .col-expandir {
+  width: 40px;
+}
+
+.tabla-seguimiento .col-numero {
+  width: 148px;
+}
+
+.tabla-seguimiento .col-estado {
+  width: 120px;
+}
+
+.tabla-seguimiento .col-fecha {
+  width: 124px;
+}
+
+.tabla-seguimiento .col-tiempo {
+  width: 132px;
+}
+
+.tabla-seguimiento .col-chat {
+  width: 152px;
+}
+
+/* En `fixed`, lo que no cabe no se recorta: se pinta encima de la columna vecina. Cada celda
+   necesita política explícita. `anywhere` y no `break-word` porque es el único que parte un token
+   sin oportunidades de corte, como el expediente "PMESTPOMSE20260000044" (~191px de una pieza). */
+.tabla-seguimiento tbody td {
+  overflow-wrap: anywhere;
+}
+
+/* `.celda-fecha` lleva `white-space: nowrap` (lo necesita para que "31/08/2026" no se parta, y lo
+   comparte con AdminUsuariosPage), pero el nowrap anula el `overflow-wrap` de arriba. Se libera
+   solo la nota secundaria, que es la que trae textos largos como "000174-2026-RJ0342026CI". */
+.tabla-seguimiento .celda-fecha .exp-nota {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Seguro ante un fallback de fuente: "menos de 1 min" deja apenas 2px de holgura en 132px.
+   Escopado porque `.celda-tiempo` la usan muchas tablas del Dashboard, donde el nowrap sí conviene. */
+.tabla-seguimiento .celda-tiempo {
+  white-space: normal;
+}
+
+.exp-numero {
+  font-weight: 600;
+  color: var(--color-card-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.exp-nota {
+  color: var(--color-muted-foreground);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.exp-nota--espejo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* --- Pesos por tipo de documento (Fase 3) --- */
+
+.peso-input {
+  width: 72px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.acciones-fila {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* --- Insights automáticos (Fase 5) --- */
+
+.insights-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.insights-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid var(--color-border);
+  background: var(--color-card);
+  font-size: 13.5px;
+  color: var(--color-foreground);
+}
+
+.insights-item--negativo {
+  border-left-color: var(--color-destructive);
+  background: color-mix(in srgb, var(--color-destructive) 6%, var(--color-card));
+}
+
+.insights-item--positivo {
+  border-left-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 6%, var(--color-card));
+}
+
+.insights-item--neutral {
+  border-left-color: var(--badge-pendiente-fg);
+  background: color-mix(in srgb, var(--badge-pendiente-fg) 6%, var(--color-card));
+}
+
+/* --- Por oficina / Por empleado: tipo de UUOO y columnas reducidas (Fase 6) --- */
+
+.tabla-oficinas {
+  /* Ancho pensado para 8-9 columnas (valor+badge fusionados, resto en el panel expandible), no
+     para las 18 originales — bastante menos que los 1180px de `.tabla-expedientes` (7 columnas +
+     chat), que de otro modo se le seguirían aplicando por compartir esa clase base. */
+  min-width: 760px;
+}
+
+.celda-nombre-truncado {
+  max-width: 260px;
+}
+
+.celda-nombre-truncado span {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* `inline-flex` en un `<span>` DENTRO de la celda, no `display:flex` en el propio `<td>`: eso
+   último le pisa el `display: table-cell` que el `<td>` necesita para participar en el layout de
+   columnas de la tabla, y hace que el navegador deje de alinearlo con el resto de su columna. */
+.celda-nivel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.detalle-metricas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 20px;
+  padding: 4px 0;
+}
+
+.detalle-grupo h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-muted-foreground);
+}
+
+.detalle-grupo dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.detalle-grupo dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.detalle-grupo dt {
+  color: var(--color-muted-foreground);
+}
+
+.detalle-grupo dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-card-foreground);
+}
+
+/* --- Glosario de indicadores, al final de Por oficina/Por empleado (Fase 9) --- */
+
+.glosario {
+  margin: 8px 20px 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.glosario summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-primary);
+  list-style: none;
+}
+
+.glosario summary::-webkit-details-marker {
+  display: none;
+}
+
+.glosario summary::before {
+  content: '▸ ';
+}
+
+.glosario[open] summary::before {
+  content: '▾ ';
+}
+
+.glosario-lista {
+  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px 24px;
+}
+
+.glosario-lista dt {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-card-foreground);
+}
+
+.glosario-lista dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+}
+
+.doc-nombre {
+  color: var(--color-card-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sin `max-width`/`min-width`: bajo `table-layout: fixed` un ancho sobre el `<td>` no participa en
+   el dimensionado de la columna. El ancho de esta columna sale del reparto de `.tabla-seguimiento`. */
+.celda-asunto span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--color-muted-foreground);
+}
+
+.celda-fecha {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* La hora en su propia línea bajo el día: la columna baja de ~166px a 124px sin perder un dato.
+   Dos `<div>` hermanos, no un flex en el `<td>` — ver el aviso de `.celda-nivel` más abajo. */
+.fecha-hora {
+  color: var(--color-muted-foreground);
+  font-size: 13px;
+}
+
+.celda-tiempo {
+  white-space: nowrap;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.celda-vacia {
+  color: var(--color-muted-foreground);
+}
+
+.col-chat {
+  width: 150px;
+}
+
+.celda-chat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+/* Icono y badge en horizontal: son 32 + 8 + 83 = 123px, y fijan el ancho útil de la columna (128).
+   La acción baja a la segunda línea. Apilarlos los tres estiraba la celda de más. */
+.celda-chat-fila {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* El mensaje de error viene del backend y puede tener cualquier longitud. Mismo recorte de dos
+   líneas que `.celda-asunto span`; el texto completo sigue en el `title`. */
+.celda-chat .exp-nota.is-error {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.boton-icono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-card);
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+.boton-icono:hover {
+  background: var(--color-muted);
+}
+
+.boton-icono:disabled {
+  color: var(--color-muted-foreground);
+  cursor: not-allowed;
+}
+
+.badge-atendido {
+  background: var(--badge-atendido-bg);
+  color: var(--badge-atendido-fg);
+}
+
+.badge-progreso {
+  background: var(--badge-progreso-bg);
+  color: var(--badge-progreso-fg);
+}
+
+.badge-pendiente {
+  background: var(--badge-pendiente-bg);
+  color: var(--badge-pendiente-fg);
+}
+
+.badge-neutro {
+  background: var(--badge-neutro-bg);
+  color: var(--badge-neutro-fg);
+}
+
+.badge-anulado {
+  background: var(--badge-anulado-bg);
+  color: var(--badge-anulado-fg);
+}
+
+/* ==========================================================================
+   Documentos, anexos e interacciones por expediente
+   ========================================================================== */
+
+.col-expandir {
+  width: 40px;
+  padding-right: 0 !important;
+}
+
+.boton-expandir {
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-primary);
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+.boton-expandir:hover {
+  background: var(--color-background);
+}
+
+tbody tr.fila-expandida {
+  background: var(--color-background);
+}
+
+tbody tr.fila-detalle > td {
+  background: var(--color-background);
+  padding: 0 16px 20px 56px;
+  border-bottom: 2px solid var(--color-border);
+}
+
+/* La fila de detalle no debe reaccionar al hover como una fila normal. */
+tbody tr.fila-detalle:hover > td,
+tbody tr.fila-expandida:hover {
+  background: var(--color-background);
+}
+
+.interacciones-titulo {
+  margin: 4px 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-muted-foreground);
+}
+
+.interacciones-estado {
+  padding: 16px 0 20px 56px;
+  color: var(--color-muted-foreground);
+  font-size: 14px;
+}
+
+.interacciones-estado.is-error {
+  color: var(--color-destructive);
+}
+
+.interacciones-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.interaccion {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.interaccion-cabecera {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.interaccion-orden {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-on-primary);
+  background: var(--color-primary);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.interaccion-asunto {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+}
+
+.interaccion-datos {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+}
+
+.interaccion-datos strong {
+  color: var(--color-card-foreground);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.interaccion-archivos {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.boton-secundario {
+  display: inline-block;
+  border: 1px solid var(--color-primary);
+  background: var(--color-card);
+  color: var(--color-primary);
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.boton-secundario:hover {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.boton-enlace {
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  padding: 2px 0;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.boton-enlace:hover {
+  text-decoration: underline;
+}
+
+.boton-enlace:disabled {
+  color: var(--color-muted-foreground);
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
+.anexos-lista {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.anexo-num {
+  display: inline-block;
+  min-width: 20px;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+}
+
+.exp-nota.is-error {
+  color: var(--color-destructive);
+}
+
+/* --- Visor modal --- */
+
+.modal-fondo {
+  position: fixed;
+  inset: 0;
+  background: rgb(30 58 138 / 0.55);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  z-index: 50;
+}
+
+.modal-caja {
+  background: var(--color-card);
+  border-radius: 12px;
+  width: min(1100px, 100%);
+  height: min(90vh, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-cabecera {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.modal-cabecera h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-acciones {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.boton-cerrar {
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-muted-foreground);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.boton-cerrar:hover {
+  background: var(--color-muted);
+  color: var(--color-foreground);
+}
+
+.modal-cuerpo {
+  flex: 1;
+  min-height: 0;
+  /* Sin esto, un contenido ancho (p.ej. la tabla de `ListaDocumentosRag`, que impone
+     `min-width: 1180px`) empuja el propio `.modal-cuerpo` más allá del `width` fijo de
+     `.modal-caja` en vez de activar el `overflow-x: auto` de `.table-scroll` — mismo motivo por
+     el que `.app-contenido` necesita `min-width: 0` para que la tabla de Seguimiento desplace en
+     vez de desbordar la página entera. */
+  min-width: 0;
+  display: grid;
+}
+
+.visor-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* --- Sesión: login, cabecera y administración --- */
+
+.login-pantalla {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--color-background);
+}
+
+.login-caja {
+  width: min(400px, 100%);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-caja h1 {
+  margin: 0;
+  font-size: 20px;
+  color: var(--color-primary);
+}
+
+.login-ayuda {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+}
+
+.login-caja label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+  margin-top: 10px;
+}
+
+.login-caja input {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  font: inherit;
+  background: var(--color-card);
+  color: var(--color-foreground);
+}
+
+.login-caja input:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.login-error {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-destructive) 10%, transparent);
+  color: var(--color-destructive);
+  font-size: 13px;
+}
+
+.login-boton {
+  margin-top: 20px;
+  align-self: stretch;
+  text-align: center;
+}
+
+.login-nota {
+  margin: 18px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-muted-foreground);
+}
+
+.app-sesion {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: 16px;
+}
+
+/* La sesión vive en la cabecera, que ya no es azul: colores sobre fondo claro. */
+.app-sesion-nombre {
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-sesion-salir {
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-primary);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.app-sesion-salir:hover {
+  background: var(--color-muted);
+}
+
+.admin-intro {
+  text-align: left;
+  font-size: 13px;
+}
+
+.roles-celda {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.rol-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* --- Panel RAG --- */
+
+.rag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.rag-tarjeta {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rag-tarjeta h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.rag-tarjeta--ancha {
+  grid-column: 1 / -1;
+}
+
+/* --- Dashboard de desempeño --- */
+
+.dashboard-stat {
+  margin: 4px 0 0;
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--color-foreground);
+}
+
+.rag-datos {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.rag-datos dt {
+  color: var(--color-muted-foreground);
+}
+
+.rag-datos dd {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+
+.rag-problemas {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--color-destructive);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rag-barras {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rag-barra-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.rag-acciones {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.rag-acciones .boton-primario {
+  width: 100%;
+  text-align: center;
+}
+
+.rag-acciones .boton-primario:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rag-job {
+  border-top: 1px solid var(--color-border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rag-job-controles {
+  display: flex;
+  gap: 8px;
+}
+
+/* --- Modal de indexación por expediente (abierto desde el chat) --- */
+
+.modal-indexacion-resumen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.modal-indexacion-resumen .badge {
+  font-size: 13px;
+  padding: 5px 12px;
+}
+
+.modal-indexacion-acciones {
+  margin-bottom: 4px;
+}
+
+.modal-indexacion-seleccion {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--color-muted);
+  align-items: center;
+}
+
+/* --- Lista de documentos individuales del panel RAG --- */
+
+.lista-documentos-rag .toolbar {
+  margin-top: 12px;
+}
+
+.celda-casilla {
+  width: 1%;
+  text-align: center;
+}
+
+.lista-documentos-rag select {
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-card);
+  color: var(--color-foreground);
+}
+
+/* Mismo criterio que las filas de error del panel de ingesta: el color no es la única señal —
+   el propio badge de estado ya dice "Sin texto"/"Error" en texto. */
+tbody tr.fila-destacada > td {
+  background: color-mix(in srgb, var(--color-destructive) 6%, var(--color-card));
+}
+
+.lista-documentos-acciones {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+.lista-documentos-paginado {
+  display: flex;
+  gap: 8px;
+}
+
+.modal-cuerpo--markdown {
+  display: block;
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+}
+
+.modal-cuerpo--indexacion {
+  display: block;
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+}
+
+.markdown-crudo {
+  margin: 10px 0 0;
+  padding: 12px;
+  background: var(--color-muted);
+  border-radius: 8px;
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- PDF unificado --- */
+
+/* El diálogo de la unión es texto y un botón: la caja del visor (1100 × 90vh) lo dejaría
+   flotando en el vacío. Aquí la altura la fija el contenido. */
+.modal-caja--estrecha {
+  width: min(560px, 100%);
+  height: auto;
+  max-height: min(90vh, 100%);
+}
+
+.modal-cuerpo--union {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 22px;
+  overflow-y: auto;
+  font-size: 14px;
+}
+
+.modal-cuerpo--union > p {
+  margin: 0;
+  color: var(--color-muted-foreground);
+}
+
+.checkbox-linea {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+  color: var(--color-foreground);
+}
+
+.checkbox-linea input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.checkbox-linea .exp-nota {
+  display: block;
+  margin-top: 2px;
+}
+
+.barra-progreso {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-muted);
+  overflow: hidden;
+  margin: 10px 0 6px;
+}
+
+.barra-progreso-relleno {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 999px;
+  transition: width 240ms ease;
+}
+
+/* Sin un % real que mostrar (una sola llamada HTTP a markitdown, sin progreso intermedio): un
+   bloque que se desliza en bucle solo comunica "sigue en marcha", sin fingir precisión. */
+.barra-progreso-indeterminada {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-muted);
+  overflow: hidden;
+  margin: 6px 0 10px;
+  position: relative;
+}
+
+.barra-progreso-indeterminada::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: var(--color-primary);
+  animation: barra-indeterminada-desliz 1.2s ease-in-out infinite;
+}
+
+@keyframes barra-indeterminada-desliz {
+  0% { left: -40%; }
+  100% { left: 100%; }
+}
+
+/* `.retry-button` solo está definido dentro de `.state-message`; fuera de ahí queda sin estilo.
+   Esta es la acción principal del diálogo y necesita su propia clase. */
+.boton-primario {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.boton-primario:hover {
+  filter: brightness(1.1);
+}
+
+.union-ok {
+  color: var(--color-foreground);
+  font-weight: 500;
+}
+
+.union-errores {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.union-errores summary {
+  cursor: pointer;
+  color: var(--color-muted-foreground);
+}
+
+.union-errores ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* La columna de expandir sumó ancho a una tabla que ya iba justa a 1440 px y volvió a dejar
+   "Tiempo de atención" fuera de la vista. Se recupera espacio apretando el padding horizontal
+   de esta tabla concreta y acotando algo más el asunto, en vez de ensanchar el contenedor
+   (que en una pantalla de 1440 no daría más de sí). */
+.tabla-expedientes thead th,
+.tabla-expedientes tbody td {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+/* ── Chat sobre el corpus RAG (Fase 5) ──────────────────────────────────── */
+
+.chat-tarjeta {
+  max-width: 780px;
+  margin: 0 auto;
+}
+
+.chat-expediente-elegido {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  /* Antes lo separaba el `padding-bottom` de `.chat-modo`, que desapareció con las pestañas. */
+  margin-bottom: 12px;
+}
+
+.chat-aviso {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--badge-pendiente-bg);
+  color: var(--badge-pendiente-fg);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.chat-aviso p {
+  margin: 0;
+}
+
+.chat-aviso-boton {
+  flex: none;
+  white-space: nowrap;
+}
+
+.chat-lista {
+  list-style: none;
+  margin: 0;
+  padding: 4px 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 200px;
+  max-height: 55vh;
+  overflow-y: auto;
+  /* El scroll suave del auto-scroll no debe arrastrar a las citas que se despliegan arriba. */
+  overscroll-behavior: contain;
+}
+
+.chat-vacio {
+  margin: auto 0;
+  text-align: center;
+}
+
+.chat-mensaje {
+  padding: 10px 14px;
+  border-radius: 12px;
+  max-width: 85%;
+  animation: chat-entrada 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Solo el texto del mensaje conserva los saltos de línea. Cuando esto valía para todo `p`
+   descendiente, el markdown de las citas salía con sus `#` y sus saltos literales. */
+.chat-texto {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.chat-mensaje--user {
+  align-self: flex-end;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  border-bottom-right-radius: 4px;
+}
+
+.chat-mensaje--assistant {
+  align-self: flex-start;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-bottom-left-radius: 4px;
+  /* La respuesta necesita más ancho que la pregunta: lleva las citas colgando debajo. */
+  max-width: 94%;
+}
+
+/* ── Marcador [Dn] dentro del texto de la respuesta ── */
+
+.chat-marcador {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  margin: 0 1px;
+  border: 1px solid var(--color-primary);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  vertical-align: 1px;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.chat-marcador:hover,
+.chat-marcador:focus-visible {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+/* ── Citas ── */
+
+.chat-citas-bloque {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.chat-citas-titulo {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+}
+
+.chat-citas {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-citas-mas {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.chat-cita {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-muted);
+  overflow: hidden;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.chat-cita.is-abierta {
+  border-color: var(--color-primary);
+  box-shadow: 0 2px 10px rgb(30 64 175 / 0.12);
+}
+
+/* Recuperado pero no citado por el modelo: presente y verificable, visualmente en segundo plano. */
+.chat-cita--no-usada {
+  background: transparent;
+  border-style: dashed;
+}
+
+.chat-cita-cabecera {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.chat-cita-cabecera:hover {
+  background: rgb(30 64 175 / 0.06);
+}
+
+.chat-cita-marca {
+  flex: none;
+  min-width: 30px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.chat-cita--no-usada .chat-cita-marca {
+  background: var(--color-muted-foreground);
+}
+
+.chat-cita-titulo {
+  flex: 1;
+  min-width: 0; /* deja que el `text-overflow` de los hijos funcione dentro del flex */
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.chat-cita-ruta {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-cita-extracto {
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-cita-chevron {
+  flex: none;
+  color: var(--color-muted-foreground);
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chat-cita.is-abierta .chat-cita-chevron {
+  transform: rotate(180deg);
+}
+
+/* `0fr → 1fr` anima la altura automática sin que JS tenga que medir el contenido. */
+.chat-cita-plegado {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chat-cita.is-abierta .chat-cita-plegado {
+  grid-template-rows: 1fr;
+}
+
+.chat-cita-plegado-interior {
+  overflow: hidden;
+  min-height: 0; /* sin esto el hijo impone su alto y el 0fr no cierra */
+}
+
+.chat-cita-cuerpo {
+  padding: 0 12px 10px;
+  border-top: 1px solid var(--color-border);
+  margin-top: 2px;
+}
+
+.chat-cita-texto {
+  max-height: 260px;
+  overflow-y: auto;
+  /* Desvanece el corte inferior en vez de tajarlo: se ve que el fragmento sigue. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+
+.chat-cita-esqueleto {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.chat-cita-esqueleto .skeleton-block:nth-child(2) {
+  width: 88%;
+}
+
+.chat-cita-esqueleto .skeleton-block:nth-child(3) {
+  width: 62%;
+}
+
+.chat-cita-pie {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.chat-cita-abrir {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  font-size: 13px;
+}
+
+.chat-cita-tamano {
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+}
+
+/* ── Markdown del fragmento ── */
+
+.chunk-md {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-muted-foreground);
+}
+
+.chunk-md > :first-child {
+  margin-top: 10px;
+}
+
+.chunk-md p {
+  margin: 0 0 8px;
+}
+
+.chunk-md-h1,
+.chunk-md-h2 {
+  margin: 12px 0 6px;
+  color: var(--color-foreground);
+  line-height: 1.35;
+}
+
+.chunk-md-h1 {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.chunk-md-h2 {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.chunk-md-lista {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.chunk-md-lista li {
+  margin-bottom: 3px;
+}
+
+/* ── Indicador de respuesta en curso ── */
+
+.chat-escribiendo {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chat-punto {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-muted-foreground);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.chat-punto:nth-child(2) {
+  animation-delay: 160ms;
+}
+
+.chat-punto:nth-child(3) {
+  animation-delay: 320ms;
+}
+
+.chat-escribiendo-texto {
+  margin-left: 6px;
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+}
+
+/* ── Campo de entrada ── */
+
+.chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.chat-form textarea {
+  flex: 1;
+  min-height: 40px;
+  max-height: 132px; /* debe calzar con ALTO_MAX_ENTRADA de ChatPage.tsx */
+  padding: 9px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-card);
+  color: inherit;
+  font: inherit;
+  line-height: 1.4;
+  resize: none;
+  overflow-y: auto;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.chat-form textarea:focus {
+  outline: none;
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 3px rgb(30 64 175 / 0.15);
+}
+
+@keyframes chat-entrada {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-mensaje,
+  .chat-punto {
+    animation: none;
+  }
+
+  .chat-cita,
+  .chat-cita-cabecera,
+  .chat-cita-chevron,
+  .chat-cita-plegado,
+  .chat-marcador,
+  .chat-form textarea {
+    transition: none;
+  }
+}
+
+/* --- Calidad de procesos --- */
+
+.tabla-procesos tr.is-activo > td {
+  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-card));
+}
+
+.proceso-boton-seleccionar {
+  text-align: left;
+}
+
+.proceso-nombre--auto {
+  font-style: italic;
+}
+
+.proceso-edicion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.proceso-edicion input {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 14px;
+  min-width: 220px;
+}
+
+.flujo-cabecera h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.flujograma {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  margin: 20px 0;
+}
+
+.flujograma-nodo {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.flujograma-nodo-boton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 18px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.flujograma-nodo-boton:hover {
+  background: var(--color-background);
+}
+
+.flujograma-nodo-cabecera {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.flujograma-nodo-orden {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: 12px;
+  font-weight: 700;
+  flex: none;
+}
+
+.flujograma-nodo-nombre {
+  font-weight: 600;
+  color: var(--color-card-foreground);
+  font-size: 15px;
+}
+
+.flujograma-nodo-cobertura {
+  color: var(--color-muted-foreground);
+  font-size: 12.5px;
+}
+
+.flujograma-nodo-tiempo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.flujograma-barra {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-muted);
+  overflow: hidden;
+}
+
+.flujograma-barra-relleno {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-primary);
+}
+
+.flujograma-nodo-mediana {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-card-foreground);
+  white-space: nowrap;
+}
+
+.flujograma-detalle {
+  padding: 4px 18px 18px;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.flujograma-empleados h3 {
+  margin: 12px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-muted-foreground);
+}
+
+.tabla-empleados-nodo {
+  min-width: 0;
+}
+
+.tabla-empleados-nodo th,
+.tabla-empleados-nodo td {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.flujograma-conector {
+  display: flex;
+  justify-content: flex-start;
+  padding-left: 8px;
+}
+
+.flujograma-opcionales {
+  margin-top: 24px;
+}
+
+.flujograma-opcionales h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.propuesta-panel .rag-grid {
+  margin-bottom: 20px;
+}

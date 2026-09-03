@@ -1,0 +1,18 @@
+-- Reproceso por asunto — un mismo expediente pasa varias veces por la misma persona con ASUNTOS
+-- DISTINTOS (etapas normales del trámite), y hasta ahora eso contaba igual que volver sobre lo
+-- mismo. Con esta columna, `gruposReprocesados` (dashboardService.ts) solo marca un par
+-- (empleado, expediente) cuando al menos un asunto se REPITE dentro de ese par.
+--
+-- Se guarda ya normalizado (mayúsculas, sin tildes, espacios colapsados — ver `normalizarAsunto`
+-- en dashboardResumenService.ts): la comparación es por igualdad exacta contra esta columna, así
+-- que el criterio vive en un solo sitio y la consulta local no paga ninguna normalización.
+--
+-- `de_asu` YA se podía leer del SGD sin joins nuevos (`tdtv_remitos`, alias `a` en
+-- `leerParticipacionesSgd`, la misma tabla de la que ya salen co_dep_emi y co_tip_doc) — igual
+-- que en la migración 011.
+--
+-- NULL significa "el documento no traía asunto", y nunca marca reproceso: sin asunto no hay forma
+-- de saber si es el mismo trámite. Ojo al desplegar: hasta el primer refresco del espejo la
+-- columna está NULL en todas las filas y Reproceso sale 0 (se corrige solo en el refresco
+-- automático, o forzando POST /api/dashboard/resumen/refrescar).
+ALTER TABLE dashboard.participacion ADD COLUMN IF NOT EXISTS asunto_norm text;

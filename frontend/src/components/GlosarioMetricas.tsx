@@ -23,7 +23,10 @@ export type ClaveMetrica =
   | 'espera'
   | 'trabajo'
   | 'objetivoPercentil'
-  | 'backlogPendientes';
+  | 'backlogPendientes'
+  | 'mediana'
+  | 'p25'
+  | 'visitas';
 
 const DEFINICIONES: Record<ClaveMetrica, { termino: string; resumen: string; detalle?: string }> = {
   recibidos: {
@@ -123,6 +126,24 @@ const DEFINICIONES: Record<ClaveMetrica, { termino: string; resumen: string; det
     resumen: 'Recibidos que siguen sin respuesta HOY, sin límite de cuándo llegaron — distinto del "Pendientes" de "Por oficina"/"Por empleado", que sí se acota al período elegido.',
     detalle:
       'No cuenta los documentos informativos (copia, para conocimiento y fines, circular) ni los que quedaron abiertos en un expediente que después se archivó: en ambos casos ya no hay respuesta que esperar. Los buckets (0-7, 8-30, 31+ días) miden la antigüedad contra el momento actual, no contra un rango fijo.',
+  },
+  mediana: {
+    termino: 'Mediana',
+    resumen: 'El tiempo típico: la mitad de los casos tarda menos que este número, la mitad tarda más.',
+    detalle:
+      'A diferencia de un promedio, no lo distorsiona un caso excepcionalmente lento (ni uno excepcionalmente rápido) — por eso se usa acá en vez del promedio para describir "cuánto tarda esto normalmente".',
+  },
+  p25: {
+    termino: 'P25 (el 25% más rápido)',
+    resumen: 'El tiempo que ya logra uno de cada cuatro casos — no es un ideal teórico: ya se cumple hoy en una parte real del proceso, por eso sirve como meta alcanzable.',
+    detalle:
+      'Cuando aparece junto a "P75", ese segundo número es el mismo cálculo pero sobre el 75% más rápido: juntos delimitan dónde cae la mayoría de los casos, sin que unos pocos extremos (muy lentos o muy rápidos) estiren el rango.',
+  },
+  visitas: {
+    termino: 'Visitas',
+    resumen: 'Cuántas veces un expediente de este proceso pasó por esta oficina (o por esta persona) — no cuántos expedientes distintos.',
+    detalle:
+      'Si el mismo expediente vuelve dos veces a la misma oficina, cuenta como 2 visitas, no 1 — por eso puede ser mayor que la cantidad de expedientes que cubre el nodo: la cobertura cuenta expedientes distintos, las visitas cuentan cada paso, se repita o no el expediente.',
   },
 };
 

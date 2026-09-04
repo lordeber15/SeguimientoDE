@@ -21,6 +21,9 @@ export interface EstadoCorpus {
     sinTexto: number;
     error: number;
     noSoportado: number;
+    /** Candidatos al job "documentos largos" (conversionLargaService): atascados en un estado
+     *  terminal ANTES de existir el troceo por bloques, o que agotaron los reintentos después. */
+    largos: number;
   };
   expedientes: { total: number; completos: number };
   contenido: { unicos: number; convertidos: number; chunks: number; caracteres: number };
@@ -29,9 +32,10 @@ export interface EstadoCorpus {
 }
 
 export async function estadoCorpus(): Promise<EstadoCorpus> {
+  const umbralLargos = Number(process.env.RAG_PAGINAS_UMBRAL_TROCEO ?? 25);
   const [docs] = await appSequelize.query<{
     total: string; ok: string; convertidos: string; pendientes: string;
-    sin_texto: string; error: string; no_soportado: string;
+    sin_texto: string; error: string; no_soportado: string; largos: string;
   }>(
     `SELECT count(*)::text AS total,
             count(*) FILTER (WHERE estado='ok')::text AS ok,
@@ -39,9 +43,12 @@ export async function estadoCorpus(): Promise<EstadoCorpus> {
             count(*) FILTER (WHERE estado IN ('pendiente','en_proceso'))::text AS pendientes,
             count(*) FILTER (WHERE estado='sin_texto')::text AS sin_texto,
             count(*) FILTER (WHERE estado='error')::text AS error,
-            count(*) FILTER (WHERE estado='no_soportado')::text AS no_soportado
+            count(*) FILTER (WHERE estado='no_soportado')::text AS no_soportado,
+            count(*) FILTER (
+              WHERE estado IN ('pendiente','error','sin_texto') AND paginas > $1
+            )::text AS largos
        FROM rag.documento WHERE vigente`,
-    { type: QueryTypes.SELECT },
+    { bind: [umbralLargos], type: QueryTypes.SELECT },
   );
 
   const [exp] = await appSequelize.query<{ total: string; completos: string }>(
@@ -87,6 +94,7 @@ export async function estadoCorpus(): Promise<EstadoCorpus> {
       sinTexto: Number(docs.sin_texto),
       error: Number(docs.error),
       noSoportado: Number(docs.no_soportado),
+      largos: Number(docs.largos),
     },
     expedientes: { total: Number(exp.total), completos: Number(exp.completos) },
     contenido: {

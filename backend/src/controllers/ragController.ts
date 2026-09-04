@@ -27,6 +27,7 @@ import {
   IngestaError,
   iniciarJobConversion,
   iniciarJobEmbedding,
+  iniciarJobLargos,
   iniciarJobReparacion,
   listarJobs,
   pausarJob,
@@ -330,6 +331,20 @@ export async function postIngestaReparacion(req: Request, res: Response) {
     res.status(202).json({ jobId });
   } catch (error) {
     manejar(res, error, 'Error al iniciar la reparación');
+  }
+}
+
+/**
+ * Reintenta documentos largos que quedaron atascados en un estado terminal (`error`, `sin_texto`)
+ * o siguen `pendiente`: el troceo por bloques (`conversionLargaService`) se aplica igual desde
+ * cualquier job — este endpoint solo selecciona los que `documentosPendientes` ya no alcanza.
+ */
+export async function postIngestaLargos(req: Request, res: Response) {
+  try {
+    const { jobId } = await iniciarJobLargos(filtroDeBody(req.body), req.usuario!.codUser);
+    res.status(202).json({ jobId });
+  } catch (error) {
+    manejar(res, error, 'Error al iniciar la conversión de documentos largos');
   }
 }
 

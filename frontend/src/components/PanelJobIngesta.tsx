@@ -80,6 +80,24 @@ function useDesdeUltimoDato(job: JobIngesta, activo: boolean): number {
 }
 
 /**
+ * Tramo [inicio, fin] real de "convirtiendo" para EL BLOQUE actual de un documento troceado
+ * (conversionLargaService) — antes de repartir entre intento 1/2. Sin bloques (documento sin
+ * trocear, el caso de siempre), es el tramo completo sin cambios.
+ *
+ * No se dibuja una marca por cada bloque (podrían ser 20+ en un documento largo, y eso ensuciaría
+ * la barra más de lo que ayuda): esta función solo estrecha la base sobre la que ya se calculaban
+ * el porcentaje y el marcador de fallback, para que sigan siendo correctos DENTRO del bloque en
+ * curso en vez de fingir que ocupa todo el tramo de conversión.
+ */
+function tramoBloqueActual(proceso: ProcesoActualJob): readonly [number, number] {
+  const [inicio, fin] = TRAMOS.convirtiendo;
+  if (proceso.fase !== 'convirtiendo' || !proceso.bloques || proceso.bloques <= 1) return [inicio, fin];
+  const ancho = (fin - inicio) / proceso.bloques;
+  const desde = inicio + ancho * ((proceso.bloque ?? 1) - 1);
+  return [desde, desde + ancho];
+}
+
+/**
  * Porcentaje de la barra del documento. Dos garantías:
  *  - nunca rebasa el final de su tramo (`Math.min`): un documento colgado 45 minutos —ya pasó—
  *    se queda pegado al final de "convirtiendo", no invade "troceando" ni llega al 100 %;
@@ -91,11 +109,12 @@ function pctDocumento(proceso: ProcesoActualJob, msLocales: number): number | nu
   const tramo = proceso.fase && TRAMOS[proceso.fase];
   if (!tramo) return null; // fase ausente o desconocida ⇒ barra indeterminada
 
-  let [inicio, fin] = tramo;
+  let [inicio, fin] = proceso.fase === 'convirtiendo' ? tramoBloqueActual(proceso) : tramo;
 
-  // El tramo de conversión se reparte a partes iguales entre los intentos posibles: con respaldo
-  // configurado, el activo se queda la primera mitad y el respaldo la segunda, de modo que el
-  // salto al respaldo se VE como un salto y no como "sigue igual de lento".
+  // El tramo de conversión (del bloque actual, si lo hay) se reparte a partes iguales entre los
+  // intentos posibles: con respaldo configurado, el activo se queda la primera mitad y el
+  // respaldo la segunda, de modo que el salto al respaldo se VE como un salto y no como "sigue
+  // igual de lento".
   const intentos = proceso.intentos ?? 1;
   if (proceso.fase === 'convirtiendo' && intentos > 1) {
     const ancho = (fin - inicio) / intentos;
@@ -121,7 +140,7 @@ function marcasDeTramo(proceso: ProcesoActualJob): number[] {
   const puntos = [TRAMOS.descargando[1], TRAMOS.deduplicando[1], TRAMOS.convirtiendo[1], TRAMOS.troceando[1]];
   const intentos = proceso.intentos ?? 1;
   if (intentos > 1) {
-    const [inicio, fin] = TRAMOS.convirtiendo;
+    const [inicio, fin] = tramoBloqueActual(proceso);
     puntos.push(inicio + (fin - inicio) / intentos);
   }
   return puntos;
@@ -134,7 +153,7 @@ function tramoFallido(proceso: ProcesoActualJob): { izquierda: number; ancho: nu
   const intentos = proceso.intentos ?? 1;
   const intento = proceso.intento ?? 1;
   if (intentos <= 1 || intento <= 1) return null;
-  const [inicio, fin] = TRAMOS.convirtiendo;
+  const [inicio, fin] = tramoBloqueActual(proceso);
   const ancho = (fin - inicio) / intentos;
   return { izquierda: inicio, ancho: ancho * (intento - 1) };
 }
@@ -145,6 +164,10 @@ function detalleFase(proceso: ProcesoActualJob, msLocales: number): string | nul
 
   if (proceso.fase === 'convirtiendo') {
     const partes = [
+      proceso.bloques && proceso.bloques > 1 ? `bloque ${proceso.bloque} de ${proceso.bloques}` : null,
+      proceso.bloques && proceso.bloques > 1 && proceso.paginaDesde && proceso.paginaHasta
+        ? `páginas ${proceso.paginaDesde}–${proceso.paginaHasta}`
+        : null,
       proceso.intentos && proceso.intentos > 1 ? `intento ${proceso.intento} de ${proceso.intentos}` : null,
       proceso.intentos && proceso.intentos > 1 && proceso.intento === 2 ? 'respaldo' : null,
       limite ? `${Math.round(((proceso.faseMs ?? 0) + msLocales) / 1000)} s de máx. ${Math.round(limite / 1000)} s` : null,
@@ -189,7 +212,7 @@ export function PanelJobIngesta({
       </p>
 
       {(onPausar || onReanudar || onDetener)
-        && (job.tipo === 'conversion' || job.tipo === 'reparacion')
+        && (job.tipo === 'conversion' || job.tipo === 'reparacion' || job.tipo === 'largos')
         && (job.estado === 'en_curso' || job.estado === 'pausado') && (
         <div className="rag-job-controles">
           {job.estado === 'en_curso' && onPausar && (

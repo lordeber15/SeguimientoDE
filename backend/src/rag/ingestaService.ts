@@ -16,7 +16,9 @@ import {
   resolverDocumento,
   type ArchivoResuelto,
 } from '../services/storageService';
+import { contarPaginas } from '../services/pdfPaginasService';
 import { construirCabecera, trocear, type Chunk } from './chunkService';
+import { convertirPorBloques } from './conversionLargaService';
 import {
   activarModelo as _activarModelo,
   crearIndiceHnsw,
@@ -86,6 +88,11 @@ export interface ProgresoJob {
   intento: number;
   intentos: number;
   motivoFallback: string | null;
+  /** Troceo de documentos largos (conversionLargaService): null fuera de un documento troceado. */
+  bloque: number | null;
+  bloques: number | null;
+  paginaDesde: number | null;
+  paginaHasta: number | null;
 }
 
 const progresoEnVivo = new Map<number, ProgresoJob>();
@@ -130,6 +137,10 @@ export function anotarFase(jobId: number, documentoId: number, avance: AvanceFas
     intento: avance.intento ?? actual.intento,
     intentos: avance.intentos ?? actual.intentos,
     motivoFallback: avance.motivoFallback ?? actual.motivoFallback,
+    bloque: avance.bloque ?? null,
+    bloques: avance.bloques ?? null,
+    paginaDesde: avance.paginaDesde ?? null,
+    paginaHasta: avance.paginaHasta ?? null,
   });
 }
 
@@ -141,6 +152,20 @@ export function anotarFase(jobId: number, documentoId: number, avance: AvanceFas
  * job lo vuelve a coger.
  */
 const MAX_INTENTOS_SIN_ARCHIVO = 10;
+
+/**
+ * Tope de intentos para un fallo REINTENTABLE de conversión (timeout, red, circuito). Sin él, un
+ * documento que siempre tarda demasiado (o cuyo conversor está mal configurado para él) vuelve a
+ * `pendiente` en cada fallo y cada job futuro lo vuelve a coger — un bucle infinito que gasta el
+ * tiempo del timeout una y otra vez sin avanzar nunca. Al llegar al tope pasa a `error` terminal:
+ * sigue alcanzable por "Reparar recuperables" y por el job de documentos largos, ya no por la
+ * cola normal.
+ */
+const MAX_INTENTOS_CONVERSION = Number(process.env.RAG_MAX_INTENTOS_CONVERSION ?? 5);
+
+/** Nº de páginas a partir del cual `convertirDocumento` trocea el PDF en bloques antes de
+ *  convertir, en vez de mandarlo entero a markitdown/mineru — ver `conversionLargaService.ts`. */
+const PAGINAS_UMBRAL_TROCEO = Number(process.env.RAG_PAGINAS_UMBRAL_TROCEO ?? 25);
 
 async function documentosPendientes(filtro: FiltroIngesta): Promise<{ id: number }[]> {
   // Los `no_soportado` vuelven a la cola SIN filtrar por tipo: `co_tip_doc` es una copia que el
@@ -275,6 +300,64 @@ export async function iniciarJobReparacion(filtro: FiltroIngesta, actor: string)
   return { jobId };
 }
 
+/**
+ * Documentos largos (`paginas > PAGINAS_UMBRAL_TROCEO`) que quedaron atascados en un estado
+ * terminal ANTES de existir el troceo por bloques, o que agotaron `MAX_INTENTOS_CONVERSION`
+ * después. `convertirDocumento` trocea automáticamente cualquier documento largo sin importar qué
+ * job lo llame — este job existe solo para SELECCIONAR los que ya no aparecen en la cola normal:
+ * `documentosPendientes` no mira `error` ni `sin_texto`, y ninguno de los dos vuelve solo.
+ */
+async function documentosLargos(filtro: FiltroIngesta): Promise<{ id: number }[]> {
+  const binds: unknown[] = [PAGINAS_UMBRAL_TROCEO];
+  const condiciones = [
+    `estado IN ('pendiente', 'error', 'sin_texto')`,
+    'vigente',
+    `paginas > $1`,
+  ];
+
+  if (filtro.nuAnnExp && filtro.nuSecExp) {
+    binds.push(filtro.nuAnnExp, filtro.nuSecExp);
+    condiciones.push(`nu_ann_exp = $${binds.length - 1} AND nu_sec_exp = $${binds.length}`);
+  }
+  if (filtro.documentoIds && filtro.documentoIds.length > 0) {
+    binds.push(filtro.documentoIds);
+    condiciones.push(`id = ANY($${binds.length}::bigint[])`);
+  }
+
+  const limite = Math.min(filtro.limite ?? 500, 5000);
+  binds.push(limite);
+
+  return appSequelize.query<{ id: number }>(
+    `SELECT id FROM rag.documento WHERE ${condiciones.join(' AND ')} ORDER BY id LIMIT $${binds.length}`,
+    { bind: binds, type: QueryTypes.SELECT },
+  );
+}
+
+export async function iniciarJobLargos(filtro: FiltroIngesta, actor: string): Promise<{ jobId: number }> {
+  const documentos = await documentosLargos(filtro);
+  if (documentos.length === 0) {
+    throw new IngestaError('No hay documentos largos pendientes de reintentar con ese filtro', 404);
+  }
+
+  const [{ id: jobId }] = await appSequelize.query<{ id: number }>(
+    `INSERT INTO rag.ingest_job (tipo, estado, filtro, total, creado_por)
+     VALUES ('largos', 'en_curso', $1::jsonb, $2, $3) RETURNING id`,
+    { bind: [JSON.stringify(filtro), documentos.length, actor], type: QueryTypes.SELECT },
+  );
+
+  await appSequelize.query(
+    `INSERT INTO rag.ingest_item (job_id, documento_id)
+     SELECT $1, unnest($2::bigint[])`,
+    { bind: [jobId, documentos.map((d) => d.id)], type: QueryTypes.INSERT },
+  );
+
+  void ejecutarJobConversion(jobId).catch((error) => {
+    console.error(`ingesta: job de documentos largos ${jobId} falló:`, error);
+  });
+
+  return { jobId };
+}
+
 async function ejecutarJobConversion(jobId: number): Promise<void> {
   for (;;) {
     // Se comprueba ANTES de reclamar el siguiente ítem: pausar/detener nunca interrumpe el ítem en
@@ -322,10 +405,27 @@ async function ejecutarJobConversion(jobId: number): Promise<void> {
       intento: 1,
       intentos: 1,
       motivoFallback: null,
+      bloque: null,
+      bloques: null,
+      paginaDesde: null,
+      paginaHasta: null,
     });
 
     try {
-      await convertirDocumento(item.documento_id, (avance) => anotarFase(jobId, item.documento_id, avance));
+      await convertirDocumento(
+        item.documento_id,
+        (avance) => anotarFase(jobId, item.documento_id, avance),
+        // Renueva el lease al terminar cada bloque de un documento troceado: sin esto, un
+        // documento largo (varios minutos) vencería el lease de 10 min fijado al reclamar el
+        // ítem, y `reanudarJobsInterrumpidos()` lo reclamaría al arrancar estando perfectamente
+        // vivo — el mismo síntoma del bug #7, con otro disparador.
+        async () => {
+          await appSequelize.query(
+            `UPDATE rag.ingest_item SET lease_hasta = now() + interval '10 minutes' WHERE id = $1`,
+            { bind: [item.id], type: QueryTypes.UPDATE },
+          );
+        },
+      );
       await appSequelize.query(
         `UPDATE rag.ingest_item SET estado = 'ok', fe_fin = now() WHERE id = $1`,
         { bind: [item.id], type: QueryTypes.UPDATE },
@@ -361,7 +461,7 @@ async function ejecutarJobConversion(jobId: number): Promise<void> {
 export async function pausarJob(jobId: number): Promise<void> {
   const [fila] = await appSequelize.query<{ id: number }>(
     `UPDATE rag.ingest_job SET estado = 'pausado'
-      WHERE id = $1 AND estado = 'en_curso' AND tipo IN ('conversion', 'reparacion')
+      WHERE id = $1 AND estado = 'en_curso' AND tipo IN ('conversion', 'reparacion', 'largos')
       RETURNING id`,
     { bind: [jobId], type: QueryTypes.SELECT },
   );
@@ -371,7 +471,7 @@ export async function pausarJob(jobId: number): Promise<void> {
 export async function reanudarJob(jobId: number): Promise<void> {
   const [fila] = await appSequelize.query<{ id: number }>(
     `UPDATE rag.ingest_job SET estado = 'en_curso'
-      WHERE id = $1 AND estado = 'pausado' AND tipo IN ('conversion', 'reparacion')
+      WHERE id = $1 AND estado = 'pausado' AND tipo IN ('conversion', 'reparacion', 'largos')
       RETURNING id`,
     { bind: [jobId], type: QueryTypes.SELECT },
   );
@@ -385,7 +485,7 @@ export async function reanudarJob(jobId: number): Promise<void> {
 export async function cancelarJob(jobId: number): Promise<void> {
   const [fila] = await appSequelize.query<{ id: number }>(
     `UPDATE rag.ingest_job SET estado = 'cancelado', fe_fin = now()
-      WHERE id = $1 AND estado IN ('en_curso', 'pausado') AND tipo IN ('conversion', 'reparacion')
+      WHERE id = $1 AND estado IN ('en_curso', 'pausado') AND tipo IN ('conversion', 'reparacion', 'largos')
       RETURNING id`,
     { bind: [jobId], type: QueryTypes.SELECT },
   );
@@ -529,13 +629,16 @@ export interface FilaDocumento {
   co_tip_doc: string | null;
   estado: string;
   contenido_sha256: string | null;
+  /** Cuántas veces ya se intentó convertir — decide cuándo `convertirDocumento` deja de devolver
+   *  un fallo reintentable a `pendiente` y lo quema a `error` (`MAX_INTENTOS_CONVERSION`). */
+  intentos: number;
 }
 
 /** Fila cruda de `rag.documento`, con los campos que hacen falta para convertir o transcribir. */
 export async function filaDeDocumento(documentoId: number): Promise<FilaDocumento | undefined> {
   const [doc] = await appSequelize.query<FilaDocumento>(
     `SELECT d.id, d.nu_ann, d.nu_emi, d.nu_ane, d.titulo, d.co_tip_doc,
-            e.numero_sgd, d.de_dep_emi, d.fe_emi, d.asunto, d.estado, d.contenido_sha256
+            e.numero_sgd, d.de_dep_emi, d.fe_emi, d.asunto, d.estado, d.contenido_sha256, d.intentos
        FROM rag.documento d
        LEFT JOIN rag.expediente e ON e.nu_ann_exp = d.nu_ann_exp AND e.nu_sec_exp = d.nu_sec_exp
       WHERE d.id = $1`,
@@ -563,8 +666,16 @@ export async function obtenerBytesDocumento(
  * Convierte UN documento: obtiene bytes (reutiliza la cascada BD→disco de la Fase 1), calcula el
  * sha256, y si ya existe ese contenido (D3: dedup por archivo) solo enlaza — nunca vuelve a pasar
  * por markitdown. Si es nuevo: convierte, limpia y trocea.
+ *
+ * `onLatido`, si se pasa, se reenvía a `convertirPorBloques` para renovar el `lease_hasta` del
+ * ítem entre bloques de un documento largo — ver el comentario en `ejecutarJobConversion`. El
+ * camino sin trocear nunca lo necesita: termina dentro del lease de 10 min de siempre.
  */
-export async function convertirDocumento(documentoId: number, onFase?: ReportarFase): Promise<void> {
+export async function convertirDocumento(
+  documentoId: number,
+  onFase?: ReportarFase,
+  onLatido?: () => Promise<void>,
+): Promise<void> {
   const doc = await filaDeDocumento(documentoId);
   if (!doc) throw new IngestaError('El documento ya no existe en rag.documento', 404);
 
@@ -600,14 +711,33 @@ export async function convertirDocumento(documentoId: number, onFase?: ReportarF
     return;
   }
 
+  // Se cuenta ANTES de convertir (no depende de que la conversión salga bien) para que el job de
+  // "documentos largos" pueda encontrar este documento aunque acabe en `error` o `sin_texto`.
+  const paginas = await contarPaginas(buffer);
+  if (paginas !== null) {
+    await appSequelize.query('UPDATE rag.documento SET paginas = $2 WHERE id = $1', {
+      bind: [doc.id, paginas],
+      type: QueryTypes.UPDATE,
+    });
+  }
+
   let markdown: string;
   let ms: number;
   let metodo: string;
+  let advertencia: string | undefined;
   try {
     // markitdown detecta el tipo de archivo por la EXTENSIÓN del nombre (mineru, por el contenido
     // real): en ambos casos hay que pasarle el nombre real resuelto (con su .pdf/.docx/...), nunca
     // el título humano ("INFORME N° 29...", sin extensión), que ambos rechazan con 400.
-    ({ markdown, ms, metodo } = await convertirAMarkdownActivo(buffer, nombreArchivo, onFase));
+    //
+    // Documentos largos (paginas > umbral): se trocean en bloques ANTES de convertir, para que el
+    // documento entero deje de tener límite de tiempo sin que ninguna llamada HTTP individual
+    // pierda el suyo — ver conversionLargaService.ts.
+    const resultado = paginas !== null && paginas > PAGINAS_UMBRAL_TROCEO
+      ? await convertirPorBloques(buffer, nombreArchivo, onFase, onLatido)
+      : await convertirAMarkdownActivo(buffer, nombreArchivo, onFase);
+    ({ markdown, ms, metodo } = resultado);
+    advertencia = resultado.advertencia;
   } catch (error) {
     if (error instanceof ConversionError && !error.reintentable) {
       await marcarEstado(doc.id, 'error', error.motivo);
@@ -619,7 +749,21 @@ export async function convertirDocumento(documentoId: number, onFase?: ReportarF
     // huérfano en 'en_proceso' para siempre, invisible para cualquier job futuro, que solo mira
     // `estado = 'pendiente'`. Encontrado en producción: el circuito se abrió durante una prueba
     // manual y dejó 224 documentos así, sin ningún error visible en `rag.documento`.
-    await marcarEstadoPendiente(doc.id);
+    //
+    // Salvo que ya se hayan agotado los intentos: sin este tope, un documento que SIEMPRE tarda
+    // demasiado volvería a `pendiente` en cada fallo y cada job futuro lo recogería para repetir
+    // el mismo timeout, indefinidamente. Al tope, pasa a `error` terminal — reintentable solo a
+    // mano ("Reparar recuperables") o desde el job de documentos largos.
+    const motivo = motivoDe(error);
+    if (doc.intentos + 1 >= MAX_INTENTOS_CONVERSION) {
+      await marcarEstado(
+        doc.id,
+        'error',
+        `${motivo} (máximo de ${MAX_INTENTOS_CONVERSION} intentos alcanzado)`,
+      );
+    } else {
+      await marcarEstadoPendiente(doc.id, motivo);
+    }
     onFase?.({ fase: 'listo' });
     throw error;
   }
@@ -630,6 +774,7 @@ export async function convertirDocumento(documentoId: number, onFase?: ReportarF
     bytes: buffer.length,
     mime: mimePorNombre(nombreArchivo),
     ms,
+    advertencia,
   }, onFase);
 }
 
@@ -724,7 +869,16 @@ export async function guardarMarkdown(
   doc: FilaDocumento,
   sha256: string,
   markdown: string,
-  origen: { metodo: string; bytes: number; mime: string; ms: number },
+  origen: {
+    metodo: string;
+    bytes: number;
+    mime: string;
+    ms: number;
+    /** Solo la rellena un documento troceado con bloques fallidos (conversionLargaService): el
+     *  documento SÍ se guarda "convertido" (parcial > nada), pero esto queda en
+     *  `rag.documento.motivo_error` para que el hueco no sea invisible. */
+    advertencia?: string;
+  },
   onFase?: ReportarFase,
 ): Promise<void> {
   onFase?.({ fase: 'troceando' });
@@ -760,7 +914,13 @@ export async function guardarMarkdown(
   }
 
   onFase?.({ fase: 'guardando' });
-  await guardarChunksYMarcarConvertido(doc.id, sha256, cabeceraDe(doc), trocear(limpio.markdown));
+  await guardarChunksYMarcarConvertido(
+    doc.id,
+    sha256,
+    cabeceraDe(doc),
+    trocear(limpio.markdown),
+    origen.advertencia,
+  );
   onFase?.({ fase: 'listo' });
 }
 
@@ -784,6 +944,7 @@ async function guardarChunksYMarcarConvertido(
   sha256: string,
   cabecera: string,
   chunks: Chunk[],
+  advertencia?: string,
 ): Promise<void> {
   await appSequelize.transaction(async (tx) => {
     for (const chunk of chunks) {
@@ -809,9 +970,13 @@ async function guardarChunksYMarcarConvertido(
       { bind: [sha256, chunks.length], type: QueryTypes.UPDATE, transaction: tx },
     );
 
+    // `motivo_error` se pisa siempre (no solo cuando hay advertencia): si un reintento anterior
+    // dejó un motivo de fallo grabado y esta pasada sí convierte entero, dejarlo ahí sería mentir
+    // sobre un documento que ya está bien. Con troceo parcial, la advertencia de qué páginas
+    // faltan es justo lo que debe quedar visible pese a que el estado final sea 'convertido'.
     await appSequelize.query(
-      `UPDATE rag.documento SET contenido_sha256 = $2, estado = 'convertido' WHERE id = $1`,
-      { bind: [documentoId, sha256], type: QueryTypes.UPDATE, transaction: tx },
+      `UPDATE rag.documento SET contenido_sha256 = $2, estado = 'convertido', motivo_error = $3 WHERE id = $1`,
+      { bind: [documentoId, sha256, advertencia ?? null], type: QueryTypes.UPDATE, transaction: tx },
     );
   });
 }
@@ -827,11 +992,14 @@ async function marcarEstado(documentoId: number, estado: string, motivo?: string
  * Devuelve el documento a `pendiente` tras un fallo reintentable, SIN volver a incrementar
  * `intentos`: el intento ya se contó al marcar `en_proceso` al principio de `convertirDocumento`;
  * contarlo de nuevo aquí duplicaría el número por cada fallo transitorio.
+ *
+ * `motivo` se guarda igual (antes se perdía): es lo único que explica, en la lista de documentos,
+ * por qué uno que se ve "pendiente" en realidad ya falló una vez.
  */
-async function marcarEstadoPendiente(documentoId: number): Promise<void> {
+async function marcarEstadoPendiente(documentoId: number, motivo?: string): Promise<void> {
   await appSequelize.query(
-    `UPDATE rag.documento SET estado = 'pendiente' WHERE id = $1`,
-    { bind: [documentoId], type: QueryTypes.UPDATE },
+    `UPDATE rag.documento SET estado = 'pendiente', motivo_error = $2 WHERE id = $1`,
+    { bind: [documentoId, motivo ?? null], type: QueryTypes.UPDATE },
   );
 }
 
@@ -1107,6 +1275,10 @@ export async function estadoJob(jobId: number) {
       intento: proceso.intento,
       intentos: proceso.intentos,
       motivoFallback: proceso.motivoFallback,
+      bloque: proceso.bloque,
+      bloques: proceso.bloques,
+      paginaDesde: proceso.paginaDesde,
+      paginaHasta: proceso.paginaHasta,
     },
   };
 }

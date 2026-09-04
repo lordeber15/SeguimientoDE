@@ -15,6 +15,7 @@ import {
   type DocumentoExpediente,
 } from './documentoService';
 import { esGenerable, generarDocumentoPdf } from './documentoGeneradoService';
+import { cargarPdf } from './pdfPaginasService';
 import { resolverAnexo, resolverDocumento, resolverNombreAnexo } from './storageService';
 
 /**
@@ -415,19 +416,6 @@ async function obtenerBufferPdf(doc: DocumentoExpediente): Promise<Buffer> {
 
   const fila = await getArchivoDoc(doc.nuAnn, doc.nuEmi);
   return resolverDocumento(doc.nuAnn, doc.nuEmi, fila).buffer;
-}
-
-async function cargarPdf(buffer: Buffer): Promise<PdfLib> {
-  // La cabecera %PDF- no siempre está en el offset 0: algunos archivos del SGD traen basura delante.
-  if (!buffer.subarray(0, 1024).includes('%PDF-')) {
-    throw new Error('El archivo no es un PDF');
-  }
-
-  try {
-    return await PdfLib.load(buffer, { ignoreEncryption: true });
-  } catch {
-    throw new Error('PDF corrupto o cifrado');
-  }
 }
 
 // ── Anexos ───────────────────────────────────────────────────────────────────

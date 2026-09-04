@@ -74,6 +74,14 @@ export interface AvanceFase {
   intentos?: number;
   /** Por qué se cayó al respaldo. Solo se rellena al ENTRAR al intento 2. */
   motivoFallback?: string | null;
+  /**
+   * Troceo de documentos largos (conversionLargaService.ts): un eje más dentro del mismo tramo
+   * `convirtiendo`/`generando`, no una fase nueva — un documento corto nunca los rellena.
+   */
+  bloque?: number;
+  bloques?: number;
+  paginaDesde?: number;
+  paginaHasta?: number;
 }
 
 /**

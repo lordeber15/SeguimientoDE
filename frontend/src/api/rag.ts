@@ -4,7 +4,7 @@ export interface PanelRag {
   corpus: {
     documentos: {
       total: number; ok: number; convertidos: number; pendientes: number;
-      sinTexto: number; error: number; noSoportado: number;
+      sinTexto: number; error: number; noSoportado: number; largos: number;
     };
     expedientes: { total: number; completos: number };
     contenido: { unicos: number; convertidos: number; chunks: number; caracteres: number };
@@ -96,6 +96,12 @@ export interface ProcesoActualJob {
   /** 1 sin respaldo configurado, 2 con él. */
   intentos?: number;
   motivoFallback?: string | null;
+  /** Troceo de documentos largos (conversionLargaService): `null`/`undefined` fuera de un
+   *  documento troceado, igual de opcionales que el resto por la misma razón de compatibilidad. */
+  bloque?: number | null;
+  bloques?: number | null;
+  paginaDesde?: number | null;
+  paginaHasta?: number | null;
 }
 
 export interface JobIngesta {
@@ -205,6 +211,19 @@ export function extraerConVision(id: number): Promise<{ documento: DocumentoRag 
  */
 export function iniciarIngestaReparacion(filtro: FiltroIngesta = {}): Promise<{ jobId: number }> {
   return apiJson('/api/rag/ingesta/reparacion', 'iniciar la reparación', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(filtro),
+  });
+}
+
+/**
+ * Reintenta documentos largos atascados en un estado terminal (`error`, `sin_texto`) o que siguen
+ * `pendiente` — el troceo por bloques se aplica igual desde cualquier job; este solo selecciona
+ * los que la conversión normal ya no vuelve a alcanzar.
+ */
+export function iniciarIngestaLargos(filtro: FiltroIngesta = {}): Promise<{ jobId: number }> {
+  return apiJson('/api/rag/ingesta/largos', 'iniciar la conversión de documentos largos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(filtro),

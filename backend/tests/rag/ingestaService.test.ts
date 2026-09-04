@@ -85,6 +85,20 @@ jest.mock('../../src/rag/estadoService', () => ({
   documentoPorId: (...a: unknown[]) => documentoPorId(...a),
 }));
 
+// Documentos largos (conversionLargaService): se mockean ambos como una unidad — lo que se
+// prueba aquí es que `convertirDocumento` ENRUTA correctamente según `paginas` (real vs. bloques),
+// no el troceo en sí (eso vive en conversionLargaService.test.ts, con un PDF real).
+const contarPaginas = jest.fn();
+const convertirPorBloques = jest.fn();
+
+jest.mock('../../src/services/pdfPaginasService', () => ({
+  contarPaginas: (...a: unknown[]) => contarPaginas(...a),
+}));
+
+jest.mock('../../src/rag/conversionLargaService', () => ({
+  convertirPorBloques: (...a: unknown[]) => convertirPorBloques(...a),
+}));
+
 type Ingesta = typeof import('../../src/rag/ingestaService');
 let ingesta: Ingesta;
 // `jest.isolateModules` da a `ingestaService.ts` su propio registro de módulos, así que la clase
@@ -127,6 +141,8 @@ beforeEach(() => {
   convertirAMarkdownMinerU.mockReset();
   documentoPorId.mockReset();
   process.env.RAG_CONVERTER_FALLBACK = 'ninguno';
+  contarPaginas.mockReset().mockResolvedValue(null); // por defecto: "no es un PDF" ⇒ camino normal
+  convertirPorBloques.mockReset();
 });
 
 describe('iniciarJobEmbedding — barreras antes de gastar un solo token', () => {
@@ -211,7 +227,7 @@ describe('iniciarJobEmbedding — barreras antes de gastar un solo token', () =>
 interface FilaDocFixture {
   id: number; nu_ann: string; nu_emi: string; nu_ane: number; titulo: string | null;
   numero_sgd: string | null; de_dep_emi: string | null; fe_emi: string | null;
-  asunto: string | null; co_tip_doc: string | null;
+  asunto: string | null; co_tip_doc: string | null; intentos: number;
 }
 
 function filaDocumento(over: Partial<FilaDocFixture> = {}): FilaDocFixture {
@@ -226,6 +242,7 @@ function filaDocumento(over: Partial<FilaDocFixture> = {}): FilaDocFixture {
     fe_emi: '2026-01-01',
     asunto: 'Asunto de prueba',
     co_tip_doc: '001',
+    intentos: 0,
     ...over,
   };
 }
@@ -627,6 +644,173 @@ describe('convertirDocumento — un reintento SÍ vuelve a intentar la conversi�
     await ingesta.convertirDocumento(fila.id);
 
     expect(convertirAMarkdown).toHaveBeenCalled();
+  });
+});
+
+describe('convertirDocumento — troceo de documentos largos (enrutado, no el troceo en sí)', () => {
+  it('bajo el umbral de páginas, usa el camino normal y nunca llama a convertirPorBloques', async () => {
+    const fila = filaDocumento({ co_tip_doc: '232' });
+    mockQueryGenerico(fila);
+    getArchivoDoc.mockResolvedValue({});
+    resolverDocumento.mockReturnValue({ buffer: Buffer.from('contenido'), filename: 'x.pdf' });
+    contarPaginas.mockResolvedValue(5); // muy por debajo del umbral por defecto (25)
+    convertirAMarkdown.mockResolvedValue({ markdown: 'z'.repeat(300), ms: 100 });
+
+    await ingesta.convertirDocumento(fila.id);
+
+    expect(convertirAMarkdown).toHaveBeenCalled();
+    expect(convertirPorBloques).not.toHaveBeenCalled();
+  });
+
+  it('sobre el umbral, trocea con convertirPorBloques (nunca llama al conversor directo) y persiste las páginas', async () => {
+    const fila = filaDocumento({ co_tip_doc: '232' });
+    mockQueryGenerico(fila);
+    getArchivoDoc.mockResolvedValue({});
+    resolverDocumento.mockReturnValue({ buffer: Buffer.from('contenido'), filename: 'x.pdf' });
+    contarPaginas.mockResolvedValue(120); // muy por encima del umbral por defecto (25)
+    convertirPorBloques.mockResolvedValue({ markdown: 'z'.repeat(300), ms: 5000, metodo: 'markitdown-bloques' });
+
+    await ingesta.convertirDocumento(fila.id);
+
+    expect(convertirPorBloques).toHaveBeenCalledWith(expect.any(Buffer), 'x.pdf', undefined, undefined);
+    expect(convertirAMarkdown).not.toHaveBeenCalled();
+
+    const guardaPaginas = query.mock.calls.find(([sql]: [string]) => sql.includes('SET paginas = $2'));
+    expect(guardaPaginas).toBeDefined();
+    expect((guardaPaginas![1] as { bind: unknown[] }).bind).toEqual([fila.id, 120]);
+  });
+
+  it('reenvía onLatido a convertirPorBloques, para renovar el lease entre bloques', async () => {
+    const fila = filaDocumento({ co_tip_doc: '232' });
+    mockQueryGenerico(fila);
+    getArchivoDoc.mockResolvedValue({});
+    resolverDocumento.mockReturnValue({ buffer: Buffer.from('contenido'), filename: 'x.pdf' });
+    contarPaginas.mockResolvedValue(120);
+    convertirPorBloques.mockResolvedValue({ markdown: 'z'.repeat(300), ms: 5000, metodo: 'markitdown-bloques' });
+    const onLatido = jest.fn().mockResolvedValue(undefined);
+
+    await ingesta.convertirDocumento(fila.id, undefined, onLatido);
+
+    expect(convertirPorBloques).toHaveBeenCalledWith(expect.any(Buffer), 'x.pdf', undefined, onLatido);
+  });
+
+  it('un troceo con bloques parciales deja el documento "convertido", con la advertencia como motivo', async () => {
+    const fila = filaDocumento({ co_tip_doc: '232' });
+    mockQueryGenerico(fila);
+    getArchivoDoc.mockResolvedValue({});
+    resolverDocumento.mockReturnValue({ buffer: Buffer.from('contenido'), filename: 'x.pdf' });
+    contarPaginas.mockResolvedValue(120);
+    convertirPorBloques.mockResolvedValue({
+      markdown: 'z'.repeat(300),
+      ms: 5000,
+      metodo: 'markitdown-bloques',
+      advertencia: '1 de 8 bloques no se pudieron convertir (páginas: 46-60)',
+    });
+
+    await ingesta.convertirDocumento(fila.id);
+
+    const marcaConvertido = query.mock.calls.find(([sql]: [string]) => sql.includes("estado = 'convertido'"));
+    expect(marcaConvertido).toBeDefined();
+    expect((marcaConvertido![1] as { bind: unknown[] }).bind).toContain(
+      '1 de 8 bloques no se pudieron convertir (páginas: 46-60)',
+    );
+  });
+});
+
+describe('convertirDocumento — tope de reintentos ante un fallo reintentable', () => {
+  it('por debajo del tope, un fallo reintentable vuelve a pendiente con el motivo guardado', async () => {
+    const fila = filaDocumento({ co_tip_doc: '232', intentos: 0 });
+    mockQueryGenerico(fila);
+    getArchivoDoc.mockResolvedValue({});
+    resolverDocumento.mockReturnValue({ buffer: Buffer.from('contenido'), filename: 'x.pdf' });
+    convertirAMarkdown.mockRejectedValue(new ConversionErrorIsolado('markitdown no responde', true));
+
+    await expect(ingesta.convertirDocumento(fila.id)).rejects.toThrow('markitdown no responde');
+
+    const pendiente = query.mock.calls.find(([sql]: [string]) => sql.includes("SET estado = 'pendiente'"));
+    expect(pendiente).toBeDefined();
+    expect((pendiente![1] as { bind: unknown[] }).bind).toEqual([fila.id, 'markitdown no responde']);
+  });
+
+  /** `intentos` en la fila viene de ANTES de esta pasada; `marcarEstado('en_proceso')` ya sumó 1 al
+   *  entrar a `convertirDocumento` — con `intentos: 4` en la fila, este es el 5º intento real. */
+  it('al agotar MAX_INTENTOS_CONVERSION (5), el documento pasa a error terminal, no a pendiente', async () => {
+    const fila = filaDocumento({ co_tip_doc: '232', intentos: 4 });
+    mockQueryGenerico(fila);
+    getArchivoDoc.mockResolvedValue({});
+    resolverDocumento.mockReturnValue({ buffer: Buffer.from('contenido'), filename: 'x.pdf' });
+    convertirAMarkdown.mockRejectedValue(new ConversionErrorIsolado('markitdown no responde', true));
+
+    await expect(ingesta.convertirDocumento(fila.id)).rejects.toThrow('markitdown no responde');
+
+    const pendiente = query.mock.calls.find(([sql]: [string]) => sql.includes("SET estado = 'pendiente'"));
+    expect(pendiente).toBeUndefined();
+
+    const marcaError = llamadasMarcarEstado().find(
+      ([, opts]: [string, { bind: unknown[] }]) => opts.bind[1] === 'error',
+    );
+    expect(marcaError).toBeDefined();
+    expect((marcaError![1] as { bind: unknown[] }).bind[2]).toMatch(/máximo de 5 intentos alcanzado/);
+  });
+});
+
+describe('ejecutarJobConversion — renueva el lease del ítem entre bloques de un documento troceado', () => {
+  async function flush(vueltas = 15) {
+    for (let i = 0; i < vueltas; i++) await new Promise((r) => setImmediate(r));
+  }
+
+  it('cada bloque completado renueva lease_hasta, no solo el reclamo inicial del ítem', async () => {
+    const JOB_ID = 60;
+    const fila = filaDocumento({ id: 601, co_tip_doc: '232' });
+    let itemClaimado = false;
+    const renovaciones: unknown[] = [];
+
+    query.mockImplementation((sql: string, opts?: { bind?: unknown[] }) => {
+      if (sql.includes('FROM rag.documento WHERE')) return Promise.resolve([{ id: fila.id }]);
+      if (sql.includes('INSERT INTO rag.ingest_job')) return Promise.resolve([{ id: JOB_ID }]);
+      if (sql.includes('INSERT INTO rag.ingest_item')) return Promise.resolve([]);
+      if (sql.includes('SELECT estado FROM rag.ingest_job WHERE id')) return Promise.resolve([{ estado: 'en_curso' }]);
+      if (sql.includes('SELECT id, documento_id FROM rag.ingest_item')) {
+        if (itemClaimado) return Promise.resolve([]);
+        itemClaimado = true;
+        return Promise.resolve([{ id: 1, documento_id: fila.id }]);
+      }
+      if (sql.includes('FROM rag.documento d') && sql.includes('LEFT JOIN rag.expediente e')) {
+        return Promise.resolve([fila]);
+      }
+      // Distinta del UPDATE de reclamo (que también fija estado='en_proceso' además del lease): solo
+      // esta es la renovación PURA que se dispara desde `onLatido`, una vez por bloque.
+      if (sql.includes("SET lease_hasta = now() + interval '10 minutes' WHERE id = $1")) {
+        renovaciones.push(opts?.bind);
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+    transaction.mockImplementation((cb: (tx: unknown) => Promise<unknown>) => cb({}));
+    documentoPorId.mockResolvedValue(documentoRagFixture({ id: fila.id, titulo: 'DOCUMENTO LARGO' }));
+    getArchivoDoc.mockResolvedValue({});
+    resolverDocumento.mockReturnValue({ buffer: Buffer.from('contenido'), filename: 'x.pdf' });
+    contarPaginas.mockResolvedValue(120);
+    // Simula un troceo de 3 bloques: cada uno dispara un latido antes de que la conversión resuelva.
+    convertirPorBloques.mockImplementation(
+      async (_b: Buffer, _f: string, _onFase: unknown, onLatido?: () => Promise<void>) => {
+        if (onLatido) {
+          await onLatido();
+          await onLatido();
+          await onLatido();
+        }
+        return { markdown: 'z'.repeat(300), ms: 5000, metodo: 'markitdown-bloques' };
+      },
+    );
+
+    await ingesta.iniciarJobConversion({}, 'admin');
+    // Más vueltas que el resto del archivo: el troceo por bloques mete varios `await` extra
+    // (contarPaginas, la persistencia de `paginas`, y un latido por bloque) antes de que el job
+    // pueda terminar de procesar el único ítem.
+    await flush(40);
+
+    expect(renovaciones).toHaveLength(3);
+    expect(renovaciones[0]).toEqual([1]); // item.id = 1, fijado en el mock de reclamo
   });
 });
 

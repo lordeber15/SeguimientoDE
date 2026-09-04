@@ -14,6 +14,7 @@ import {
   postGC,
   postIngestaConversion,
   postIngestaEmbedding,
+  postIngestaLargos,
   postIngestaReparacion,
   postModeloRegistrar,
   postPausarJob,
@@ -42,6 +43,7 @@ router.put('/config/:clave', requierePermiso('rag.gestionar'), putConfig);
 
 router.post('/ingesta/conversion', requierePermiso('rag.gestionar'), postIngestaConversion);
 router.post('/ingesta/reparacion', requierePermiso('rag.gestionar'), postIngestaReparacion);
+router.post('/ingesta/largos', requierePermiso('rag.gestionar'), postIngestaLargos);
 router.post('/ingesta/embeddings', requierePermiso('rag.gestionar'), postIngestaEmbedding);
 router.post('/ingesta/:jobId/pausar', requierePermiso('rag.gestionar'), postPausarJob);
 router.post('/ingesta/:jobId/reanudar', requierePermiso('rag.gestionar'), postReanudarJob);

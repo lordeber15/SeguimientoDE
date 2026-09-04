@@ -23,8 +23,14 @@ export type { ProveedorConversion };
 export interface ResultadoConversionConMetodo extends ResultadoConversion {
   /** Quién consiguió el markdown DE VERDAD — no siempre el proveedor activo, si hubo respaldo.
    *  Es lo que se guarda en `rag.contenido.metodo`, así que la columna "Método" del panel mide
-   *  directamente cuánto está rescatando el fallback. */
-  metodo: ProveedorConversion;
+   *  directamente cuánto está rescatando el fallback. `string` (no `ProveedorConversion`) porque
+   *  `conversionLargaService` reetiqueta el proveedor ganador con el sufijo "-bloques"; en el resto
+   *  del código sigue siendo texto libre de exhibición, nunca algo sobre lo que se hace `switch`. */
+  metodo: string;
+  /** Solo la rellena `conversionLargaService`: cuántos bloques de un documento troceado no se
+   *  pudieron convertir. El documento SÍ se guarda igual (parcial > nada), pero esto se propaga a
+   *  `rag.documento.motivo_error` para que no quede invisible. */
+  advertencia?: string;
 }
 
 export function proveedorConversionActivo(): ProveedorConversion {

@@ -14,6 +14,7 @@ import {
   fetchPanel,
   iniciarIngestaConversion,
   iniciarIngestaEmbeddings,
+  iniciarIngestaLargos,
   iniciarIngestaReparacion,
   type JobIngesta,
   type PanelRag,
@@ -187,6 +188,16 @@ export function RagPanelPage() {
       setJobIdFiltro(jobId);
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : 'No se pudo iniciar la reparación');
+    }
+  }
+
+  async function largos() {
+    try {
+      const { jobId } = await iniciarIngestaLargos({ limite: 500 });
+      setJobActivo(await fetchJob(jobId));
+      setJobIdFiltro(jobId);
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'No se pudo iniciar la conversión de documentos largos');
     }
   }
 
@@ -408,6 +419,21 @@ export function RagPanelPage() {
                 {panel.proveedores.conversion.proveedorRespaldo
                   && ` (con ${panel.proveedores.conversion.proveedorRespaldo} de respaldo)`}.{' '}
                 <strong>Nunca llama a ChatGPT: no consume tokens.</strong>
+              </p>
+            </div>
+            <div>
+              <button
+                className="boton-secundario"
+                onClick={largos}
+                disabled={(!!jobActivo && jobActivo.estado === 'en_curso') || documentos.largos === 0}
+              >
+                Convertir documentos largos
+              </button>
+              <p className="exp-nota">
+                Reintenta los {documentos.largos} documento(s) de muchas páginas que quedaron
+                atascados por el límite de tiempo del conversor: se trocean en bloques de pocas
+                páginas cada uno para que el documento entero deje de tener límite, sin que
+                ninguna llamada individual pierda el suyo.
               </p>
             </div>
           </div>

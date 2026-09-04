@@ -90,8 +90,21 @@ export interface ProgresoJob {
 
 const progresoEnVivo = new Map<number, ProgresoJob>();
 
+/**
+ * `rag.ingest_job.id` es `bigint`: el driver `pg` lo devuelve como STRING en cualquier consulta
+ * cruda (sin `setTypeParser` para el OID 20, que este proyecto no registra — a propósito, para no
+ * arriesgar precisión en un id que sí puede superar `Number.MAX_SAFE_INTEGER`). `jobId` llega aquí
+ * unas veces como ese string ("50", desde un `RETURNING id` recién insertado) y otras como number
+ * (`Number(req.params.jobId)` en el controlador). Sin normalizar, `Map.get(50) !== Map.get("50")`
+ * y `procesoActual` sale `null` SIEMPRE, por más que el loop esté escribiendo de verdad — así
+ * estuvo desde el `progresoEnVivo` original, antes de que existieran las fases.
+ */
+function clave(jobId: number): number {
+  return Number(jobId);
+}
+
 export function progresoJob(jobId: number): ProgresoJob | null {
-  return progresoEnVivo.get(jobId) ?? null;
+  return progresoEnVivo.get(clave(jobId)) ?? null;
 }
 
 /**
@@ -105,10 +118,10 @@ export function progresoJob(jobId: number): ProgresoJob | null {
  * está en marcha ahora y la barra retrocedería sin explicación.
  */
 export function anotarFase(jobId: number, documentoId: number, avance: AvanceFase): void {
-  const actual = progresoEnVivo.get(jobId);
+  const actual = progresoEnVivo.get(clave(jobId));
   if (!actual || actual.documentoId !== documentoId) return;
 
-  progresoEnVivo.set(jobId, {
+  progresoEnVivo.set(clave(jobId), {
     ...actual,
     fase: avance.fase,
     faseDesde: Date.now(),
@@ -272,7 +285,7 @@ async function ejecutarJobConversion(jobId: number): Promise<void> {
       { bind: [jobId], type: QueryTypes.SELECT },
     );
     if (filaJob?.estado !== 'en_curso') {
-      progresoEnVivo.delete(jobId);
+      progresoEnVivo.delete(clave(jobId));
       return;
     }
 
@@ -298,7 +311,7 @@ async function ejecutarJobConversion(jobId: number): Promise<void> {
     if (!item) break;
 
     const docActual = await documentoPorId(item.documento_id);
-    progresoEnVivo.set(jobId, {
+    progresoEnVivo.set(clave(jobId), {
       documentoId: item.documento_id,
       titulo: docActual?.titulo ?? null,
       desde: Date.now(),
@@ -330,7 +343,7 @@ async function ejecutarJobConversion(jobId: number): Promise<void> {
     await new Promise((r) => setImmediate(r));
   }
 
-  progresoEnVivo.delete(jobId);
+  progresoEnVivo.delete(clave(jobId));
   await appSequelize.query(
     `UPDATE rag.ingest_job SET estado = 'completado', fe_fin = now() WHERE id = $1 AND estado = 'en_curso'`,
     { bind: [jobId], type: QueryTypes.UPDATE },

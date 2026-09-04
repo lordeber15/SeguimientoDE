@@ -770,6 +770,54 @@ describe('ejecutarJobConversion — respeta una pausa/cancelación que llega ent
     await flush();
   });
 
+  it('progresoJob encuentra el job aunque el id llegue como string, como lo devuelve pg para bigint', async () => {
+    // `rag.ingest_job.id` es bigint: sin `setTypeParser` para el OID 20 (y este proyecto no lo
+    // registra, a propósito, para no arriesgar precisión con ids que superen
+    // Number.MAX_SAFE_INTEGER), `pg` devuelve el `RETURNING id` de un INSERT crudo como STRING, no
+    // como number — verificado contra la base real, no es una suposición. El controlador HTTP, en
+    // cambio, hace `Number(req.params.jobId)` antes de llamar a `estadoJob`. Sin normalizar la
+    // clave dentro de este módulo, `progresoEnVivo.set("47", …)` y `progresoEnVivo.get(47)` nunca
+    // coinciden y `procesoActual` sale `null` siempre, por más que el loop esté progresando de
+    // verdad — así estuvo desde el `progresoEnVivo` original, antes de que existieran las fases.
+    const JOB_ID = 47;
+    const fila = filaDocumento({ id: 504 });
+    let resolverArchivo!: (v: unknown) => void;
+    const archivoPendiente = new Promise((r) => { resolverArchivo = r; });
+    let itemClaimado = false;
+
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('FROM rag.documento WHERE')) return Promise.resolve([{ id: fila.id }]);
+      // El propio mock reproduce el bigint-como-string: la fila del INSERT trae el id en texto.
+      if (sql.includes('INSERT INTO rag.ingest_job')) return Promise.resolve([{ id: String(JOB_ID) }]);
+      if (sql.includes('INSERT INTO rag.ingest_item')) return Promise.resolve([]);
+      if (sql.includes('SELECT estado FROM rag.ingest_job WHERE id')) return Promise.resolve([{ estado: 'en_curso' }]);
+      if (sql.includes('SELECT id, documento_id FROM rag.ingest_item')) {
+        if (itemClaimado) return Promise.resolve([]);
+        itemClaimado = true;
+        return Promise.resolve([{ id: 1, documento_id: fila.id }]);
+      }
+      if (sql.includes('FROM rag.documento d') && sql.includes('LEFT JOIN rag.expediente e')) {
+        return Promise.resolve([fila]);
+      }
+      return Promise.resolve([]);
+    });
+    transaction.mockImplementation((cb: (tx: unknown) => Promise<unknown>) => cb({}));
+    documentoPorId.mockResolvedValue(documentoRagFixture({ id: fila.id, titulo: 'CON ID STRING' }));
+    getArchivoDoc.mockReturnValue(archivoPendiente);
+
+    await ingesta.iniciarJobConversion({}, 'admin');
+    await flush();
+
+    // Se consulta con el NUMBER que usaría `getJob` (`Number(req.params.jobId)`), no con el string
+    // que trae el mock del INSERT — es justo el cruce de tipos que rompía el Map.
+    const proceso = ingesta.progresoJob(JOB_ID);
+    expect(proceso?.documentoId).toBe(fila.id);
+    expect(proceso?.fase).toBe('descargando');
+
+    resolverArchivo({});
+    await flush();
+  });
+
   it('anotarFase ignora un aviso cuyo documentoId no es el que el job tiene en curso ahora mismo', async () => {
     const JOB_ID = 46;
     const fila = filaDocumento({ id: 503 });

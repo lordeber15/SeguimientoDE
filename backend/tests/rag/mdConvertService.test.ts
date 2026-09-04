@@ -198,3 +198,87 @@ describe('convertirAMarkdown — de quién es la culpa según el código HTTP', 
     expect((await motivoDe(status)).reintentable).toBe(false);
   });
 });
+
+/**
+ * `onFase` es lo que alimenta la barra de progreso por documento del panel de trabajos: sin estos
+ * avisos, el frontend no tiene forma de distinguir "convirtiendo" de "esperando al circuito" ni de
+ * saber contra qué tope interpolar. Aislado por el mismo motivo que los bloques anteriores: el
+ * circuito es estado de módulo compartido.
+ */
+describe('convertirAMarkdown — reporte de fases para la barra de progreso', () => {
+  it('TOPE_CONVERSION_MS es el timeout más el margen del límite duro', () => {
+    expect(md.TOPE_CONVERSION_MS).toBe(180_000 + 15_000);
+  });
+
+  it('con el circuito cerrado reporta "en_cola_conversor" y luego "convirtiendo" con su tope', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ markdown: 'x' }),
+    }) as unknown as typeof fetch;
+
+    const fases: unknown[] = [];
+    await md.convertirAMarkdown(Buffer.from('x'), 'doc.pdf', (avance) => fases.push(avance));
+
+    expect(fases).toEqual([
+      { fase: 'en_cola_conversor', proveedor: 'markitdown', limiteMs: null },
+      { fase: 'convirtiendo', proveedor: 'markitdown', limiteMs: md.TOPE_CONVERSION_MS },
+    ]);
+  });
+
+  it('no reventar sin onFase: sigue funcionando igual que antes de que existiera', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ markdown: 'sin observador' }),
+    }) as unknown as typeof fetch;
+
+    const resultado = await md.convertirAMarkdown(Buffer.from('x'), 'doc.pdf');
+    expect(resultado.markdown).toBe('sin observador');
+  });
+
+  describe('con el circuito abierto', () => {
+    let mdCircuito: MdConvert;
+    let fetchOriginal4: typeof fetch;
+
+    beforeAll(() => {
+      jest.isolateModules(() => {
+        mdCircuito = require('../../src/rag/mdConvertService');
+      });
+    });
+
+    beforeEach(() => {
+      fetchOriginal4 = global.fetch;
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      global.fetch = fetchOriginal4;
+      jest.useRealTimers();
+    });
+
+    it('reporta "esperando_circuito" con lo que queda de reposo antes de reintentar', async () => {
+      global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as unknown as typeof fetch;
+      for (let i = 0; i < 3; i++) {
+        await expect(mdCircuito.convertirAMarkdown(Buffer.from('x'), 'doc.pdf')).rejects.toThrow();
+      }
+
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ markdown: 'recuperado' }),
+      }) as unknown as typeof fetch;
+
+      const fases: unknown[] = [];
+      const promesa = mdCircuito.convertirAMarkdown(Buffer.from('y'), 'doc2.pdf', (avance) => fases.push(avance));
+
+      await jest.advanceTimersByTimeAsync(60_000);
+      await promesa;
+
+      expect(fases[0]).toEqual({
+        fase: 'esperando_circuito',
+        proveedor: 'markitdown',
+        limiteMs: 60_000,
+      });
+      expect(fases[1]).toEqual({ fase: 'en_cola_conversor', proveedor: 'markitdown', limiteMs: null });
+      expect(fases[2]).toEqual({ fase: 'convirtiendo', proveedor: 'markitdown', limiteMs: mdCircuito.TOPE_CONVERSION_MS });
+    });
+  });
+});

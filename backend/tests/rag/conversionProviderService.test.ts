@@ -143,6 +143,71 @@ describe('convertirAMarkdownActivo — reintentable es la disyunción de los dos
   });
 });
 
+/**
+ * `onFase` es lo que le dice a la barra de progreso del panel de trabajos en qué intento va y por
+ * qué se cayó el anterior — el orquestador es la ÚNICA capa que conoce ese contexto, así que es la
+ * única que debe poder añadirlo a lo que reporta cada conversor.
+ */
+describe('convertirAMarkdownActivo — onFase reporta el detalle del fallback', () => {
+  it('sin onFase, ningún cliente recibe un tercer argumento', async () => {
+    markitdown.mockResolvedValue({ markdown: 'x', ms: 1 });
+
+    await convertirAMarkdownActivo(Buffer.from('x'), 'doc.pdf');
+
+    expect(markitdown).toHaveBeenCalledWith(expect.any(Buffer), 'doc.pdf');
+  });
+
+  it('sin respaldo, el único intento se anota como 1 de 1', async () => {
+    process.env.RAG_CONVERTER_FALLBACK = 'ninguno';
+    markitdown.mockResolvedValue({ markdown: 'x', ms: 1 });
+    const onFase = jest.fn();
+
+    await convertirAMarkdownActivo(Buffer.from('x'), 'doc.pdf', onFase);
+
+    const observadorPasado = markitdown.mock.calls[0][2] as (a: unknown) => void;
+    observadorPasado({ fase: 'convirtiendo', proveedor: 'markitdown', limiteMs: 195_000 });
+    expect(onFase).toHaveBeenCalledWith({
+      fase: 'convirtiendo',
+      proveedor: 'markitdown',
+      limiteMs: 195_000,
+      intento: 1,
+      intentos: 1,
+    });
+  });
+
+  it('con respaldo, el primer intento ya sabe que hay dos por delante', async () => {
+    markitdown.mockResolvedValue({ markdown: 'x', ms: 1 });
+    const onFase = jest.fn();
+
+    await convertirAMarkdownActivo(Buffer.from('x'), 'doc.pdf', onFase);
+
+    const observadorPasado = markitdown.mock.calls[0][2] as (a: unknown) => void;
+    observadorPasado({ fase: 'en_cola_conversor', proveedor: 'markitdown', limiteMs: null });
+    expect(onFase).toHaveBeenCalledWith(
+      expect.objectContaining({ intento: 1, intentos: 2, proveedor: 'markitdown' }),
+    );
+  });
+
+  it('al caer al respaldo, el segundo intento lleva el motivo del primer fallo', async () => {
+    markitdown.mockRejectedValue(new ConversionError('markitdown HTTP 500', true));
+    mineru.mockResolvedValue({ markdown: 'rescatado', ms: 900 });
+    const onFase = jest.fn();
+
+    await convertirAMarkdownActivo(Buffer.from('x'), 'doc.pdf', onFase);
+
+    const observadorMineru = mineru.mock.calls[0][2] as (a: unknown) => void;
+    observadorMineru({ fase: 'convirtiendo', proveedor: 'mineru', limiteMs: 315_000 });
+    expect(onFase).toHaveBeenCalledWith({
+      fase: 'convirtiendo',
+      proveedor: 'mineru',
+      limiteMs: 315_000,
+      intento: 2,
+      intentos: 2,
+      motivoFallback: 'markitdown: markitdown HTTP 500',
+    });
+  });
+});
+
 describe('conversionBloqueada — solo si NINGUNA vía está disponible', () => {
   it('con el activo abierto pero el respaldo sano, no bloquea', () => {
     circuitoMarkitdown.mockReturnValue(ABIERTO);

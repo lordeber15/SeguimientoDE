@@ -11,6 +11,7 @@ import {
   type PanelRag,
 } from '../api/rag';
 import { ListaDocumentosRag } from './ListaDocumentosRag';
+import { PanelJobIngesta } from './PanelJobIngesta';
 
 interface Props {
   nuAnnExp: string;
@@ -90,16 +91,24 @@ export function ModalIndexacionExpediente({
 
   // Sondeo del job en curso — se detiene solo al terminar; `vigente` corta si el modal se cierra
   // antes. Al completarse, refresca tanto el resumen de este modal como la lista de documentos.
+  // Sigue mientras haya un documento en vuelo aunque el job ya no esté "en_curso": ese ítem nunca
+  // se aborta a mitad, así que conviene mostrar cómo termina en vez de congelar la última foto.
   useEffect(() => {
-    if (!jobActivo || jobActivo.estado !== 'en_curso') return;
+    if (!jobActivo || (jobActivo.estado !== 'en_curso' && !jobActivo.procesoActual)) return;
 
     let vigente = true;
     const temporizador = setTimeout(async () => {
       try {
         const job = await fetchJob(jobActivo.id);
         if (!vigente) return;
+        // Comparado contra el ESTADO ANTERIOR (capturado en el cierre), no contra "sigue sin estar
+        // en_curso": con el sondeo ahora extendido para ver terminar el documento en vuelo, ese
+        // segundo caso se repetiría en cada tick mientras se espera y refrescaría la lista sin
+        // necesidad. Cada evento se refresca UNA sola vez, en el tick en que ocurre de verdad.
+        const yaNoEstaEnCurso = job.estado !== 'en_curso' && jobActivo.estado === 'en_curso';
+        const documentoEnVueloTermino = !job.procesoActual && !!jobActivo.procesoActual;
         setJobActivo(job);
-        if (job.estado !== 'en_curso') {
+        if (yaNoEstaEnCurso || documentoEnVueloTermino) {
           cargarResumen();
           setRecargaSenal((n) => n + 1);
           onCambio();
@@ -230,34 +239,7 @@ export function ModalIndexacionExpediente({
             </button>
           </div>
 
-          {jobActivo && (
-            <div className="rag-job" role="status" aria-live="polite">
-              <p>
-                Trabajo #{jobActivo.id} ({jobActivo.tipo}) — {jobActivo.estado}
-                {jobActivo.total > 0 && ` · ${jobActivo.procesados}/${jobActivo.total}`}
-                {jobActivo.errores > 0 && ` · ${jobActivo.errores} error(es)`}
-              </p>
-              {jobActivo.total > 0 && (
-                <div className="barra-progreso">
-                  <div
-                    className="barra-progreso-relleno"
-                    style={{ width: `${Math.round((jobActivo.procesados / jobActivo.total) * 100)}%` }}
-                  />
-                </div>
-              )}
-              {jobActivo.procesoActual && (
-                <div className="rag-job-actual">
-                  <p className="exp-nota">
-                    Procesando: <strong>
-                      {jobActivo.procesoActual.titulo ?? `Documento #${jobActivo.procesoActual.documentoId}`}
-                    </strong>
-                  </p>
-                  <div className="barra-progreso-indeterminada" />
-                </div>
-              )}
-              {jobActivo.mensaje && <p className="exp-nota is-error">{jobActivo.mensaje}</p>}
-            </div>
-          )}
+          {jobActivo && <PanelJobIngesta job={jobActivo} />}
 
           {seleccion.size > 0 && (
             <div className="toolbar modal-indexacion-seleccion">

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { EstadoIngestaExpediente } from '../api/chat';
 import { ApiError } from '../api/cliente';
-import { fetchJob, iniciarIngestaConversion, iniciarIngestaEmbeddings } from '../api/rag';
+import { fetchJob, iniciarIngestaConversion, iniciarIngestaEmbeddings, type JobIngesta } from '../api/rag';
 import { IconoChat } from './IconoChat';
 import { IndexacionBadge } from './IndexacionBadge';
+import { PanelJobIngesta } from './PanelJobIngesta';
 
 interface Props {
   clave: string;
@@ -25,7 +26,7 @@ interface Props {
 type EstadoAccion =
   | { tipo: 'inactivo' }
   | { tipo: 'lanzando' }
-  | { tipo: 'trabajando'; jobId: number }
+  | { tipo: 'trabajando'; job: JobIngesta }
   | { tipo: 'aviso'; mensaje: string }
   | { tipo: 'error'; mensaje: string };
 
@@ -50,7 +51,7 @@ export function CeldaIndexacion({
     if (accion.tipo !== 'trabajando') return;
 
     let vigente = true;
-    const jobId = accion.jobId;
+    const jobId = accion.job.id;
 
     const temporizador = setTimeout(async () => {
       try {
@@ -65,11 +66,9 @@ export function CeldaIndexacion({
           onJobCambio(null);
           setAccion({ tipo: 'error', mensaje: job.mensaje ?? 'La indexación terminó con error' });
         }
-        // Cualquier otro estado ('pendiente'/'en_curso'/'pausado'): sigue en 'trabajando', el
-        // propio cambio de `accion` (misma referencia de objeto si no cambia) no re-dispara este
-        // efecto salvo que React lo considere distinto; para seguir sondeando sin depender de eso
-        // se relanza explícitamente el mismo estado.
-        else setAccion({ tipo: 'trabajando', jobId });
+        // Cualquier otro estado ('pendiente'/'en_curso'/'pausado'): sigue en 'trabajando', con el
+        // job recién sondeado (trae la fase y el progreso actuales para `PanelJobIngesta`).
+        else setAccion({ tipo: 'trabajando', job });
       } catch (err) {
         if (!vigente) return;
         onJobCambio(null);
@@ -92,7 +91,10 @@ export function CeldaIndexacion({
         tipo === 'conversion'
           ? await iniciarIngestaConversion({ nuAnnExp, nuSecExp })
           : await iniciarIngestaEmbeddings({ nuAnnExp, nuSecExp });
-      setAccion({ tipo: 'trabajando', jobId });
+      // Se pide el job recién creado (mismo patrón que RagPanelPage/ModalIndexacionExpediente) en
+      // vez de esperar al primer tick del sondeo: sin esto, "Indexando…" se mostraría fijo el
+      // primer 1500 ms aunque ya hubiera un documento en marcha.
+      setAccion({ tipo: 'trabajando', job: await fetchJob(jobId) });
     } catch (err) {
       onJobCambio(null);
       if (err instanceof ApiError && err.status === 404) {
@@ -158,7 +160,11 @@ function AccionIndexacion({
   onConvertir: () => void;
   onEmbeber: () => void;
 }) {
-  if (accion.tipo === 'trabajando' || accion.tipo === 'lanzando') {
+  if (accion.tipo === 'trabajando') {
+    return <PanelJobIngesta job={accion.job} variante="compacta" />;
+  }
+  if (accion.tipo === 'lanzando') {
+    // Todavía no hay job que mostrar (la petición de creación sigue en vuelo).
     return <span className="exp-nota">Indexando…</span>;
   }
   if (accion.tipo === 'aviso') {

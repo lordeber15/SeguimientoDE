@@ -25,6 +25,7 @@ import {
   tablaVectores,
 } from './embeddingModelService';
 import { documentoPorId, type DocumentoRag } from './estadoService';
+import type { AvanceFase, FaseConversion, ProveedorConversion, ReportarFase } from './fasesConversion';
 import {
   conversionBloqueada,
   convertirAMarkdownActivo,
@@ -69,17 +70,54 @@ export interface FiltroIngesta {
  * pierde en un reinicio y se reconstruye sola en cuanto el loop reclama el siguiente ítem. Si se
  * necesitara sobrevivir a un reinicio habría que persistirla, pero para una barra de progreso no
  * vale la pena la complejidad de una columna nueva.
+ *
+ * Lo mismo vale para las fases: si el backend se reinicia a mitad de un documento, ese documento
+ * se reconvierte entero desde cero (ver `reanudarJobsInterrumpidos`), así que reiniciar su barra
+ * en 0 no es perder información — es la verdad.
  */
 export interface ProgresoJob {
   documentoId: number;
   titulo: string | null;
   desde: number;
+  fase: FaseConversion;
+  faseDesde: number;
+  limiteMs: number | null;
+  proveedor: ProveedorConversion | null;
+  intento: number;
+  intentos: number;
+  motivoFallback: string | null;
 }
 
 const progresoEnVivo = new Map<number, ProgresoJob>();
 
 export function progresoJob(jobId: number): ProgresoJob | null {
   return progresoEnVivo.get(jobId) ?? null;
+}
+
+/**
+ * Anota sobre el progreso vivo la fase que reporta el pipeline. Es un `set`, no una cola de
+ * eventos: el frontend sondea cada 1500 ms, así que solo importa el ÚLTIMO estado — guardar la
+ * secuencia completa sería memoria que nadie lee.
+ *
+ * El filtro por `documentoId` no es paranoia: una conversión abandonada por el límite duro de
+ * `mdConvertService` (incidente de 2026-08-23) sigue viva después de que el loop haya pasado al
+ * siguiente ítem. Sin este filtro, un aviso tardío suyo reescribiría la fase del documento que
+ * está en marcha ahora y la barra retrocedería sin explicación.
+ */
+export function anotarFase(jobId: number, documentoId: number, avance: AvanceFase): void {
+  const actual = progresoEnVivo.get(jobId);
+  if (!actual || actual.documentoId !== documentoId) return;
+
+  progresoEnVivo.set(jobId, {
+    ...actual,
+    fase: avance.fase,
+    faseDesde: Date.now(),
+    limiteMs: avance.limiteMs ?? null,
+    proveedor: avance.proveedor ?? null,
+    intento: avance.intento ?? actual.intento,
+    intentos: avance.intentos ?? actual.intentos,
+    motivoFallback: avance.motivoFallback ?? actual.motivoFallback,
+  });
 }
 
 // ── Job de CONVERSIÓN (disponible hoy) ───────────────────────────────────────
@@ -264,10 +302,17 @@ async function ejecutarJobConversion(jobId: number): Promise<void> {
       documentoId: item.documento_id,
       titulo: docActual?.titulo ?? null,
       desde: Date.now(),
+      fase: 'descargando',
+      faseDesde: Date.now(),
+      limiteMs: null,
+      proveedor: null,
+      intento: 1,
+      intentos: 1,
+      motivoFallback: null,
     });
 
     try {
-      await convertirDocumento(item.documento_id);
+      await convertirDocumento(item.documento_id, (avance) => anotarFase(jobId, item.documento_id, avance));
       await appSequelize.query(
         `UPDATE rag.ingest_item SET estado = 'ok', fe_fin = now() WHERE id = $1`,
         { bind: [item.id], type: QueryTypes.UPDATE },
@@ -506,10 +551,11 @@ export async function obtenerBytesDocumento(
  * sha256, y si ya existe ese contenido (D3: dedup por archivo) solo enlaza — nunca vuelve a pasar
  * por markitdown. Si es nuevo: convierte, limpia y trocea.
  */
-export async function convertirDocumento(documentoId: number): Promise<void> {
+export async function convertirDocumento(documentoId: number, onFase?: ReportarFase): Promise<void> {
   const doc = await filaDeDocumento(documentoId);
   if (!doc) throw new IngestaError('El documento ya no existe en rag.documento', 404);
 
+  onFase?.({ fase: 'descargando' });
   await marcarEstado(doc.id, 'en_proceso');
 
   let buffer: Buffer;
@@ -521,16 +567,25 @@ export async function convertirDocumento(documentoId: number): Promise<void> {
   } catch (error) {
     // Que no haya archivo no siempre significa que no haya documento: los PROVEÍDOS y HOJAS DE
     // ENVÍO el SGD los renderiza al vuelo, y sus datos sí están en la BD.
-    if (await convertirDocumentoGenerado(doc)) return;
+    if (await convertirDocumentoGenerado(doc, onFase)) return;
 
     // Sin archivo digital (los ~76 % que hoy no están en BLOB ni en este disco) es un estado
     // legítimo, no un error: se marca aparte para no mezclarlo con fallos reales de conversión.
     await marcarEstado(doc.id, 'no_soportado', motivoDe(error));
+    // Todas las salidas de esta función pasan por 'listo', incluidas las que NO convierten nada.
+    // Sin esto, un documento sin archivo digital dejaría la barra clavada en 'descargando' justo
+    // antes de que el panel saltara al siguiente: parecería que algo se quedó a medias cuando en
+    // realidad terminó (con ese resultado) en milisegundos.
+    onFase?.({ fase: 'listo' });
     return;
   }
 
+  onFase?.({ fase: 'deduplicando' });
   const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-  if (await enlazarSiYaExiste(doc, sha256)) return;
+  if (await enlazarSiYaExiste(doc, sha256)) {
+    onFase?.({ fase: 'listo' });
+    return;
+  }
 
   let markdown: string;
   let ms: number;
@@ -539,10 +594,11 @@ export async function convertirDocumento(documentoId: number): Promise<void> {
     // markitdown detecta el tipo de archivo por la EXTENSIÓN del nombre (mineru, por el contenido
     // real): en ambos casos hay que pasarle el nombre real resuelto (con su .pdf/.docx/...), nunca
     // el título humano ("INFORME N° 29...", sin extensión), que ambos rechazan con 400.
-    ({ markdown, ms, metodo } = await convertirAMarkdownActivo(buffer, nombreArchivo));
+    ({ markdown, ms, metodo } = await convertirAMarkdownActivo(buffer, nombreArchivo, onFase));
   } catch (error) {
     if (error instanceof ConversionError && !error.reintentable) {
       await marcarEstado(doc.id, 'error', error.motivo);
+      onFase?.({ fase: 'listo' });
       return;
     }
     // Reintentable (circuito abierto, timeout, red): el ÍTEM de este job se marca 'error' en
@@ -551,6 +607,7 @@ export async function convertirDocumento(documentoId: number): Promise<void> {
     // `estado = 'pendiente'`. Encontrado en producción: el circuito se abrió durante una prueba
     // manual y dejó 224 documentos así, sin ningún error visible en `rag.documento`.
     await marcarEstadoPendiente(doc.id);
+    onFase?.({ fase: 'listo' });
     throw error;
   }
 
@@ -560,7 +617,7 @@ export async function convertirDocumento(documentoId: number): Promise<void> {
     bytes: buffer.length,
     mime: mimePorNombre(nombreArchivo),
     ms,
-  });
+  }, onFase);
 }
 
 /**
@@ -576,12 +633,14 @@ export async function convertirDocumento(documentoId: number): Promise<void> {
  * documentos generables marcados "sin archivo" para siempre. Es el mismo orden que usa
  * `documentoController.generarSiCorresponde`, que siempre lo hizo bien.
  */
-async function convertirDocumentoGenerado(doc: FilaDocumento): Promise<boolean> {
+async function convertirDocumentoGenerado(doc: FilaDocumento, onFase?: ReportarFase): Promise<boolean> {
   const datos = await getDatosDocumentoGenerado(doc.nu_ann, doc.nu_emi);
   // `getDatosDocumentoGenerado` no filtra por tipo: devuelve fila para CUALQUIER remito. Sin este
   // control, un INFORME sin archivo generaría un markdown degenerado (título y poco más) que
   // entraría al corpus como si fuera el documento.
   if (!datos || !esGenerable(datos.coTipDoc)) return false;
+
+  onFase?.({ fase: 'generando' });
 
   if (datos.coTipDoc && datos.coTipDoc !== doc.co_tip_doc) {
     await appSequelize.query('UPDATE rag.documento SET co_tip_doc = $2 WHERE id = $1', {
@@ -594,14 +653,17 @@ async function convertirDocumentoGenerado(doc: FilaDocumento): Promise<boolean> 
   // No hay bytes de archivo de origen que hashear: la clave de contenido sale del propio markdown,
   // de modo que reejecutar la ingesta sobre el mismo documento sea idempotente.
   const sha256 = crypto.createHash('sha256').update(markdown).digest('hex');
-  if (await enlazarSiYaExiste(doc, sha256)) return true;
+  if (await enlazarSiYaExiste(doc, sha256)) {
+    onFase?.({ fase: 'listo' });
+    return true;
+  }
 
   await guardarMarkdown(doc, sha256, markdown, {
     metodo: 'generado',
     bytes: Buffer.byteLength(markdown),
     mime: 'text/markdown',
     ms: 0,
-  });
+  }, onFase);
   return true;
 }
 
@@ -650,7 +712,9 @@ export async function guardarMarkdown(
   sha256: string,
   markdown: string,
   origen: { metodo: string; bytes: number; mime: string; ms: number },
+  onFase?: ReportarFase,
 ): Promise<void> {
+  onFase?.({ fase: 'troceando' });
   const limpio = limpiarMarkdown(markdown);
 
   // `DO UPDATE ... WHERE chunks_generados = 0`: si ya existe una fila para este sha256 pero
@@ -678,10 +742,13 @@ export async function guardarMarkdown(
       'UPDATE rag.documento SET contenido_sha256 = $2, estado = $3 WHERE id = $1',
       { bind: [doc.id, sha256, 'sin_texto'], type: QueryTypes.UPDATE },
     );
+    onFase?.({ fase: 'listo' });
     return;
   }
 
+  onFase?.({ fase: 'guardando' });
   await guardarChunksYMarcarConvertido(doc.id, sha256, cabeceraDe(doc), trocear(limpio.markdown));
+  onFase?.({ fase: 'listo' });
 }
 
 function cabeceraDe(doc: FilaDocumento): string {
@@ -1006,12 +1073,27 @@ export async function estadoJob(jobId: number) {
   if (!job) throw new IngestaError('El trabajo no existe', 404);
 
   const proceso = progresoJob(jobId);
+  const ahora = Date.now();
   return {
     ...job,
     procesoActual: proceso && {
       documentoId: proceso.documentoId,
       titulo: proceso.titulo,
-      segundos: Math.round((Date.now() - proceso.desde) / 1000),
+      // Se conserva en SEGUNDOS: es texto para el humano ("— 42 s") y ya lo consumen el panel y
+      // los tests existentes.
+      segundos: Math.round((ahora - proceso.desde) / 1000),
+      fase: proceso.fase,
+      // Duración, nunca un instante. Mandar `faseDesde` obligaría al navegador a restarlo de SU
+      // propio reloj, y dos máquinas desalineadas (un cliente 40 s adelantado es habitual en una
+      // red de oficina) darían una barra que arranca ya al final de su tramo, o que no arranca
+      // nunca. Con una duración, el navegador solo suma lo que él mismo ha contado desde que
+      // recibió la respuesta: el único error posible es la latencia de esa respuesta.
+      faseMs: ahora - proceso.faseDesde,
+      faseLimiteMs: proceso.limiteMs,
+      proveedor: proceso.proveedor,
+      intento: proceso.intento,
+      intentos: proceso.intentos,
+      motivoFallback: proceso.motivoFallback,
     },
   };
 }

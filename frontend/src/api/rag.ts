@@ -62,10 +62,40 @@ export interface PanelRag {
   inventarioInicial: boolean;
 }
 
+/** Espejo de `FaseConversion` en `backend/src/rag/fasesConversion.ts`. */
+export type FaseConversion =
+  | 'descargando'
+  | 'generando'
+  | 'deduplicando'
+  | 'esperando_circuito'
+  | 'en_cola_conversor'
+  | 'convirtiendo'
+  | 'troceando'
+  | 'guardando'
+  | 'listo';
+
 export interface ProcesoActualJob {
   documentoId: number;
   titulo: string | null;
+  /** Segundos desde que el trabajo tomó este documento — texto para el humano ("— 42 s"). */
   segundos: number;
+  /**
+   * Todo lo de abajo es opcional a propósito, aunque el backend siempre lo mande: así un
+   * navegador con el bundle en caché contra un backend ya actualizado (o un mock de test parcial)
+   * cae en la barra indeterminada de siempre en vez de romper la pantalla con un `undefined`.
+   */
+  fase?: FaseConversion;
+  /** Milisegundos DENTRO de la fase, medidos por el servidor al responder. `PanelJobIngesta` le
+   *  suma su propio reloj desde que recibió la respuesta — nunca se compara con un reloj remoto. */
+  faseMs?: number;
+  /** Tope de la fase en ms, o `null` si no lo tiene (solo las del conversor y la espera lo traen). */
+  faseLimiteMs?: number | null;
+  proveedor?: 'markitdown' | 'mineru' | null;
+  /** 1 = proveedor activo, 2 = respaldo. */
+  intento?: number;
+  /** 1 sin respaldo configurado, 2 con él. */
+  intentos?: number;
+  motivoFallback?: string | null;
 }
 
 export interface JobIngesta {

@@ -54,6 +54,11 @@ const PANEL_MINIMO = {
     vision: { proveedor: 'openai', disponible: false, motivo: 'OPENAI_API_KEY: falta configurar' },
     problemas: [],
     markitdown: { disponible: true, circuitoAbierto: false },
+    // `ModalIndexacionExpediente` lee `proveedores.conversion.proveedorActivo` (para el fallback
+    // markitdown/mineru) sin optional chaining después de `conversion` — sin este campo, el modal
+    // revienta al renderizar en cuanto `fetchPanel()` resuelve, incluso antes de cualquier acción.
+    mineru: { disponible: true, circuitoAbierto: false },
+    conversion: { proveedorActivo: 'markitdown', proveedorRespaldo: 'mineru' },
   },
   tokens: { hoy: [], acumulado: { tokensIn: 0, tokensOut: 0, costeUsd: 0 } },
   mantenimiento: {
@@ -161,6 +166,33 @@ test.describe('Modal de indexación — con rag.gestionar', () => {
 
     await expect.poll(() => cuerpoEnviado).toEqual({ documentoIds: [2] });
     await expect(filaConvertida.getByText(/Trabajo #55 en curso/)).toBeVisible();
+  });
+
+  test('el job en curso muestra la fase, pero el modal no ofrece Pausar/Detener', async ({ page }) => {
+    await abrirModal(page);
+
+    // "Reparar recuperables" está habilitado en este fixture: sinTexto(0) + noSoportado(1) > 0.
+    await page.route('**/api/rag/ingesta/reparacion', (route) =>
+      route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId: 77 }) }),
+    );
+    await page.route('**/api/rag/ingesta/77', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 77, tipo: 'reparacion', estado: 'en_curso', total: 1, procesados: 0, errores: 0,
+          mensaje: null, feInicio: '2026-08-27T10:00:00.000Z', feFin: null,
+          procesoActual: { documentoId: 1, titulo: 'PROVEIDO SIN ARCHIVO', segundos: 5, fase: 'descargando' },
+        }),
+      }),
+    );
+
+    await page.getByRole('button', { name: 'Reparar recuperables' }).click();
+
+    await expect(page.getByText('Obteniendo el archivo')).toBeVisible();
+    // El modal de expediente (a diferencia del panel de RAG) nunca ofrece control del trabajo.
+    await expect(page.getByRole('button', { name: 'Pausar' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Detener' })).toHaveCount(0);
   });
 
   test('Escape cierra el modal', async ({ page }) => {

@@ -29,6 +29,8 @@ const PANEL_BASE = {
     vision: { proveedor: 'openai', disponible: false, motivo: 'OPENAI_API_KEY: falta configurar' },
     problemas: [],
     markitdown: { disponible: true, circuitoAbierto: false },
+    mineru: { disponible: true, circuitoAbierto: false },
+    conversion: { proveedorActivo: 'markitdown', proveedorRespaldo: 'mineru' },
   },
   tokens: { hoy: [], acumulado: { tokensIn: 0, tokensOut: 0, costeUsd: 0 } },
   // `PanelRag` los exige (Fase 6) — sin ellos la página revienta al leer `panel.mantenimiento.retencion`.
@@ -124,6 +126,28 @@ test.describe('Panel RAG — con API simulada', () => {
     await expect(page.getByText(/2 nuevo\(s\)/)).toBeVisible();
   });
 
+  test('"Barrer ahora" muestra un estado de carga mientras el barrido está en curso', async ({ page }) => {
+    await abrirPanel(page);
+
+    await page.route('**/api/rag/barrer', async (route) => {
+      await new Promise((r) => setTimeout(r, 1000));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 6, documentosNuevos: 3, documentosBaja: 1 }),
+      });
+    });
+
+    const boton = page.getByRole('button', { name: /Barrer ahora|Barriendo/ });
+    await boton.click();
+
+    await expect(page.getByRole('button', { name: 'Barriendo…' })).toBeDisabled();
+    await expect(page.getByText('Barrido en curso… puede tardar unos minutos.')).toBeVisible();
+
+    await expect(page.getByText(/3 nuevo\(s\), 1 baja\(s\)/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Barrer ahora' })).toBeEnabled();
+  });
+
   test('"Generar embeddings" deshabilitado cuando el proveedor no está configurado', async ({ page }) => {
     await abrirPanel(page, {
       ...PANEL_BASE,
@@ -168,6 +192,167 @@ test.describe('Panel RAG — con API simulada', () => {
     await botonConvertir.click();
     await expect(page.getByText(/Trabajo #9 \(conversion\)/)).toBeVisible();
     await expect(page.getByText('12/500')).toBeVisible();
+  });
+
+  /**
+   * La barra secundaria de fases (uno de los conversores está haciendo el trabajo de verdad) —
+   * ver `PanelJobIngesta.tsx`. `page.route` con un `fulfill` estático responde EXACTAMENTE lo
+   * mismo en cada sondeo (cada 1500 ms): la fecha/segundos que se ven crecer entre respuestas
+   * salen del reloj local del navegador, no de datos nuevos del servidor.
+   */
+  async function lanzarConversionConProceso(page: Page, procesoActual: Record<string, unknown>) {
+    await page.route('**/api/rag/ingesta/conversion', (route) =>
+      route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId: 9 }) }),
+    );
+    await page.route('**/api/rag/ingesta/9', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 9, tipo: 'conversion', estado: 'en_curso', total: 500, procesados: 12, errores: 0,
+          mensaje: null, feInicio: '2026-08-23T20:10:00.000Z', feFin: null,
+          procesoActual,
+        }),
+      }),
+    );
+    await page.getByRole('button', { name: 'Convertir documentos pendientes' }).click();
+  }
+
+  test('la fase "convirtiendo" nombra el conversor y el tope, y la barra queda dentro de su tramo', async ({ page }) => {
+    await abrirPanel(page);
+    await lanzarConversionConProceso(page, {
+      documentoId: 100, titulo: 'INFORME GRANDE', segundos: 30,
+      fase: 'convirtiendo', faseMs: 30000, faseLimiteMs: 195000,
+      proveedor: 'markitdown', intento: 1, intentos: 1, motivoFallback: null,
+    });
+
+    await expect(page.getByText(/Convirtiendo con markitdown/)).toBeVisible();
+    await expect(page.getByText(/30 s de máx\. 195 s/)).toBeVisible();
+
+    const relleno = page.locator('.rag-job-actual .barra-progreso--documento .barra-progreso-relleno');
+    const ancho = await relleno.evaluate((el) => parseFloat((el as HTMLElement).style.width));
+    // Tramo de "convirtiendo" sin respaldo: [15, 85].
+    expect(ancho).toBeGreaterThan(15);
+    expect(ancho).toBeLessThan(85);
+  });
+
+  test('la barra del documento avanza entre sondeos por el reloj local, no solo al recibir datos', async ({ page }) => {
+    await abrirPanel(page);
+    // `faseMs` se queda fijo en cada respuesta simulada — si el ancho creciera igual, sería por
+    // el `setInterval` de 500 ms del propio panel (`useDesdeUltimoDato`), no por el servidor.
+    await lanzarConversionConProceso(page, {
+      documentoId: 100, titulo: 'INFORME GRANDE', segundos: 30,
+      fase: 'convirtiendo', faseMs: 5000, faseLimiteMs: 195000,
+      proveedor: 'markitdown', intento: 1, intentos: 1, motivoFallback: null,
+    });
+
+    const relleno = page.locator('.rag-job-actual .barra-progreso--documento .barra-progreso-relleno');
+    await expect(relleno).toBeVisible();
+    const anchoInicial = await relleno.evaluate((el) => parseFloat((el as HTMLElement).style.width));
+
+    await expect
+      .poll(() => relleno.evaluate((el) => parseFloat((el as HTMLElement).style.width)), { timeout: 5000 })
+      .toBeGreaterThan(anchoInicial);
+  });
+
+  test('el salto al respaldo se ve como un salto y explica por qué falló el primero', async ({ page }) => {
+    await abrirPanel(page);
+    await lanzarConversionConProceso(page, {
+      documentoId: 101, titulo: 'OFICIO PESADO', segundos: 220,
+      fase: 'convirtiendo', faseMs: 40000, faseLimiteMs: 315000,
+      proveedor: 'mineru', intento: 2, intentos: 2,
+      motivoFallback: 'markitdown: La conversión superó 180 s',
+    });
+
+    await expect(page.getByText(/intento 2 de 2 · respaldo/)).toBeVisible();
+    await expect(page.getByText('markitdown: La conversión superó 180 s')).toBeVisible();
+
+    // Con respaldo, el tramo [15,85] se reparte en dos: el segundo intento arranca en su mitad (50).
+    const relleno = page.locator('.rag-job-actual .barra-progreso--documento .barra-progreso-relleno');
+    const ancho = await relleno.evaluate((el) => parseFloat((el as HTMLElement).style.width));
+    expect(ancho).toBeGreaterThanOrEqual(50);
+  });
+
+  test('una espera del circuito no se disfraza de conversión', async ({ page }) => {
+    await abrirPanel(page);
+    await lanzarConversionConProceso(page, {
+      documentoId: 102, titulo: 'OFICIO', segundos: 5,
+      fase: 'esperando_circuito', faseMs: 2000, faseLimiteMs: 60000,
+      proveedor: 'markitdown', intento: 1, intentos: 1, motivoFallback: null,
+    });
+
+    await expect(page.getByText(/vuelve en 5[0-8] s/)).toBeVisible();
+    // Fase de espera: la barra no avanza, se queda al inicio del tramo de conversión (15 %).
+    const relleno = page.locator('.rag-job-actual .barra-progreso--documento .barra-progreso-relleno');
+    await expect
+      .poll(() => relleno.evaluate((el) => (el as HTMLElement).style.width))
+      .toBe('15%');
+  });
+
+  test('sin fase (bundle o backend anterior) cae a la barra indeterminada, sin texto de fase', async ({ page }) => {
+    await abrirPanel(page);
+    // `procesoActual` sin `fase`: exactamente lo que devolvería un backend previo a este cambio.
+    await lanzarConversionConProceso(page, { documentoId: 103, titulo: 'ANTIGUO', segundos: 10 });
+
+    await expect(page.locator('.rag-job-actual .barra-progreso-indeterminada')).toBeVisible();
+    await expect(page.getByText(/Convirtiendo/)).toHaveCount(0);
+  });
+
+  test('un documento generado desde el SGD también llena la barra, no solo la conversión real', async ({ page }) => {
+    await abrirPanel(page);
+    await lanzarConversionConProceso(page, {
+      documentoId: 104, titulo: 'PROVEÍDO 232', segundos: 1,
+      fase: 'generando', proveedor: null, intento: 1, intentos: 1, motivoFallback: null,
+    });
+
+    await expect(page.getByText('Generando el texto desde los datos del SGD')).toBeVisible();
+  });
+
+  test('detener no aborta el documento en vuelo, y el panel lo dice', async ({ page }) => {
+    await abrirPanel(page);
+    await page.route('**/api/rag/ingesta/conversion', (route) =>
+      route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ jobId: 9 }) }),
+    );
+    // Mientras el trabajo sigue en_curso, "Detener" tiene que estar visible para poder pulsarlo.
+    await page.route('**/api/rag/ingesta/9', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 9, tipo: 'conversion', estado: 'en_curso', total: 500, procesados: 12, errores: 0,
+          mensaje: null, feInicio: '2026-08-23T20:10:00.000Z', feFin: null,
+          procesoActual: {
+            documentoId: 105, titulo: 'EL ÚLTIMO', segundos: 90,
+            fase: 'convirtiendo', faseMs: 90000, faseLimiteMs: 195000,
+            proveedor: 'markitdown', intento: 1, intentos: 1, motivoFallback: null,
+          },
+        }),
+      }),
+    );
+    await page.getByRole('button', { name: 'Convertir documentos pendientes' }).click();
+    await expect(page.getByRole('button', { name: 'Detener' })).toBeVisible();
+
+    const jobCancelado = {
+      id: 9, tipo: 'conversion', estado: 'cancelado', total: 500, procesados: 12, errores: 0,
+      mensaje: null, feInicio: '2026-08-23T20:10:00.000Z', feFin: '2026-08-23T20:20:00.000Z',
+      procesoActual: {
+        documentoId: 105, titulo: 'EL ÚLTIMO', segundos: 90,
+        fase: 'convirtiendo', faseMs: 90000, faseLimiteMs: 195000,
+        proveedor: 'markitdown', intento: 1, intentos: 1, motivoFallback: null,
+      },
+    };
+    await page.route('**/api/rag/ingesta/9/cancelar', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(jobCancelado) }),
+    );
+    // Re-registrado DESPUÉS de "Detener": si el sondeo siguiera corriendo (por eso este cambio
+    // amplió su condición de parada), tiene que ver lo mismo que ya cancelamos, no rebotar a
+    // "en_curso" — Playwright prioriza el handler más reciente para peticiones futuras.
+    await page.route('**/api/rag/ingesta/9', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(jobCancelado) }),
+    );
+    await page.getByRole('button', { name: 'Detener' }).click();
+
+    await expect(page.getByText('El trabajo ya no toma documentos nuevos; el que estaba en marcha termina solo.')).toBeVisible();
   });
 
   test('un job de embeddings bloqueado muestra el motivo, no un error genérico', async ({ page }) => {

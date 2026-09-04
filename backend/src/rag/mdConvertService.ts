@@ -9,12 +9,22 @@
  *    pone este lado, o la ingesta entera se queda esperando para siempre.
  */
 
+import type { ReportarFase } from './fasesConversion';
+
 const URL_BASE = () => (process.env.MARKITDOWN_URL ?? 'http://localhost:8001').replace(/\/$/, '');
 const TIMEOUT_MS = Number(process.env.MARKITDOWN_TIMEOUT_MS ?? 180_000);
 /** Margen extra del límite duro sobre el timeout normal — solo debería activarse si el abort falló. */
 const MARGEN_LIMITE_DURO = 15_000;
 /** 50 MB: el límite del propio servicio. */
 const MAX_BYTES = Number(process.env.MARKITDOWN_MAX_BYTES ?? 50 * 1024 * 1024);
+
+/**
+ * Tope real de una conversión, para la barra de progreso: el `AbortController` de abajo corta a
+ * `TIMEOUT_MS`, pero el límite duro (la segunda garantía del incidente de 2026-08-23) puede tardar
+ * `MARGEN_LIMITE_DURO` más en resolver. Se publica ESTE número, no `TIMEOUT_MS` — una barra que se
+ * llenara a los 180 s se quedaría 15 s clavada al 100 % antes de que el ítem pudiera siquiera fallar.
+ */
+export const TOPE_CONVERSION_MS = TIMEOUT_MS + MARGEN_LIMITE_DURO;
 
 export class ConversionError extends Error {
   readonly motivo: string;
@@ -59,6 +69,7 @@ export function estadoCircuito(): { abierto: boolean; segundosRestantes: number 
 export async function convertirAMarkdown(
   buffer: Buffer,
   filename: string,
+  onFase?: ReportarFase,
 ): Promise<ResultadoConversion> {
   if (buffer.length > MAX_BYTES) {
     throw new ConversionError(`El archivo supera los ${Math.round(MAX_BYTES / 1024 / 1024)} MB`);
@@ -73,10 +84,26 @@ export async function convertirAMarkdown(
     // de errores del job sin motivo real. Si al reintentar vuelve a fallar, ESE ítem sí cuenta
     // como error genuino (uno por ventana de reposo, no todos a la vez), y el siguiente ítem
     // repite el mismo ciclo de espera.
+    //
+    // Esta espera es exactamente lo que hasta ahora la UI pintaba como "convirtiendo": hasta 60 s
+    // en los que no se hace absolutamente nada. Se reporta aparte para que la barra lo diga.
+    onFase?.({
+      fase: 'esperando_circuito',
+      proveedor: 'markitdown',
+      limiteMs: circuito.segundosRestantes * 1000,
+    });
     await new Promise((r) => setTimeout(r, circuito.segundosRestantes * 1000));
   }
 
-  return enSerie(() => convertirUno(buffer, filename));
+  // `enSerie` difiere al menos un microtask: con la cola libre, esta fase y la de "convirtiendo"
+  // se suceden dentro del mismo tick y el sondeo (cada 1500 ms) nunca llega a verla. Solo se hace
+  // visible cuando la espera es real por otro documento delante — que es justo cuando hace falta
+  // saberlo, en vez de que parezca que este documento lleva más tiempo convirtiendo del que lleva.
+  onFase?.({ fase: 'en_cola_conversor', proveedor: 'markitdown', limiteMs: null });
+  return enSerie(() => {
+    onFase?.({ fase: 'convirtiendo', proveedor: 'markitdown', limiteMs: TOPE_CONVERSION_MS });
+    return convertirUno(buffer, filename);
+  });
 }
 
 /**

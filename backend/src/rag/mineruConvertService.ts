@@ -13,11 +13,15 @@
  */
 
 import { ConversionError, type ResultadoConversion } from './mdConvertService';
+import type { ReportarFase } from './fasesConversion';
 
 const URL_BASE = () => (process.env.MINERU_URL ?? 'http://localhost:8013').replace(/\/$/, '');
 const TIMEOUT_MS = Number(process.env.MINERU_TIMEOUT_MS ?? 300_000);
 const MARGEN_LIMITE_DURO = 15_000;
 const MAX_BYTES = Number(process.env.MINERU_MAX_BYTES ?? 50 * 1024 * 1024);
+
+/** Tope real de una conversión, para la barra de progreso — ver el mismo campo en mdConvertService. */
+export const TOPE_CONVERSION_MINERU_MS = TIMEOUT_MS + MARGEN_LIMITE_DURO;
 const PARSE_METHOD = process.env.MINERU_PARSE_METHOD ?? 'auto';
 const LANG_LIST = (process.env.MINERU_LANG_LIST ?? 'ch')
   .split(',')
@@ -54,6 +58,7 @@ export function estadoCircuitoMinerU(): { abierto: boolean; segundosRestantes: n
 export async function convertirAMarkdownMinerU(
   buffer: Buffer,
   filename: string,
+  onFase?: ReportarFase,
 ): Promise<ResultadoConversion> {
   if (buffer.length > MAX_BYTES) {
     throw new ConversionError(`El archivo supera los ${Math.round(MAX_BYTES / 1024 / 1024)} MB`);
@@ -61,10 +66,19 @@ export async function convertirAMarkdownMinerU(
 
   const circuito = estadoCircuitoMinerU();
   if (circuito.abierto) {
+    onFase?.({
+      fase: 'esperando_circuito',
+      proveedor: 'mineru',
+      limiteMs: circuito.segundosRestantes * 1000,
+    });
     await new Promise((r) => setTimeout(r, circuito.segundosRestantes * 1000));
   }
 
-  return enSerie(() => convertirUno(buffer, filename));
+  onFase?.({ fase: 'en_cola_conversor', proveedor: 'mineru', limiteMs: null });
+  return enSerie(() => {
+    onFase?.({ fase: 'convirtiendo', proveedor: 'mineru', limiteMs: TOPE_CONVERSION_MINERU_MS });
+    return convertirUno(buffer, filename);
+  });
 }
 
 async function convertirUno(buffer: Buffer, filename: string): Promise<ResultadoConversion> {

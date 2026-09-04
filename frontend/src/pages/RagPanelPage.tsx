@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ListaDocumentosRag } from '../components/ListaDocumentosRag';
+import { PanelJobIngesta } from '../components/PanelJobIngesta';
+import { PilaToasts, useToasts } from '../components/Toasts';
 import {
   activarBarrido,
   activarGC,
@@ -43,11 +45,16 @@ function papelConversor(
   return '';
 }
 
+const INTERVALO_POLL_MS = 1500;
+
 export function RagPanelPage() {
   const [estado, setEstado] = useState<Estado>({ tipo: 'cargando' });
-  const [aviso, setAviso] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
+  const { toasts, mostrar, actualizar, cerrar } = useToasts();
   const [jobActivo, setJobActivo] = useState<JobIngesta | null>(null);
   const [jobIdFiltro, setJobIdFiltro] = useState<number | null>(null);
+  const [barriendo, setBarriendo] = useState(false);
+  const [purgando, setPurgando] = useState(false);
+  const [recolectando, setRecolectando] = useState(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cargar = useCallback(() => {
@@ -60,18 +67,27 @@ export function RagPanelPage() {
 
   useEffect(() => cargar(), [cargar]);
 
-  // Sondeo del job de ingesta en curso, si lo hay.
+  // Sondeo del job de ingesta en curso, si lo hay. Sigue mientras haya un documento en vuelo
+  // aunque el job ya no esté "en_curso" (pausado/cancelado): ese ítem nunca se aborta a mitad
+  // (no hay forma de cortar una llamada HTTP al conversor), así que el panel debe poder mostrar
+  // cómo termina en vez de congelarse con la última foto antes de Detener/Pausar.
   useEffect(() => {
-    if (!jobActivo || jobActivo.estado !== 'en_curso') return;
+    if (!jobActivo || (jobActivo.estado !== 'en_curso' && !jobActivo.procesoActual)) return;
     pollRef.current = setTimeout(async () => {
       try {
         const job = await fetchJob(jobActivo.id);
+        // Comparado contra el ESTADO ANTERIOR (capturado en el cierre), no contra "sigue sin estar
+        // en_curso": con el sondeo ahora extendido para ver terminar el documento en vuelo, ese
+        // segundo caso se repetiría en cada tick mientras se espera y refrescaría el panel sin
+        // necesidad. Cada evento se refresca UNA sola vez, en el tick en que ocurre de verdad.
+        const yaNoEstaEnCurso = job.estado !== 'en_curso' && jobActivo.estado === 'en_curso';
+        const documentoEnVueloTermino = !job.procesoActual && !!jobActivo.procesoActual;
         setJobActivo(job);
-        if (job.estado !== 'en_curso') cargar(); // refresca el panel con las cifras finales
+        if (yaNoEstaEnCurso || documentoEnVueloTermino) cargar(); // refresca el panel con las cifras finales
       } catch {
         // Un fallo de red al sondear no debe tumbar la pantalla; se reintenta en el próximo tick.
       }
-    }, 1500);
+    }, INTERVALO_POLL_MS);
     return () => {
       if (pollRef.current) clearTimeout(pollRef.current);
     };
@@ -80,69 +96,80 @@ export function RagPanelPage() {
   async function alternarBarrido(activo: boolean) {
     try {
       await activarBarrido(activo);
-      setAviso({ tipo: 'ok', texto: activo ? 'Barrido activado.' : 'Barrido desactivado.' });
+      mostrar('ok', activo ? 'Barrido activado.' : 'Barrido desactivado.');
       cargar();
     } catch (error: unknown) {
-      setAviso({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudo cambiar' });
+      mostrar('error', error instanceof Error ? error.message : 'No se pudo cambiar');
     }
   }
 
   async function barrer() {
+    setBarriendo(true);
+    const id = mostrar('cargando', 'Barrido en curso… puede tardar unos minutos.');
     try {
       const r = await barrerAhora();
-      setAviso({
-        tipo: 'ok',
-        texto: `Barrido completado: ${r.documentosNuevos} nuevo(s), ${r.documentosBaja} baja(s).`,
-      });
+      actualizar(id, 'ok', `Barrido completado: ${r.documentosNuevos} nuevo(s), ${r.documentosBaja} baja(s).`);
       cargar();
     } catch (error: unknown) {
-      setAviso({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudo barrer' });
+      actualizar(id, 'error', error instanceof Error ? error.message : 'No se pudo barrer');
+    } finally {
+      setBarriendo(false);
     }
   }
 
   async function alternarRetencion(activo: boolean) {
     try {
       await activarRetencion(activo);
-      setAviso({ tipo: 'ok', texto: activo ? 'Retención activada.' : 'Retención desactivada.' });
+      mostrar('ok', activo ? 'Retención activada.' : 'Retención desactivada.');
       cargar();
     } catch (error: unknown) {
-      setAviso({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudo cambiar' });
+      mostrar('error', error instanceof Error ? error.message : 'No se pudo cambiar');
     }
   }
 
   async function correrRetencion() {
+    setPurgando(true);
+    const id = mostrar('cargando', 'Purgando registros antiguos…');
     try {
       const r = await ejecutarRetencionAhora();
-      setAviso({
-        tipo: 'ok',
-        texto: `Retención ejecutada: ${r.loginIntento} intento(s) de login, ${r.usoToken} uso(s) de token, ${r.retrievalLog} consulta(s) de log purgadas.`,
-      });
+      actualizar(
+        id,
+        'ok',
+        `Retención ejecutada: ${r.loginIntento} intento(s) de login, ${r.usoToken} uso(s) de token, ${r.retrievalLog} consulta(s) de log purgadas.`,
+      );
       cargar();
     } catch (error: unknown) {
-      setAviso({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudo ejecutar la retención' });
+      actualizar(id, 'error', error instanceof Error ? error.message : 'No se pudo ejecutar la retención');
+    } finally {
+      setPurgando(false);
     }
   }
 
   async function alternarGC(activo: boolean) {
     try {
       await activarGC(activo);
-      setAviso({ tipo: 'ok', texto: activo ? 'Recolector de basura activado.' : 'Recolector de basura desactivado.' });
+      mostrar('ok', activo ? 'Recolector de basura activado.' : 'Recolector de basura desactivado.');
       cargar();
     } catch (error: unknown) {
-      setAviso({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudo cambiar' });
+      mostrar('error', error instanceof Error ? error.message : 'No se pudo cambiar');
     }
   }
 
   async function correrGC() {
+    setRecolectando(true);
+    const id = mostrar('cargando', 'Recolectando huérfanos…');
     try {
       const r = await ejecutarGcAhora();
-      setAviso({
-        tipo: 'ok',
-        texto: `Recolector ejecutado: ${r.marcados} contenido(s) marcado(s) huérfano(s), ${r.recolectados} recolectado(s) (${r.chunksBorrados} chunks borrados; el markdown se conserva siempre).`,
-      });
+      actualizar(
+        id,
+        'ok',
+        `Recolector ejecutado: ${r.marcados} contenido(s) marcado(s) huérfano(s), ${r.recolectados} recolectado(s) (${r.chunksBorrados} chunks borrados; el markdown se conserva siempre).`,
+      );
       cargar();
     } catch (error: unknown) {
-      setAviso({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudo ejecutar el recolector' });
+      actualizar(id, 'error', error instanceof Error ? error.message : 'No se pudo ejecutar el recolector');
+    } finally {
+      setRecolectando(false);
     }
   }
 
@@ -152,10 +179,7 @@ export function RagPanelPage() {
       setJobActivo(await fetchJob(jobId));
       setJobIdFiltro(jobId);
     } catch (error: unknown) {
-      setAviso({
-        tipo: 'error',
-        texto: error instanceof Error ? error.message : 'No se pudo iniciar la conversión',
-      });
+      mostrar('error', error instanceof Error ? error.message : 'No se pudo iniciar la conversión');
     }
   }
 
@@ -165,10 +189,7 @@ export function RagPanelPage() {
       setJobActivo(await fetchJob(jobId));
       setJobIdFiltro(jobId);
     } catch (error: unknown) {
-      setAviso({
-        tipo: 'error',
-        texto: error instanceof Error ? error.message : 'No se pudo iniciar la reparación',
-      });
+      mostrar('error', error instanceof Error ? error.message : 'No se pudo iniciar la reparación');
     }
   }
 
@@ -178,10 +199,7 @@ export function RagPanelPage() {
       setJobActivo(await fetchJob(jobId));
       setJobIdFiltro(jobId);
     } catch (error: unknown) {
-      setAviso({
-        tipo: 'error',
-        texto: error instanceof Error ? error.message : 'No se pudo iniciar la ingesta de embeddings',
-      });
+      mostrar('error', error instanceof Error ? error.message : 'No se pudo iniciar la ingesta de embeddings');
     }
   }
 
@@ -190,7 +208,7 @@ export function RagPanelPage() {
     try {
       setJobActivo(await pausarJobIngesta(jobActivo.id));
     } catch (error: unknown) {
-      setAviso({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudo pausar el trabajo' });
+      mostrar('error', error instanceof Error ? error.message : 'No se pudo pausar el trabajo');
     }
   }
 
@@ -199,7 +217,7 @@ export function RagPanelPage() {
     try {
       setJobActivo(await reanudarJobIngesta(jobActivo.id));
     } catch (error: unknown) {
-      setAviso({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudo reanudar el trabajo' });
+      mostrar('error', error instanceof Error ? error.message : 'No se pudo reanudar el trabajo');
     }
   }
 
@@ -209,7 +227,7 @@ export function RagPanelPage() {
       setJobActivo(await cancelarJobIngesta(jobActivo.id));
       cargar(); // los ítems no alcanzados quedan "omitido" — refresca las cifras del panel
     } catch (error: unknown) {
-      setAviso({ tipo: 'error', texto: error instanceof Error ? error.message : 'No se pudo detener el trabajo' });
+      mostrar('error', error instanceof Error ? error.message : 'No se pudo detener el trabajo');
     }
   }
 
@@ -238,11 +256,7 @@ export function RagPanelPage() {
 
   return (
     <main className="app-main app-main--ancho">
-      {aviso && (
-        <div className={`state-message ${aviso.tipo === 'error' ? 'is-error' : ''}`} role="status">
-          {aviso.texto}
-        </div>
-      )}
+      <PilaToasts toasts={toasts} onCerrar={cerrar} />
 
       <div className="rag-grid">
         {/* Barrido de detección */}
@@ -270,7 +284,10 @@ export function RagPanelPage() {
               : 'Todavía no se ha ejecutado ningún barrido: las cifras de abajo pueden no reflejar el SGD actual.'}
           </p>
 
-          <button className="boton-secundario" onClick={barrer}>Barrer ahora</button>
+          <button className="boton-secundario" onClick={barrer} disabled={barriendo} aria-busy={barriendo}>
+            {barriendo && <span className="boton-spinner" aria-hidden="true" />}
+            {barriendo ? 'Barriendo…' : 'Barrer ahora'}
+          </button>
         </section>
 
         {/* Proveedores de IA */}
@@ -399,60 +416,13 @@ export function RagPanelPage() {
           </div>
 
           {jobActivo && (
-            <div className="rag-job" role="status" aria-live="polite">
-              <p>
-                Trabajo #{jobActivo.id} ({jobActivo.tipo}) — {jobActivo.estado}
-                {jobActivo.total > 0 && ` · ${jobActivo.procesados}/${jobActivo.total}`}
-                {jobActivo.errores > 0 && ` · ${jobActivo.errores} error(es)`}
-              </p>
-              {(jobActivo.tipo === 'conversion' || jobActivo.tipo === 'reparacion')
-                && (jobActivo.estado === 'en_curso' || jobActivo.estado === 'pausado') && (
-                <div className="rag-job-controles">
-                  {jobActivo.estado === 'en_curso' && (
-                    <button type="button" className="boton-secundario" onClick={pausar}>Pausar</button>
-                  )}
-                  {jobActivo.estado === 'pausado' && (
-                    <button type="button" className="boton-secundario" onClick={reanudar}>Reanudar</button>
-                  )}
-                  <button type="button" className="boton-secundario" onClick={detener}>Detener</button>
-                </div>
-              )}
-              {jobActivo.total > 0 && (
-                <div className="barra-progreso">
-                  <div
-                    className="barra-progreso-relleno"
-                    style={{ width: `${Math.round((jobActivo.procesados / jobActivo.total) * 100)}%` }}
-                  />
-                </div>
-              )}
-              {jobActivo.procesoActual && (
-                <div className="rag-job-actual">
-                  <p className="exp-nota">
-                    Procesando: <strong>
-                      {jobActivo.procesoActual.titulo ?? `Documento #${jobActivo.procesoActual.documentoId}`}
-                    </strong>
-                    {' '}— {jobActivo.procesoActual.segundos} s
-                  </p>
-                  <div className="barra-progreso-indeterminada" />
-                </div>
-              )}
-              {jobActivo.total > 0 && (
-                <p className="exp-nota">
-                  Este trabajo tomó los {jobActivo.total} documento(s) que cumplían el filtro al
-                  momento de iniciarlo — no todo el corpus. De esos, {jobActivo.procesados} ya se
-                  intentaron (con éxito o con error); quedan{' '}
-                  {Math.max(jobActivo.total - jobActivo.procesados, 0)} en cola.{' '}
-                  <button
-                    type="button"
-                    className="boton-enlace"
-                    onClick={() => setJobIdFiltro(jobActivo.id)}
-                  >
-                    Ver qué documentos son
-                  </button>
-                </p>
-              )}
-              {jobActivo.mensaje && <p className="exp-nota is-error">{jobActivo.mensaje}</p>}
-            </div>
+            <PanelJobIngesta
+              job={jobActivo}
+              onPausar={pausar}
+              onReanudar={reanudar}
+              onDetener={detener}
+              onVerDocumentos={() => setJobIdFiltro(jobActivo.id)}
+            />
           )}
         </section>
 
@@ -515,7 +485,10 @@ export function RagPanelPage() {
                   ? `Última ejecución: ${new Date(panel.mantenimiento.retencion.ultimo.feInicio).toLocaleString('es-PE')} — ${panel.mantenimiento.retencion.ultimo.filasAfectadas} fila(s) purgada(s)`
                   : 'Todavía no se ha ejecutado.'}
               </p>
-              <button className="boton-secundario" onClick={correrRetencion}>Purgar ahora</button>
+              <button className="boton-secundario" onClick={correrRetencion} disabled={purgando} aria-busy={purgando}>
+                {purgando && <span className="boton-spinner" aria-hidden="true" />}
+                {purgando ? 'Purgando…' : 'Purgar ahora'}
+              </button>
             </div>
 
             <div>
@@ -540,7 +513,10 @@ export function RagPanelPage() {
                   ? ` · última recolección: ${new Date(panel.mantenimiento.gc.ultimo.feInicio).toLocaleString('es-PE')} (${panel.mantenimiento.gc.ultimo.filasAfectadas} recolectado(s))`
                   : ' · todavía no se ha ejecutado'}
               </p>
-              <button className="boton-secundario" onClick={correrGC}>Recolectar ahora</button>
+              <button className="boton-secundario" onClick={correrGC} disabled={recolectando} aria-busy={recolectando}>
+                {recolectando && <span className="boton-spinner" aria-hidden="true" />}
+                {recolectando ? 'Recolectando…' : 'Recolectar ahora'}
+              </button>
             </div>
           </div>
         </section>

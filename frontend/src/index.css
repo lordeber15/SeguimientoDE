@@ -1704,6 +1704,7 @@ tbody tr.fila-destacada > td {
   background: var(--color-muted);
   overflow: hidden;
   margin: 10px 0 6px;
+  position: relative;
 }
 
 .barra-progreso-relleno {
@@ -1713,8 +1714,12 @@ tbody tr.fila-destacada > td {
   transition: width 240ms ease;
 }
 
-/* Sin un % real que mostrar (una sola llamada HTTP a markitdown, sin progreso intermedio): un
-   bloque que se desliza en bucle solo comunica "sigue en marcha", sin fingir precisión. */
+/* Reserva para el único caso que queda sin fase conocida: un frontend servido desde caché contra
+   un backend que ya manda `procesoActual.fase`, o un mock parcial en un test. El progreso de
+   verdad lo dibuja ahora la barra determinada por fases (ver `PanelJobIngesta.tsx`): la conversión
+   sigue siendo una sola llamada HTTP sin progreso intermedio, pero el DOCUMENTO atraviesa nueve
+   pasos con pesos conocidos, y dentro de la conversión el tope del proveedor permite interpolar.
+   Un bloque que se desliza en bucle solo comunica "sigue en marcha", sin fingir precisión. */
 .barra-progreso-indeterminada {
   height: 8px;
   border-radius: 999px;
@@ -1739,6 +1744,133 @@ tbody tr.fila-destacada > td {
 @keyframes barra-indeterminada-desliz {
   0% { left: -40%; }
   100% { left: 100%; }
+}
+
+/* --- Progreso del documento en curso: barra secundaria por fases del panel de trabajos --- */
+
+/* Se usaba en el JSX de `RagPanelPage` y del modal sin estar definida en ninguna hoja: el bloque
+   heredaba el `gap` del `.rag-job` padre y no se leía como un sub-bloque propio. */
+.rag-job-actual {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--color-muted);
+}
+
+/* La del documento es más fina que la global (8px) para que se lea como subordinada a ella. */
+.barra-progreso--documento {
+  height: 6px;
+  margin: 6px 0 4px;
+}
+
+/* Separadores de fase sobre la propia pista: dicen dónde termina cada tramo (y, con respaldo
+   configurado, dónde el intento 1 le cede el turno al 2) sin robar altura a la barra. */
+.barra-progreso-marcas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.barra-progreso-marca {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 1px;
+  background: var(--color-card);
+  opacity: 0.75;
+}
+
+/* Tramo que se gastó en un intento que FALLÓ (markitdown antes de caer a mineru). Sigue siendo
+   progreso real —ese tiempo pasó de verdad— pero no fue trabajo aprovechado, y el color lo dice. */
+.barra-progreso-fallido {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--color-destructive) 40%, var(--color-muted));
+}
+
+/* Espera muerta: circuito en reposo, o el conversor ocupado con otro documento. La barra NO
+   avanza porque de verdad no avanza nada; las rayas en movimiento son lo único que distingue
+   "esperando" de "colgado", que es justo la pregunta que la barra indeterminada anterior no podía
+   responder. Se ancla a la derecha del relleno real (su `width` es el resto de la pista). */
+.barra-progreso-espera {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  background: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--color-primary) 22%, transparent) 0 6px,
+    transparent 6px 12px
+  );
+  animation: barra-espera-desliz 1s linear infinite;
+}
+
+@keyframes barra-espera-desliz {
+  to { background-position: 12px 0; }
+}
+
+.rag-job-fase {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 12px;
+  margin: 0;
+}
+
+.rag-job-fase-nombre {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.rag-job-fase-detalle {
+  color: var(--color-muted-foreground);
+}
+
+.rag-job-fase-fallback {
+  color: var(--color-destructive);
+  font-size: 12px;
+  margin: 0;
+}
+
+/* Variante de celda de tabla (`CeldaIndexacion`): el ancho es el recurso escaso, no el vertical.
+   Esta misma tabla ya perdió una vez su ancho por una frase de 260px (ver el comentario de
+   `AccionIndexacion` en CeldaIndexacion.tsx) — el título se trunca en vez de arriesgarse a repetirlo. */
+.panel-job--compacta {
+  max-width: 220px;
+  font-size: 12px;
+}
+
+.panel-job--compacta .rag-job-actual {
+  gap: 2px;
+  padding: 4px 6px;
+}
+
+.panel-job--compacta .barra-progreso {
+  height: 4px;
+  margin: 3px 0;
+}
+
+.panel-job--compacta .rag-job-fase-nombre {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .barra-progreso-espera {
+    animation: none;
+  }
+
+  .barra-progreso-relleno {
+    transition: none;
+  }
 }
 
 /* `.retry-button` solo está definido dentro de `.state-message`; fuera de ahí queda sin estilo.
@@ -2406,4 +2538,114 @@ tbody tr.fila-destacada > td {
 
 .propuesta-panel .rag-grid {
   margin-bottom: 20px;
+}
+
+.toast-pila {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--color-card);
+  color: var(--color-card-foreground);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 4px 16px rgb(15 23 42 / 0.15);
+  font-size: 13px;
+  pointer-events: auto;
+  animation: toast-entrada 0.2s ease-out;
+}
+
+.toast--ok {
+  background: var(--badge-atendido-bg);
+  color: var(--badge-atendido-fg);
+  border-color: transparent;
+}
+
+.toast--error {
+  background: var(--color-destructive);
+  color: var(--color-on-destructive);
+  border-color: transparent;
+}
+
+.toast-texto {
+  flex: 1;
+}
+
+.toast-cerrar {
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  padding: 0;
+}
+
+.toast-cerrar:hover {
+  opacity: 1;
+}
+
+.toast-spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  animation: toast-girar 0.7s linear infinite;
+}
+
+.boton-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0.7;
+  animation: toast-girar 0.7s linear infinite;
+  vertical-align: -2px;
+}
+
+@keyframes toast-entrada {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes toast-girar {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+
+  .toast-spinner,
+  .boton-spinner {
+    animation: none;
+    opacity: 1;
+  }
 }

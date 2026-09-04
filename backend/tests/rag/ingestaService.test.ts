@@ -761,8 +761,56 @@ describe('ejecutarJobConversion — respeta una pausa/cancelación que llega ent
     const proceso = ingesta.progresoJob(JOB_ID);
     expect(proceso?.documentoId).toBe(fila.id);
     expect(proceso?.titulo).toBe('INFORME EN CURSO');
+    // `obtenerBytesDocumento` (donde `getArchivoDoc` está colgado) es lo primero que hace
+    // `convertirDocumento` tras marcar 'descargando' — si la fase inicial fuera otra, significaría
+    // que `ejecutarJobConversion` dejó de inicializarla antes de invocar la conversión real.
+    expect(proceso?.fase).toBe('descargando');
 
     resolverArchivo({}); // libera convertirDocumento para no dejar el test colgado
+    await flush();
+  });
+
+  it('anotarFase ignora un aviso cuyo documentoId no es el que el job tiene en curso ahora mismo', async () => {
+    const JOB_ID = 46;
+    const fila = filaDocumento({ id: 503 });
+    let resolverArchivo!: (v: unknown) => void;
+    const archivoPendiente = new Promise((r) => { resolverArchivo = r; });
+    let itemClaimado = false; // como en el test anterior: sin esto el mock reclama el mismo ítem para siempre
+
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('FROM rag.documento WHERE')) return Promise.resolve([{ id: fila.id }]);
+      if (sql.includes('INSERT INTO rag.ingest_job')) return Promise.resolve([{ id: JOB_ID }]);
+      if (sql.includes('INSERT INTO rag.ingest_item')) return Promise.resolve([]);
+      if (sql.includes('SELECT estado FROM rag.ingest_job WHERE id')) return Promise.resolve([{ estado: 'en_curso' }]);
+      if (sql.includes('SELECT id, documento_id FROM rag.ingest_item')) {
+        if (itemClaimado) return Promise.resolve([]);
+        itemClaimado = true;
+        return Promise.resolve([{ id: 1, documento_id: fila.id }]);
+      }
+      if (sql.includes('FROM rag.documento d') && sql.includes('LEFT JOIN rag.expediente e')) {
+        return Promise.resolve([fila]);
+      }
+      return Promise.resolve([]);
+    });
+    transaction.mockImplementation((cb: (tx: unknown) => Promise<unknown>) => cb({}));
+    documentoPorId.mockResolvedValue(documentoRagFixture({ id: fila.id, titulo: 'EN CURSO' }));
+    getArchivoDoc.mockReturnValue(archivoPendiente); // convertirDocumento queda colgado en 'descargando'
+
+    await ingesta.iniciarJobConversion({}, 'admin');
+    await flush();
+
+    // Simula el aviso tardío de una conversión abandonada por el límite duro de mdConvertService
+    // (incidente de 2026-08-23): sigue viva en segundo plano después de que el loop ya haya
+    // pasado a otro documento. Sin el filtro por documentoId, este aviso pisaría la fase del
+    // documento que SÍ está en curso ahora y la barra retrocedería sin explicación.
+    ingesta.anotarFase(JOB_ID, fila.id + 999, { fase: 'convirtiendo', proveedor: 'markitdown', limiteMs: 1000 });
+    expect(ingesta.progresoJob(JOB_ID)?.fase).toBe('descargando');
+
+    // El mismo aviso, con el documentoId correcto, sí se aplica.
+    ingesta.anotarFase(JOB_ID, fila.id, { fase: 'convirtiendo', proveedor: 'markitdown', limiteMs: 1000 });
+    expect(ingesta.progresoJob(JOB_ID)?.fase).toBe('convirtiendo');
+
+    resolverArchivo({});
     await flush();
   });
 });

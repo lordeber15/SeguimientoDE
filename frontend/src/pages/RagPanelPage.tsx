@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import toast, { Toaster } from 'react-hot-toast';
 import { ListaDocumentosRag } from '../components/ListaDocumentosRag';
 import { PanelJobIngesta } from '../components/PanelJobIngesta';
-import { PilaToasts, useToasts } from '../components/Toasts';
 import {
   activarBarrido,
   activarGC,
@@ -49,7 +49,6 @@ const INTERVALO_POLL_MS = 1500;
 
 export function RagPanelPage() {
   const [estado, setEstado] = useState<Estado>({ tipo: 'cargando' });
-  const { toasts, mostrar, actualizar, cerrar } = useToasts();
   const [jobActivo, setJobActivo] = useState<JobIngesta | null>(null);
   const [jobIdFiltro, setJobIdFiltro] = useState<number | null>(null);
   const [barriendo, setBarriendo] = useState(false);
@@ -96,22 +95,22 @@ export function RagPanelPage() {
   async function alternarBarrido(activo: boolean) {
     try {
       await activarBarrido(activo);
-      mostrar('ok', activo ? 'Barrido activado.' : 'Barrido desactivado.');
+      toast.success(activo ? 'Barrido activado.' : 'Barrido desactivado.');
       cargar();
     } catch (error: unknown) {
-      mostrar('error', error instanceof Error ? error.message : 'No se pudo cambiar');
+      toast.error(error instanceof Error ? error.message : 'No se pudo cambiar');
     }
   }
 
   async function barrer() {
     setBarriendo(true);
-    const id = mostrar('cargando', 'Barrido en curso… puede tardar unos minutos.');
+    const id = toast.loading('Barrido en curso… puede tardar unos minutos.');
     try {
       const r = await barrerAhora();
-      actualizar(id, 'ok', `Barrido completado: ${r.documentosNuevos} nuevo(s), ${r.documentosBaja} baja(s).`);
+      toast.success(`Barrido completado: ${r.documentosNuevos} nuevo(s), ${r.documentosBaja} baja(s).`, { id });
       cargar();
     } catch (error: unknown) {
-      actualizar(id, 'error', error instanceof Error ? error.message : 'No se pudo barrer');
+      toast.error(error instanceof Error ? error.message : 'No se pudo barrer', { id });
     } finally {
       setBarriendo(false);
     }
@@ -120,26 +119,25 @@ export function RagPanelPage() {
   async function alternarRetencion(activo: boolean) {
     try {
       await activarRetencion(activo);
-      mostrar('ok', activo ? 'Retención activada.' : 'Retención desactivada.');
+      toast.success(activo ? 'Retención activada.' : 'Retención desactivada.');
       cargar();
     } catch (error: unknown) {
-      mostrar('error', error instanceof Error ? error.message : 'No se pudo cambiar');
+      toast.error(error instanceof Error ? error.message : 'No se pudo cambiar');
     }
   }
 
   async function correrRetencion() {
     setPurgando(true);
-    const id = mostrar('cargando', 'Purgando registros antiguos…');
+    const id = toast.loading('Purgando registros antiguos…');
     try {
       const r = await ejecutarRetencionAhora();
-      actualizar(
-        id,
-        'ok',
+      toast.success(
         `Retención ejecutada: ${r.loginIntento} intento(s) de login, ${r.usoToken} uso(s) de token, ${r.retrievalLog} consulta(s) de log purgadas.`,
+        { id },
       );
       cargar();
     } catch (error: unknown) {
-      actualizar(id, 'error', error instanceof Error ? error.message : 'No se pudo ejecutar la retención');
+      toast.error(error instanceof Error ? error.message : 'No se pudo ejecutar la retención', { id });
     } finally {
       setPurgando(false);
     }
@@ -148,26 +146,25 @@ export function RagPanelPage() {
   async function alternarGC(activo: boolean) {
     try {
       await activarGC(activo);
-      mostrar('ok', activo ? 'Recolector de basura activado.' : 'Recolector de basura desactivado.');
+      toast.success(activo ? 'Recolector de basura activado.' : 'Recolector de basura desactivado.');
       cargar();
     } catch (error: unknown) {
-      mostrar('error', error instanceof Error ? error.message : 'No se pudo cambiar');
+      toast.error(error instanceof Error ? error.message : 'No se pudo cambiar');
     }
   }
 
   async function correrGC() {
     setRecolectando(true);
-    const id = mostrar('cargando', 'Recolectando huérfanos…');
+    const id = toast.loading('Recolectando huérfanos…');
     try {
       const r = await ejecutarGcAhora();
-      actualizar(
-        id,
-        'ok',
+      toast.success(
         `Recolector ejecutado: ${r.marcados} contenido(s) marcado(s) huérfano(s), ${r.recolectados} recolectado(s) (${r.chunksBorrados} chunks borrados; el markdown se conserva siempre).`,
+        { id },
       );
       cargar();
     } catch (error: unknown) {
-      actualizar(id, 'error', error instanceof Error ? error.message : 'No se pudo ejecutar el recolector');
+      toast.error(error instanceof Error ? error.message : 'No se pudo ejecutar el recolector', { id });
     } finally {
       setRecolectando(false);
     }
@@ -179,7 +176,7 @@ export function RagPanelPage() {
       setJobActivo(await fetchJob(jobId));
       setJobIdFiltro(jobId);
     } catch (error: unknown) {
-      mostrar('error', error instanceof Error ? error.message : 'No se pudo iniciar la conversión');
+      toast.error(error instanceof Error ? error.message : 'No se pudo iniciar la conversión');
     }
   }
 
@@ -189,7 +186,7 @@ export function RagPanelPage() {
       setJobActivo(await fetchJob(jobId));
       setJobIdFiltro(jobId);
     } catch (error: unknown) {
-      mostrar('error', error instanceof Error ? error.message : 'No se pudo iniciar la reparación');
+      toast.error(error instanceof Error ? error.message : 'No se pudo iniciar la reparación');
     }
   }
 
@@ -199,7 +196,7 @@ export function RagPanelPage() {
       setJobActivo(await fetchJob(jobId));
       setJobIdFiltro(jobId);
     } catch (error: unknown) {
-      mostrar('error', error instanceof Error ? error.message : 'No se pudo iniciar la ingesta de embeddings');
+      toast.error(error instanceof Error ? error.message : 'No se pudo iniciar la ingesta de embeddings');
     }
   }
 
@@ -208,7 +205,7 @@ export function RagPanelPage() {
     try {
       setJobActivo(await pausarJobIngesta(jobActivo.id));
     } catch (error: unknown) {
-      mostrar('error', error instanceof Error ? error.message : 'No se pudo pausar el trabajo');
+      toast.error(error instanceof Error ? error.message : 'No se pudo pausar el trabajo');
     }
   }
 
@@ -217,7 +214,7 @@ export function RagPanelPage() {
     try {
       setJobActivo(await reanudarJobIngesta(jobActivo.id));
     } catch (error: unknown) {
-      mostrar('error', error instanceof Error ? error.message : 'No se pudo reanudar el trabajo');
+      toast.error(error instanceof Error ? error.message : 'No se pudo reanudar el trabajo');
     }
   }
 
@@ -227,7 +224,7 @@ export function RagPanelPage() {
       setJobActivo(await cancelarJobIngesta(jobActivo.id));
       cargar(); // los ítems no alcanzados quedan "omitido" — refresca las cifras del panel
     } catch (error: unknown) {
-      mostrar('error', error instanceof Error ? error.message : 'No se pudo detener el trabajo');
+      toast.error(error instanceof Error ? error.message : 'No se pudo detener el trabajo');
     }
   }
 
@@ -256,7 +253,7 @@ export function RagPanelPage() {
 
   return (
     <main className="app-main app-main--ancho">
-      <PilaToasts toasts={toasts} onCerrar={cerrar} />
+      <Toaster position="top-right" />
 
       <div className="rag-grid">
         {/* Barrido de detección */}

@@ -2540,74 +2540,8 @@ tbody tr.fila-destacada > td {
   margin-bottom: 20px;
 }
 
-.toast-pila {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: min(360px, calc(100vw - 32px));
-  pointer-events: none;
-}
-
-.toast {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border-radius: 8px;
-  background: var(--color-card);
-  color: var(--color-card-foreground);
-  border: 1px solid var(--color-border);
-  box-shadow: 0 4px 16px rgb(15 23 42 / 0.15);
-  font-size: 13px;
-  pointer-events: auto;
-  animation: toast-entrada 0.2s ease-out;
-}
-
-.toast--ok {
-  background: var(--badge-atendido-bg);
-  color: var(--badge-atendido-fg);
-  border-color: transparent;
-}
-
-.toast--error {
-  background: var(--color-destructive);
-  color: var(--color-on-destructive);
-  border-color: transparent;
-}
-
-.toast-texto {
-  flex: 1;
-}
-
-.toast-cerrar {
-  border: none;
-  background: none;
-  color: inherit;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.7;
-  padding: 0;
-}
-
-.toast-cerrar:hover {
-  opacity: 1;
-}
-
-.toast-spinner {
-  flex: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid var(--color-border);
-  border-top-color: var(--color-primary);
-  animation: toast-girar 0.7s linear infinite;
-}
-
+/* Los avisos flotantes (barrido, purga, GC…) los renderiza react-hot-toast; ver <Toaster> en
+   RagPanelPage.tsx. Aquí solo queda el spinner de los propios botones ("Barriendo…", "Purgando…"). */
 .boton-spinner {
   display: inline-block;
   width: 12px;
@@ -2621,17 +2555,6 @@ tbody tr.fila-destacada > td {
   vertical-align: -2px;
 }
 
-@keyframes toast-entrada {
-  from {
-    opacity: 0;
-    transform: translateY(-8px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 @keyframes toast-girar {
   to {
     transform: rotate(360deg);
@@ -2639,11 +2562,6 @@ tbody tr.fila-destacada > td {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toast {
-    animation: none;
-  }
-
-  .toast-spinner,
   .boton-spinner {
     animation: none;
     opacity: 1;

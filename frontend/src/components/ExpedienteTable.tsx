@@ -1,5 +1,6 @@
 import { Fragment, useState, type ReactNode } from 'react';
 import { claveExpediente, type EstadoIngestaExpediente } from '../api/chat';
+import type { JobIngesta } from '../api/rag';
 import {
   formatearDuracion,
   formatearFecha,
@@ -18,6 +19,9 @@ export interface Indexacion {
   jobEnCurso: string | null;
   onJobCambio: (clave: string | null) => void;
   onRefrescar: () => void;
+  /** El job de ingesta activo encontrado al montar (re-enganche) — `null` si no hay ninguno. Se
+   *  compara contra el `filtro` de cada fila para saber a cuál se lo pasa como `jobInicial`. */
+  jobActivoInicial: JobIngesta | null;
 }
 
 interface Props {
@@ -171,6 +175,12 @@ export function ExpedienteTable({
                           jobEnCurso={indexacion?.jobEnCurso ?? null}
                           onJobCambio={indexacion?.onJobCambio ?? (() => {})}
                           onRefrescar={indexacion?.onRefrescar ?? (() => {})}
+                          jobInicial={
+                            indexacion?.jobActivoInicial?.filtro?.nuAnnExp === exp.nuAnnExp
+                              && indexacion?.jobActivoInicial?.filtro?.nuSecExp === exp.nuSecExp
+                              ? indexacion.jobActivoInicial
+                              : null
+                          }
                         />
                       </td>
                     )}

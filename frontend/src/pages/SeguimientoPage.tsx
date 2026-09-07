@@ -1,6 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { fetchEstadosIndexacion, type EstadoIngestaExpediente } from '../api/chat';
 import { fetchDependencias, type Dependencia } from '../api/dependencias';
+import { buscarJobActivo, type JobIngesta } from '../api/rag';
 import {
   buscarExpediente,
   fetchExpedientes,
@@ -91,6 +92,28 @@ export function SeguimientoPage({ onAbrirChatExpediente }: Props) {
 
   const [estadosIndexacion, setEstadosIndexacion] = useState<Map<string, EstadoIngestaExpediente>>(new Map());
   const [jobEnCurso, setJobEnCurso] = useState<string | null>(null);
+  const [jobActivoInicial, setJobActivoInicial] = useState<JobIngesta | null>(null);
+
+  // Re-enganche, una sola vez al montar: el job de ingesta corre en el backend y sobrevive a
+  // cambiar de pestaña (esta página se desmonta al hacerlo), así que sin esto la fila que estaba
+  // "Convirtiendo…" vuelve a verse inactiva aunque el trabajo siga — y su botón, ya clicable de
+  // nuevo, podría apilar un segundo job encima. `ExpedienteTable` decide a qué fila corresponde
+  // comparando el `filtro` del job contra cada expediente visible.
+  useEffect(() => {
+    if (!onAbrirChatExpediente) return; // sin permiso de gestión, esta columna ni se renderiza
+    let vigente = true;
+    buscarJobActivo()
+      .then((job) => {
+        if (vigente) setJobActivoInicial(job);
+      })
+      .catch(() => {
+        // Best-effort, igual que `recargarEstadosIndexacion`: sin re-enganche la tabla sigue
+        // siendo usable, solo no recupera la barra de un trabajo que ya estaba en curso.
+      });
+    return () => {
+      vigente = false;
+    };
+  }, [onAbrirChatExpediente]);
 
   useEffect(() => {
     let vigente = true;
@@ -266,6 +289,7 @@ export function SeguimientoPage({ onAbrirChatExpediente }: Props) {
         jobEnCurso,
         onJobCambio: setJobEnCurso,
         onRefrescar: recargarEstadosIndexacion,
+        jobActivoInicial,
       }
     : undefined;
   const columnasTabla = onAbrirChatExpediente ? 9 : 8;

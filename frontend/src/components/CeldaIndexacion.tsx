@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { EstadoIngestaExpediente } from '../api/chat';
 import { ApiError } from '../api/cliente';
 import { fetchJob, iniciarIngestaConversion, iniciarIngestaEmbeddings, type JobIngesta } from '../api/rag';
@@ -18,6 +18,14 @@ interface Props {
   /** Clave de la fila con un job en vuelo, o `null`. Un solo job a la vez en toda la tabla. */
   jobEnCurso: string | null;
   onJobCambio: (clave: string | null) => void;
+  /**
+   * Job que ya estaba corriendo para ESTE expediente al montar la tabla — re-enganche tras
+   * cambiar de pestaña o recargar. El job vive en el backend: si esta fila no pregunta, la barra
+   * de un trabajo real desaparece y parece cancelado (y el botón vuelve a estar clicable, capaz de
+   * apilar un segundo job). `SeguimientoPage` lo resuelve una sola vez para toda la tabla y solo
+   * se lo pasa a la fila del expediente que coincide con el `filtro` del job.
+   */
+  jobInicial?: JobIngesta | null;
   /** Tras completar un job: `marcarDocumentosCompletos` es global, así que conviene refrescar
    * el mapa entero, no solo esta fila — otras filas pueden pasar de ámbar a verde de rebote. */
   onRefrescar: () => void;
@@ -43,8 +51,23 @@ export function CeldaIndexacion({
   jobEnCurso,
   onJobCambio,
   onRefrescar,
+  jobInicial,
 }: Props) {
   const [accion, setAccion] = useState<EstadoAccion>({ tipo: 'inactivo' });
+
+  // Consume `jobInicial` como MUCHO una vez: si llega tarde (la búsqueda del padre es async) y
+  // para entonces el usuario ya lanzó algo por su cuenta, no debe pisar esa acción más fresca —
+  // pero tampoco debe reaparecer después, cuando ese job propio termine y `accion` vuelva a
+  // 'inactivo'. El ref marca "ya decidí qué hacer con esto", se aplique o no.
+  const jobInicialVisto = useRef(false);
+  useEffect(() => {
+    if (jobInicialVisto.current || !jobInicial) return;
+    jobInicialVisto.current = true;
+    if (accion.tipo === 'inactivo') {
+      setAccion({ tipo: 'trabajando', job: jobInicial });
+      onJobCambio(clave);
+    }
+  }, [jobInicial, accion, clave, onJobCambio]);
 
   // Sondeo del job propio de esta fila — mismo patrón que `UnirPdfModal.tsx`.
   useEffect(() => {

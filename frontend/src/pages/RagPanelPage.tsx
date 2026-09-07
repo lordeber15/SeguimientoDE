@@ -7,6 +7,7 @@ import {
   activarGC,
   activarRetencion,
   barrerAhora,
+  buscarJobActivo,
   cancelarJobIngesta,
   ejecutarGcAhora,
   ejecutarRetencionAhora,
@@ -66,6 +67,31 @@ export function RagPanelPage() {
   }, []);
 
   useEffect(() => cargar(), [cargar]);
+
+  // Re-enganche al job que siguió corriendo mientras esta pantalla no existía.
+  //
+  // El job vive en el backend, no en el navegador: `App.tsx` renderiza las vistas con
+  // `{clave === 'rag' && <RagPanelPage />}`, así que cambiar de pestaña DESMONTA este componente y
+  // se lleva `jobActivo`. El trabajo no se entera y sigue convirtiendo, pero al volver la pantalla
+  // arrancaba en blanco: parecía cancelado. Y como el `disabled` de los botones depende de
+  // `jobActivo`, volver a pulsar apilaba un segundo job sobre el mismo pool de documentos.
+  //
+  // Solo repuebla el estado inicial: el `useEffect` de sondeo de abajo se encarga a partir de ahí.
+  useEffect(() => {
+    let vigente = true;
+    buscarJobActivo()
+      .then((job) => {
+        if (!vigente || !job) return;
+        setJobActivo(job);
+        setJobIdFiltro(job.id); // devuelve también la lista de documentos a donde estaba
+      })
+      .catch(() => {
+        // Sin re-enganche la pantalla sigue siendo usable; no merece tumbarla ni avisar.
+      });
+    return () => {
+      vigente = false;
+    };
+  }, []);
 
   // Sondeo del job de ingesta en curso, si lo hay. Sigue mientras haya un documento en vuelo
   // aunque el job ya no esté "en_curso" (pausado/cancelado): ese ítem nunca se aborta a mitad

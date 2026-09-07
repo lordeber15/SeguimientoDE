@@ -6,7 +6,7 @@ import { validarEntorno } from './config/validarEntorno';
 import { sequelize } from './models';
 import { iniciarPlanificadorResumen } from './services/dashboardResumenService';
 import { iniciarPlanificadorBarrido } from './rag/barridoService';
-import { reanudarJobsInterrumpidos } from './rag/ingestaService';
+import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './rag/ingestaService';
 import { iniciarMantenimientoPeriodico } from './rag/mantenimientoService';
 import { revisarConfiguracionIA } from './ai/providerFactory';
 import { iniciarLimpiezaPeriodica } from './services/unirPdfService';
@@ -47,8 +47,12 @@ async function start() {
     iniciarMantenimientoPeriodico();
 
     // Reclama ítems de ingesta con lease vencido (proceso caído o backend reiniciado a medias) y
-    // reanuda los jobs de conversión que se quedaron interrumpidos.
+    // reanuda los jobs de conversión que se quedaron interrumpidos. La primera pasada se espera
+    // aquí para que el arranque deje la cola coherente; a partir de ahí el supervisor repite la
+    // misma revisión cada minuto — hace falta porque un reinicio a mitad de documento deja el
+    // lease vigente 10 minutos más, y una única comprobación al arrancar nunca lo vería vencer.
     await reanudarJobsInterrumpidos();
+    iniciarSupervisorIngesta();
 
     // La configuración de IA se avisa, no bloquea: hoy es normal no tener claves todavía y la
     // ingesta puede convertir y trocear sin ellas. Solo los embeddings quedan a la espera.

@@ -1047,6 +1047,179 @@ describe('ejecutarJobConversion — respeta una pausa/cancelación que llega ent
   });
 });
 
+describe('exigirSinJobEnCurso — no se apilan dos jobs de conversión sobre el mismo pool', () => {
+  /** El botón deshabilitado del panel es defensa de UI: depende de `jobActivo` en React, que se
+   *  pierde al cambiar de pestaña (desmonta el componente) y deja de proteger. Esta es la guarda
+   *  real, del lado del servidor — vale igual para dos pestañas o dos usuarios. */
+  it('con un job en_curso en la BD, rechaza con 409 nombrándolo y no inserta uno nuevo', async () => {
+    query.mockImplementation((sql: string) => {
+      if (sql.includes("WHERE estado = 'en_curso' AND tipo IN")) {
+        return Promise.resolve([{ id: 77, tipo: 'conversion' }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await expect(ingesta.iniciarJobConversion({}, 'admin')).rejects.toThrow(/#77/);
+
+    expect(query.mock.calls.some(([sql]: [string]) => sql.includes('INSERT INTO rag.ingest_job'))).toBe(false);
+  });
+
+  it('la misma guarda protege la reparación masiva y el job de documentos largos', async () => {
+    query.mockImplementation((sql: string) => {
+      if (sql.includes("WHERE estado = 'en_curso' AND tipo IN")) {
+        return Promise.resolve([{ id: 78, tipo: 'largos' }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await expect(ingesta.iniciarJobReparacion({}, 'admin')).rejects.toThrow(/#78/);
+    await expect(ingesta.iniciarJobLargos({}, 'admin')).rejects.toThrow(/#78/);
+  });
+
+  it('sin ningún job en_curso, procede con normalidad', async () => {
+    query.mockImplementation((sql: string) => {
+      if (sql.includes("WHERE estado = 'en_curso' AND tipo IN")) return Promise.resolve([]);
+      if (sql.includes('FROM rag.documento WHERE')) return Promise.resolve([{ id: 1 }]);
+      if (sql.includes('INSERT INTO rag.ingest_job')) return Promise.resolve([{ id: 99 }]);
+      return Promise.resolve([]);
+    });
+
+    const { jobId } = await ingesta.iniciarJobConversion({}, 'admin');
+    expect(jobId).toBe(99);
+  });
+});
+
+describe('listarJobs — filtro y mensaje viajan para que el frontend se pueda re-enganchar', () => {
+  it('el SELECT incluye filtro y mensaje, no solo los contadores', async () => {
+    query.mockResolvedValue([]);
+
+    await ingesta.listarJobs();
+
+    const [sql] = query.mock.calls[0];
+    expect(sql).toContain('filtro');
+    expect(sql).toContain('mensaje');
+  });
+});
+
+describe('reanudarJobsInterrumpidos — supervisor de jobs sin worker asignado', () => {
+  it('reclama leases vencidos Y revisa los jobs en_curso en la MISMA pasada (sin el early-return de antes)', async () => {
+    // Regresión concreta: antes, si `itemsReclamados.length === 0` la función salía sin mirar
+    // siquiera los jobs — un reinicio ENTRE ítems (ninguno en_proceso, nada que reclamar) dejaba
+    // un job en_curso con ítems pendientes sin que nadie volviera a procesarlos jamás.
+    let seRevisaronJobs = false;
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('lease_hasta < now()')) return Promise.resolve([]); // nada que reclamar
+      if (sql.includes('SELECT j.id, j.tipo FROM rag.ingest_job j')) {
+        seRevisaronJobs = true;
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await ingesta.reanudarJobsInterrumpidos();
+
+    expect(seRevisaronJobs).toBe(true);
+  });
+
+  it('relanza un job "largos" en_curso sin worker — no lo marca error como si fuera de embeddings', async () => {
+    const JOB_ID = 901;
+    let seIntentoReclamarUnItem = false;
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('lease_hasta < now()')) return Promise.resolve([]);
+      if (sql.includes('SELECT j.id, j.tipo FROM rag.ingest_job j')) {
+        return Promise.resolve([{ id: JOB_ID, tipo: 'largos' }]);
+      }
+      if (sql.includes('SELECT estado FROM rag.ingest_job WHERE id')) return Promise.resolve([{ estado: 'en_curso' }]);
+      if (sql.includes('SELECT id, documento_id FROM rag.ingest_item')) {
+        seIntentoReclamarUnItem = true;
+        return Promise.resolve([]); // sin más ítems: el loop relanzado termina de inmediato
+      }
+      return Promise.resolve([]);
+    });
+    transaction.mockImplementation((cb: (tx: unknown) => Promise<unknown>) => cb({}));
+
+    await ingesta.reanudarJobsInterrumpidos();
+    await new Promise((r) => setImmediate(r)); // el relanzamiento es fire-and-forget
+
+    expect(seIntentoReclamarUnItem).toBe(true);
+    expect(query.mock.calls.some(([sql]: [string]) => sql.includes("SET estado = 'error'"))).toBe(false);
+  });
+
+  it('un job "embedding" interrumpido SÍ se marca error — no se reconstruye solo sin proveedor', async () => {
+    const JOB_ID = 902;
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('lease_hasta < now()')) return Promise.resolve([]);
+      if (sql.includes('SELECT j.id, j.tipo FROM rag.ingest_job j')) {
+        return Promise.resolve([{ id: JOB_ID, tipo: 'embedding' }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await ingesta.reanudarJobsInterrumpidos();
+
+    const marcaError = query.mock.calls.find(([sql]: [string]) => sql.includes("estado = 'error'"));
+    expect(marcaError).toBeDefined();
+    expect((marcaError![1] as { bind: unknown[] }).bind).toEqual([JOB_ID]);
+  });
+
+  /** El caso que de verdad motivó cambiar esto de "solo al arrancar" a un `setInterval`: un job
+   *  con un loop REALMENTE vivo en este proceso no debe relanzarse — la BD sola no puede saberlo,
+   *  `loopsVivos` es lo que distingue "sin worker" de "con uno que sigue trabajando". */
+  it('un job cuyo loop ya está corriendo en este proceso no se relanza (no se duplica)', async () => {
+    const JOB_ID = 903;
+    const fila = filaDocumento({ id: 903001 });
+    let resolverArchivo!: (v: unknown) => void;
+    const archivoPendiente = new Promise((r) => { resolverArchivo = r; });
+    let itemClaimado = false;
+    let reclamos = 0;
+
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('FROM rag.documento WHERE')) return Promise.resolve([{ id: fila.id }]);
+      if (sql.includes('INSERT INTO rag.ingest_job')) return Promise.resolve([{ id: JOB_ID }]);
+      if (sql.includes('INSERT INTO rag.ingest_item')) return Promise.resolve([]);
+      if (sql.includes('SELECT estado FROM rag.ingest_job WHERE id')) return Promise.resolve([{ estado: 'en_curso' }]);
+      if (sql.includes('SELECT id, documento_id FROM rag.ingest_item')) {
+        reclamos++;
+        if (itemClaimado) return Promise.resolve([]);
+        itemClaimado = true;
+        return Promise.resolve([{ id: 1, documento_id: fila.id }]);
+      }
+      if (sql.includes('FROM rag.documento d') && sql.includes('LEFT JOIN rag.expediente e')) {
+        return Promise.resolve([fila]);
+      }
+      if (sql.includes('lease_hasta < now()')) return Promise.resolve([]);
+      // El supervisor "ve" este job pese a tener su loop vivo — es justo lo que loopsVivos debe filtrar.
+      if (sql.includes('SELECT j.id, j.tipo FROM rag.ingest_job j')) {
+        return Promise.resolve([{ id: JOB_ID, tipo: 'conversion' }]);
+      }
+      return Promise.resolve([]);
+    });
+    transaction.mockImplementation((cb: (tx: unknown) => Promise<unknown>) => cb({}));
+    documentoPorId.mockResolvedValue(documentoRagFixture({ id: fila.id, titulo: 'EN VUELO' }));
+    getArchivoDoc.mockReturnValue(archivoPendiente); // el loop real queda colgado en 'descargando'
+    // Al liberar `archivoPendiente` el loop original sigue adelante de verdad: le hace falta un
+    // resultado sano para no terminar en un error de limpieza ajeno a lo que este test comprueba.
+    resolverDocumento.mockReturnValue({ buffer: Buffer.from('contenido'), filename: 'x.pdf' });
+    convertirAMarkdown.mockResolvedValue({ markdown: 'z'.repeat(300), ms: 1 });
+
+    await ingesta.iniciarJobConversion({}, 'admin'); // loop de verdad -> entra a loopsVivos
+    await new Promise((r) => setImmediate(r));
+    const reclamosAntesDelSupervisor = reclamos;
+
+    await ingesta.reanudarJobsInterrumpidos(); // no debe relanzar nada para este job
+    await new Promise((r) => setImmediate(r));
+
+    expect(reclamos).toBe(reclamosAntesDelSupervisor); // ningún reclamo NUEVO: no se duplicó el loop
+
+    // Libera el loop original y lo deja TERMINAR de verdad (varios `await` más: contar páginas,
+    // convertir, trocear, guardar, cerrar el job) — sin drenarlo del todo, sus llamadas a `query`
+    // seguirían en vuelo cuando el siguiente test resetee los mocks, y fallarían con un error
+    // ajeno a lo que este test comprueba.
+    resolverArchivo({});
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  });
+});
+
 describe('frontera de módulos — la ruta gratuita nunca puede alcanzar la de pago', () => {
   it('ingestaService.ts no importa visionService.ts, ni directa ni indirectamente por texto', () => {
     // Ni `iniciarJobConversion` ni `iniciarJobReparacion` podrían llamar nunca a la IA de pago si

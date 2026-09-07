@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchEstadoIngestaExpediente, type EstadoIngestaExpediente } from '../api/chat';
 import { ApiError } from '../api/cliente';
 import {
+  buscarJobsActivos,
   fetchJob,
   fetchPanel,
   iniciarIngestaConversion,
@@ -49,6 +50,9 @@ export function ModalIndexacionExpediente({
   const [aviso, setAviso] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
   const [seleccion, setSeleccion] = useState<Set<number>>(new Set());
   const [recargaSenal, setRecargaSenal] = useState(0);
+  /** Hay una ingesta viva que NO es de este expediente (típicamente general del corpus): no es
+   *  suya para pintarla, pero sí le impide lanzar otra — el conversor es un semáforo de 1. */
+  const [ingestaAjena, setIngestaAjena] = useState(false);
   const cerrarRef = useRef<HTMLButtonElement>(null);
 
   const cargarResumen = useCallback(() => {
@@ -70,6 +74,26 @@ export function ModalIndexacionExpediente({
   useEffect(() => {
     fetchPanel().then(setPanelInfo).catch(() => {});
   }, []);
+
+  // Re-enganche al abrir: el job corre en el backend y sobrevive a que este modal se cierre, así
+  // que al reabrirlo hay que preguntarle al servidor en vez de asumir que no hay nada. Solo se
+  // adopta el job de ESTE expediente; una ingesta general se señala aparte (no es suya para
+  // mostrar su barra, pero sí bloquea lanzar otra).
+  useEffect(() => {
+    let vigente = true;
+    buscarJobsActivos({ nuAnnExp, nuSecExp })
+      .then(({ propio, ajeno }) => {
+        if (!vigente) return;
+        if (propio) setJobActivo(propio);
+        setIngestaAjena(ajeno);
+      })
+      .catch(() => {
+        // Sin re-enganche el modal sigue siendo usable; el 409 del backend explicaría el motivo.
+      });
+    return () => {
+      vigente = false;
+    };
+  }, [nuAnnExp, nuSecExp]);
 
   // Escape + foco + scroll lock — mismo patrón que VisorDocumento/UnirPdfModal.
   useEffect(() => {
@@ -124,7 +148,10 @@ export function ModalIndexacionExpediente({
     };
   }, [jobActivo, cargarResumen, onCambio]);
 
-  const jobEnCurso = jobActivo?.estado === 'en_curso';
+  // Bloquea lanzar tanto si YA hay un job propio como si hay uno ajeno (ingesta general): el
+  // conversor es un semáforo de 1, y el backend rechazaría igual con 409 — esto solo evita el
+  // viaje y el mensaje de error para el caso esperable.
+  const jobEnCurso = jobActivo?.estado === 'en_curso' || ingestaAjena;
   const filtroExpediente = { nuAnnExp, nuSecExp };
 
   async function lanzar(iniciar: () => Promise<{ jobId: number }>, mensajeError: string) {
@@ -138,6 +165,11 @@ export function ModalIndexacionExpediente({
       if (err instanceof ApiError && err.status === 404) {
         setAviso({ tipo: 'ok', texto: 'Ya estaba al día — no había nada pendiente con ese filtro.' });
         cargarResumen();
+      } else if (err instanceof ApiError && err.status === 409) {
+        // Alguien más lanzó una ingesta justo antes de que este 409 llegara — la guarda de
+        // `ingestaAjena` no pudo verlo a tiempo. Se refleja igual, sin tratarlo como un fallo real.
+        setIngestaAjena(true);
+        setAviso({ tipo: 'error', texto: err.message });
       } else {
         setAviso({ tipo: 'error', texto: err instanceof Error ? err.message : mensajeError });
       }
@@ -188,6 +220,13 @@ export function ModalIndexacionExpediente({
           {aviso && (
             <div className={`state-message ${aviso.tipo === 'error' ? 'is-error' : ''}`} role="status">
               {aviso.texto}
+            </div>
+          )}
+
+          {ingestaAjena && !jobActivo && (
+            <div className="state-message" role="status">
+              Hay una ingesta general en curso sobre todo el corpus; espere a que termine para
+              lanzar una acción sobre este expediente.
             </div>
           )}
 

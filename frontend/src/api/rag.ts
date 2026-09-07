@@ -114,6 +114,9 @@ export interface JobIngesta {
   mensaje: string | null;
   feInicio: string;
   feFin: string | null;
+  /** El filtro con el que se creó el job: dice a qué expediente (o a todo el corpus) pertenece.
+   *  Es lo que permite a una pantalla acotada distinguir "mi trabajo" de una ingesta general. */
+  filtro?: FiltroIngesta | null;
   /** Solo presente cuando `getJob` se llama sobre un job de conversión/reparación en curso. */
   procesoActual?: ProcesoActualJob | null;
 }
@@ -320,6 +323,54 @@ export function fetchJob(jobId: number): Promise<JobIngesta> {
 
 export function fetchJobs(): Promise<JobIngesta[]> {
   return apiJson('/api/rag/ingesta', 'obtener los trabajos recientes');
+}
+
+export interface Expediente {
+  nuAnnExp: string;
+  nuSecExp: string;
+}
+
+/** Un job sigue "vivo" mientras pueda volver a tomar documentos: en curso, o pausado a la espera. */
+function estaVivo(job: JobIngesta): boolean {
+  return job.estado === 'en_curso' || job.estado === 'pausado';
+}
+
+function esDelExpediente(job: JobIngesta, exp: Expediente): boolean {
+  return job.filtro?.nuAnnExp === exp.nuAnnExp && job.filtro?.nuSecExp === exp.nuSecExp;
+}
+
+/**
+ * El job de ingesta vivo ahora mismo, o `null`.
+ *
+ * Existe porque el job corre en el BACKEND, desacoplado del navegador: cambiar de pestaña desmonta
+ * el componente y se lleva su estado, pero el trabajo sigue. Sin esto, al volver la pantalla
+ * arranca en blanco y parece que se canceló — y, peor, el botón deshabilitado deja de proteger y
+ * se puede apilar un segundo job encima del que ya corría.
+ *
+ * `deExpediente` lo acota: una pantalla que solo habla de UN expediente no debe adoptar como propia
+ * la barra de una ingesta general del corpus entero.
+ */
+export async function buscarJobActivo(deExpediente?: Expediente): Promise<JobIngesta | null> {
+  // La lista ya viene ORDER BY fe_inicio DESC: el primero que cumpla es el más reciente.
+  const vivos = (await fetchJobs()).filter(estaVivo);
+  if (!deExpediente) return vivos[0] ?? null;
+  return vivos.find((job) => esDelExpediente(job, deExpediente)) ?? null;
+}
+
+/**
+ * Igual que `buscarJobActivo`, pero distinguiendo en UNA sola petición las dos cosas que una
+ * pantalla acotada a un expediente necesita saber por separado:
+ *
+ * - `propio`: su job, el que sí debe pintar y sondear.
+ * - `ajeno`: hay un job vivo que NO es suyo (una ingesta general). No es suyo para mostrarlo, pero
+ *   sí le impide lanzar otro — el conversor es un semáforo de 1 y el backend responde 409.
+ */
+export async function buscarJobsActivos(
+  deExpediente: Expediente,
+): Promise<{ propio: JobIngesta | null; ajeno: boolean }> {
+  const vivos = (await fetchJobs()).filter(estaVivo);
+  const propio = vivos.find((job) => esDelExpediente(job, deExpediente)) ?? null;
+  return { propio, ajeno: !propio && vivos.length > 0 };
 }
 
 /** Pausa un job de conversión/reparación en curso — resumable con `reanudarJobIngesta`. */

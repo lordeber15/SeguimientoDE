@@ -200,7 +200,34 @@ async function documentosPendientes(filtro: FiltroIngesta): Promise<{ id: number
   );
 }
 
+/**
+ * Rechaza lanzar un job de conversión si ya hay otro vivo.
+ *
+ * El conversor es un semáforo de 1 (ver `mdConvertService`): dos jobs no van más rápido, se
+ * estorban y se reparten mal el mismo pool de `estado='pendiente'`, convirtiendo documentos por
+ * duplicado. Antes lo evitaba solo el `disabled` del botón en el panel — que depende del estado
+ * de React y desaparecía al cambiar de pestaña, así que volver a pulsar apilaba un segundo job.
+ * Esta es la guarda de verdad: sirve igual para dos pestañas, dos usuarios o un botón mal
+ * deshabilitado.
+ */
+async function exigirSinJobEnCurso(): Promise<void> {
+  const [enCurso] = await appSequelize.query<{ id: number; tipo: string }>(
+    `SELECT id, tipo FROM rag.ingest_job
+      WHERE estado = 'en_curso' AND tipo IN ('conversion', 'reparacion', 'largos')
+      ORDER BY fe_inicio DESC LIMIT 1`,
+    { type: QueryTypes.SELECT },
+  );
+  if (enCurso) {
+    throw new IngestaError(
+      `Ya hay un trabajo de ${enCurso.tipo} en curso (#${enCurso.id}); espere a que termine o deténgalo.`,
+      409,
+    );
+  }
+}
+
 export async function iniciarJobConversion(filtro: FiltroIngesta, actor: string): Promise<{ jobId: number }> {
+  await exigirSinJobEnCurso();
+
   const documentos = await documentosPendientes(filtro);
   if (documentos.length === 0) {
     throw new IngestaError('No hay documentos pendientes con ese filtro', 404);
@@ -276,6 +303,8 @@ async function documentosReparables(filtro: FiltroIngesta): Promise<{ id: number
  * job NUNCA puede llamar a `visionService`: ese módulo ni siquiera se importa en este archivo.
  */
 export async function iniciarJobReparacion(filtro: FiltroIngesta, actor: string): Promise<{ jobId: number }> {
+  await exigirSinJobEnCurso();
+
   const documentos = await documentosReparables(filtro);
   if (documentos.length === 0) {
     throw new IngestaError('No hay documentos recuperables con ese filtro', 404);
@@ -334,6 +363,8 @@ async function documentosLargos(filtro: FiltroIngesta): Promise<{ id: number }[]
 }
 
 export async function iniciarJobLargos(filtro: FiltroIngesta, actor: string): Promise<{ jobId: number }> {
+  await exigirSinJobEnCurso();
+
   const documentos = await documentosLargos(filtro);
   if (documentos.length === 0) {
     throw new IngestaError('No hay documentos largos pendientes de reintentar con ese filtro', 404);
@@ -358,7 +389,31 @@ export async function iniciarJobLargos(filtro: FiltroIngesta, actor: string): Pr
   return { jobId };
 }
 
+/**
+ * Jobs cuyo loop está corriendo AHORA MISMO en este proceso.
+ *
+ * La BD no puede saberlo: un job `en_curso` con ítems `pendiente` se ve exactamente igual esté su
+ * loop vivo o muerto por un reinicio. Este `Set` es la única fuente fiable, y es lo que permite al
+ * supervisor (`revisarJobsHuerfanos`) relanzar solo los que de verdad no tienen a nadie
+ * procesándolos, sin duplicar el loop de los que sí.
+ */
+const loopsVivos = new Set<number>();
+
+/** Envoltorio que mantiene `loopsVivos` — el loop de verdad es `ejecutarJobConversionLoop`, que
+ *  tiene varias salidas y no debería tener que acordarse de limpiar en cada una. */
 async function ejecutarJobConversion(jobId: number): Promise<void> {
+  const id = clave(jobId);
+  if (loopsVivos.has(id)) return; // ya hay un loop para este job: no se duplica
+
+  loopsVivos.add(id);
+  try {
+    await ejecutarJobConversionLoop(jobId);
+  } finally {
+    loopsVivos.delete(id);
+  }
+}
+
+async function ejecutarJobConversionLoop(jobId: number): Promise<void> {
   for (;;) {
     // Se comprueba ANTES de reclamar el siguiente ítem: pausar/detener nunca interrumpe el ítem en
     // curso (no hay forma de abortar a mitad una llamada HTTP a markitdown), solo evita que se
@@ -1283,33 +1338,40 @@ export async function estadoJob(jobId: number) {
   };
 }
 
+/**
+ * `filtro` y `mensaje` NO son de adorno: son lo que permite al frontend re-engancharse a un job
+ * que sigue vivo cuando el componente se remonta (cambiar de pestaña desmonta `RagPanelPage` y se
+ * lleva su estado). `filtro` dice a qué expediente pertenece el job — sin él, el modal de
+ * expediente y la celda de la tabla no pueden distinguir "mi job" de una ingesta general.
+ */
 export async function listarJobs(limite = 20) {
   return appSequelize.query(
-    `SELECT id, tipo, estado, total, procesados, errores, creado_por AS "creadoPor",
+    `SELECT id, tipo, estado, filtro, total, procesados, errores, mensaje,
+            creado_por AS "creadoPor",
             fe_inicio::text AS "feInicio", fe_fin::text AS "feFin"
        FROM rag.ingest_job ORDER BY fe_inicio DESC LIMIT $1`,
     { bind: [Math.min(limite, 100)], type: QueryTypes.SELECT },
   );
 }
 
-// ── Recuperación tras reinicio ────────────────────────────────────────────
+// ── Supervisor: recuperación de jobs huérfanos ────────────────────────────
+
+/** Tipos de job que comparten `ejecutarJobConversion` y por tanto se pueden reanudar solos. Los de
+ *  embedding no: necesitan un `EmbeddingProvider` real y reconstruirlo a ciegas es más riesgo que
+ *  beneficio (se marcan `error` con un mensaje explícito para que un administrador los relance). */
+const TIPOS_REANUDABLES = ['conversion', 'reparacion', 'largos'] as const;
 
 /**
- * Reclama leases vencidos y reanuda jobs de conversión interrumpidos.
+ * Devuelve a `pendiente` los ítems cuyo lease venció: su worker está muerto (proceso caído,
+ * backend reiniciado) o colgado más allá del tope.
  *
- * Cubre exactamente lo que el diseño (`docs/PLAN-RAG.md` §4) prometía y el código no hacía
- * todavía: "FOR UPDATE SKIP LOCKED + lease_hasta da visibility timeout y recuperación tras
- * reinicio sin ninguna librería". El `lease_hasta` se fijaba al tomar un ítem, pero nada lo
- * comprobaba — un ítem que se quedara `en_proceso` (proceso caído, o el propio backend
- * reiniciado) quedaba huérfano para siempre, con su `rag.documento` también atascado en
- * `en_proceso`. Se descubrió en producción: un documento de 9,2 MB dejó un job de 500 congelado
- * 45 minutos sin ningún error registrado (ver nota en `mdConvertService.ts`).
- *
- * Se ejecuta al arrancar el servidor. Los jobs de **embeddings** interrumpidos no se reanudan
- * solos: necesitan un `EmbeddingProvider` real, y reconstruirlo automáticamente sin saber si
- * sigue disponible sería más arriesgado que dejar que un administrador lo reinicie a mano.
+ * Se respeta el `lease_hasta` en vez de reclamar todo lo que esté `en_proceso`: esa condición es
+ * lo que permite que convivan varios workers sin robarse trabajo entre ellos, que es la promesa
+ * de `FOR UPDATE SKIP LOCKED + lease_hasta` (`docs/PLAN-RAG.md` §4). Un documento largo
+ * legítimamente lento no se ve afectado porque renueva su lease bloque a bloque (ver el `onLatido`
+ * de `ejecutarJobConversionLoop`).
  */
-export async function reanudarJobsInterrumpidos(): Promise<void> {
+async function reclamarLeasesVencidos(): Promise<number> {
   const itemsReclamados = await appSequelize.query<{ id: number; job_id: number; documento_id: number }>(
     `UPDATE rag.ingest_item
         SET estado = 'pendiente', lease_hasta = NULL
@@ -1318,33 +1380,55 @@ export async function reanudarJobsInterrumpidos(): Promise<void> {
     { type: QueryTypes.SELECT },
   );
 
-  if (itemsReclamados.length === 0) return;
+  if (itemsReclamados.length === 0) return 0;
 
-  console.log(`Ingesta: ${itemsReclamados.length} ítem(s) con lease vencido reclamado(s) tras el reinicio.`);
+  console.log(`Ingesta: ${itemsReclamados.length} ítem(s) con lease vencido reclamado(s).`);
 
-  const documentoIds = itemsReclamados.map((i) => i.documento_id);
+  // El documento también queda atascado en 'en_proceso', invisible para cualquier job futuro.
   await appSequelize.query(
     `UPDATE rag.documento SET estado = 'pendiente'
       WHERE id = ANY($1::bigint[]) AND estado = 'en_proceso'`,
-    { bind: [documentoIds], type: QueryTypes.UPDATE },
+    { bind: [itemsReclamados.map((i) => i.documento_id)], type: QueryTypes.UPDATE },
   );
 
-  const jobIds = [...new Set(itemsReclamados.map((i) => i.job_id))];
+  return itemsReclamados.length;
+}
+
+/**
+ * Relanza los jobs `en_curso` que tienen trabajo pendiente y NINGÚN loop procesándolo.
+ *
+ * Antes esto solo se intentaba al arrancar, y solo para los jobs cuyos ítems se acababan de
+ * reclamar por lease vencido. Dejaba dos agujeros por los que un job se quedaba congelado para
+ * siempre:
+ *
+ *  1. Reinicio a mitad de documento: el `lease_hasta` está 10 minutos en el futuro, así que el
+ *     ítem no se reclamaba — y como la revisión solo corría al arrancar, nadie volvía a mirar.
+ *     El arreglo del bug #7 solo funcionó porque para entonces habían pasado 45 minutos.
+ *  2. Reinicio ENTRE ítems: ningún ítem estaba `en_proceso`, así que no había nada que reclamar y
+ *     la función salía antes de mirar siquiera los jobs — el job quedaba `en_curso` con ítems
+ *     `pendiente` que nadie iba a procesar.
+ *
+ * La comprobación no puede salir de la BD: un job `en_curso` con ítems `pendiente` se ve igual
+ * tenga su loop vivo o muerto. Por eso se cruza con `loopsVivos`, que es estado de ESTE proceso.
+ */
+async function revisarJobsHuerfanos(): Promise<void> {
   const jobs = await appSequelize.query<{ id: number; tipo: string }>(
-    `SELECT id, tipo FROM rag.ingest_job WHERE id = ANY($1::bigint[]) AND estado = 'en_curso'`,
-    { bind: [jobIds], type: QueryTypes.SELECT },
+    `SELECT j.id, j.tipo FROM rag.ingest_job j
+      WHERE j.estado = 'en_curso'
+        AND EXISTS (SELECT 1 FROM rag.ingest_item i WHERE i.job_id = j.id AND i.estado = 'pendiente')
+      ORDER BY j.id`,
+    { type: QueryTypes.SELECT },
   );
 
   for (const job of jobs) {
-    // 'reparacion' corre exactamente el mismo ejecutor que 'conversion' — solo cambió qué
-    // documentos se seleccionaron al crear el job, no cómo se procesan sus ítems.
-    if (job.tipo === 'conversion' || job.tipo === 'reparacion') {
-      console.log(`Ingesta: reanudando job de ${job.tipo} #${job.id} tras el reinicio.`);
+    if (loopsVivos.has(clave(job.id))) continue; // alguien lo está procesando ahora mismo
+
+    if ((TIPOS_REANUDABLES as readonly string[]).includes(job.tipo)) {
+      console.log(`Ingesta: reanudando job de ${job.tipo} #${job.id} (sin worker asignado).`);
       void ejecutarJobConversion(job.id).catch((error) => {
         console.error(`ingesta: job de ${job.tipo} ${job.id} (reanudado) falló:`, error);
       });
     } else {
-      // Los de embedding necesitan un EmbeddingProvider real; no se reconstruyen solos.
       await appSequelize.query(
         `UPDATE rag.ingest_job SET estado = 'error',
                 mensaje = 'Interrumpido por un reinicio del servidor. Vuelva a iniciarlo.',
@@ -1354,4 +1438,31 @@ export async function reanudarJobsInterrumpidos(): Promise<void> {
       );
     }
   }
+}
+
+/** Un tick del supervisor: reclamar lo vencido y relanzar lo que quedó sin dueño. */
+export async function reanudarJobsInterrumpidos(): Promise<void> {
+  await reclamarLeasesVencidos();
+  await revisarJobsHuerfanos();
+}
+
+let temporizadorSupervisor: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Vigilancia periódica de la cola — mismo patrón que `iniciarPlanificadorBarrido` y
+ * `iniciarMantenimientoPeriodico`.
+ *
+ * Que corra cada minuto (y no solo al arrancar) es justamente lo que cierra el caso 1 de
+ * `revisarJobsHuerfanos`: el ítem de un reinicio a mitad de documento se recupera solo en cuanto
+ * vence su lease, sin necesidad de que alguien reinicie el backend otra vez para que se note.
+ */
+export function iniciarSupervisorIngesta(): void {
+  if (temporizadorSupervisor) return;
+
+  temporizadorSupervisor = setInterval(() => {
+    void reanudarJobsInterrumpidos().catch((error) => {
+      console.error('ingesta: el supervisor de la cola falló en este tick:', error);
+    });
+  }, 60_000);
+  temporizadorSupervisor.unref();
 }

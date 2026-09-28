@@ -48,9 +48,22 @@ export class BarridoOcupado extends Error {
 // cadena VACÍA. Un filtro `IS NOT NULL` los agruparía a todos en un expediente fantasma.
 const EXPEDIENTE_REAL = `TRIM(COALESCE(r.nu_ann_exp,'')) <> '' AND TRIM(COALESCE(r.nu_sec_exp,'')) <> ''`;
 
-interface FilaWatermark {
+// Estados de `es_doc_emi` que no se indexan (SeguiEstRecibidoDaoImp.java): '5' EN PROYECTO todavía
+// no es un documento emitido y '9' ANULADO ya no vale. Mismo criterio que `es_doc_emi NOT IN
+// ('5','9')` en documentoService/seguimientoService. Sin esto inflaban el contador "sin archivo".
+const ESTADOS_NO_INDEXABLES = ['5', '9'];
+
+/** Un documento del SGD se da de baja del corpus si está borrado o en un estado no indexable. */
+function esBaja(d: { es_eli: string | null; es_doc_emi: string | null }): boolean {
+  return d.es_eli === '1' || ESTADOS_NO_INDEXABLES.includes(String(d.es_doc_emi ?? '').trim());
+}
+
+interface ClaveExpediente {
   nu_ann_exp: string;
   nu_sec_exp: string;
+}
+
+interface FilaWatermark extends ClaveExpediente {
   doc_count: string;
   watermark: string;
 }
@@ -90,6 +103,7 @@ interface FilaDocumentoSgd {
   co_dep_emi: string | null;
   de_dep_emi: string | null;
   es_eli: string | null;
+  es_doc_emi: string | null;
 }
 
 /** Documentos de un conjunto de expedientes, con sus metadatos para desnormalizar (D4). */
@@ -107,7 +121,8 @@ async function leerDocumentosSgd(claves: { ann: string; sec: string }[]): Promis
             r.fe_emi::text,
             r.co_dep_emi,
             COALESCE(d.de_sigla, r.co_dep_emi) AS de_dep_emi,
-            COALESCE(r.es_eli,'0') AS es_eli
+            COALESCE(r.es_eli,'0') AS es_eli,
+            TRIM(COALESCE(r.es_doc_emi,'')) AS es_doc_emi
        FROM ${S}.tdtv_remitos r
        LEFT JOIN ${S}.tdtx_remitos_resumen res ON res.nu_ann = r.nu_ann AND res.nu_emi = r.nu_emi
        LEFT JOIN ${S}.si_mae_tipo_doc td ON td.cdoc_tipdoc = r.co_tip_doc_adm
@@ -190,6 +205,8 @@ export async function barrer(
       await new Promise((r) => setImmediate(r)); // no monopolizar el event loop
     }
 
+    conteo.bajas += await reconciliarEstados();
+
     await appSequelize.query(
       `UPDATE rag.barrido
           SET fe_fin = now(), expedientes_revisados = $2, documentos_nuevos = $3,
@@ -228,7 +245,7 @@ export async function barrer(
 }
 
 /**
- * Inserta los documentos nuevos y da de baja los anulados.
+ * Inserta los documentos nuevos y da de baja los borrados, anulados y en proyecto (`esBaja`).
  *
  * Un documento que ya existe **no** se vuelve a poner en `pendiente` por un cambio de metadatos:
  * solo se refrescan los campos desnormalizados. Volver a convertirlo por un cambio de asunto
@@ -239,8 +256,8 @@ async function sincronizarDocumentos(
 ): Promise<{ nuevos: number; cambiados: number; bajas: number }> {
   if (documentos.length === 0) return { nuevos: 0, cambiados: 0, bajas: 0 };
 
-  const vivos = documentos.filter((d) => d.es_eli !== '1');
-  const anulados = documentos.filter((d) => d.es_eli === '1');
+  const vivos = documentos.filter((d) => !esBaja(d));
+  const anulados = documentos.filter(esBaja);
 
   let nuevos = 0;
   if (vivos.length > 0) {
@@ -301,6 +318,46 @@ async function sincronizarDocumentos(
   return { nuevos, cambiados: 0, bajas };
 }
 
+/**
+ * Da de baja los documentos ya inventariados que el SGD tiene borrados, anulados o en proyecto.
+ *
+ * El cedazo 1 no basta: un expediente cuyo watermark no cambia nunca se vuelve a mirar, así que un
+ * documento que entró antes de que existiera `esBaja` (o cuya anulación no movió `fe_use_mod`)
+ * seguiría vigente para siempre. Una consulta al SGD por barrido lo corrige; la diferencia se hace
+ * en local porque las dos bases no admiten JOIN (D4). La reactivación (proyecto → emitido) la hace
+ * el upsert de `sincronizarDocumentos` al cambiar el watermark.
+ */
+async function reconciliarEstados(): Promise<number> {
+  const noIndexables = await sequelize.query<{ nu_ann: string; nu_emi: string }>(
+    `SELECT r.nu_ann, r.nu_emi
+       FROM ${S}.tdtv_remitos r
+      WHERE ${EXPEDIENTE_REAL}
+        AND (COALESCE(r.es_eli,'0') = '1' OR TRIM(COALESCE(r.es_doc_emi,'')) = ANY($1::text[]))`,
+    { bind: [ESTADOS_NO_INDEXABLES], type: QueryTypes.SELECT },
+  );
+  if (noIndexables.length === 0) return 0;
+
+  const filas = await appSequelize.query<{ nu_ann_exp: string | null; nu_sec_exp: string | null }>(
+    `UPDATE rag.documento SET vigente = false
+      WHERE vigente AND (nu_ann, nu_emi) IN (SELECT unnest($1::text[]), unnest($2::text[]))
+      RETURNING nu_ann_exp, nu_sec_exp`,
+    {
+      bind: [noIndexables.map((d) => d.nu_ann), noIndexables.map((d) => d.nu_emi)],
+      type: QueryTypes.SELECT,
+    },
+  );
+
+  const expedientes = new Map<string, ClaveExpediente>();
+  for (const f of filas) {
+    if (f.nu_ann_exp && f.nu_sec_exp) {
+      expedientes.set(`${f.nu_ann_exp}|${f.nu_sec_exp}`, { nu_ann_exp: f.nu_ann_exp, nu_sec_exp: f.nu_sec_exp });
+    }
+  }
+  await refrescarContadores([...expedientes.values()]);
+
+  return filas.length;
+}
+
 async function actualizarExpedientes(
   watermarks: FilaWatermark[],
   documentos: FilaDocumentoSgd[],
@@ -339,7 +396,8 @@ async function actualizarExpedientes(
 }
 
 /** Contadores por expediente: alimentan el `%` del panel sin agregar sobre cientos de miles de chunks. */
-async function refrescarContadores(watermarks: FilaWatermark[]): Promise<void> {
+async function refrescarContadores(watermarks: ClaveExpediente[]): Promise<void> {
+  if (watermarks.length === 0) return;
   await appSequelize.query(
     `UPDATE rag.expediente e SET
        docs_ingestados = c.ok,

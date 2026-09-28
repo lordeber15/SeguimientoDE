@@ -1680,6 +1680,34 @@ tbody tr.fila-destacada > td {
   color: var(--color-muted-foreground);
 }
 
+/* --- Confirmación entre lotes encadenados (ModalContinuarLote) --- */
+
+.modal-cuerpo--lote {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 20px 4px;
+  overflow-y: auto;
+  font-size: 14px;
+}
+
+.modal-cuerpo--lote > p {
+  margin: 0;
+  color: var(--color-muted-foreground);
+}
+
+.cuenta-atras {
+  margin-top: 4px;
+  color: var(--color-foreground);
+}
+
+/* `.modal-acciones` nació dentro de `.modal-cabecera`, donde el padding ya lo pone la cabecera.
+   Como pie del diálogo necesita el suyo, y alinearse a la derecha como cualquier barra de botones. */
+.modal-acciones--pie {
+  justify-content: flex-end;
+  padding: 14px 20px 18px;
+}
+
 .checkbox-linea {
   display: flex;
   gap: 10px;

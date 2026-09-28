@@ -14,6 +14,12 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
+# sshfs para montar A MANO el repositorio remoto del SGD (ver docker-compose: devices/cap_add).
+# Arrastra fuse3 (fusermount3) y openssh-client. El montaje lo hace root vía `docker compose exec -u root`;
+# el envoltorio sgd-sshfs fija las opciones (sobre todo `ro`) para no tener que recordarlas.
+RUN apk add --no-cache sshfs
+COPY --chmod=755 docker/sgd-sshfs.sh /usr/local/bin/sgd-sshfs
+
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
@@ -23,6 +29,8 @@ COPY --from=builder /app/dist ./dist
 COPY migrations ./migrations
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN mkdir -p /mnt/sgd/storage \
+    && chown -R appuser:appgroup /mnt/sgd/storage
 USER appuser
 
 EXPOSE 3012

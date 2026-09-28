@@ -222,6 +222,58 @@ describe('iniciarJobEmbedding — barreras antes de gastar un solo token', () =>
   });
 });
 
+describe('ejecutarJobEmbedding (vía iniciarJobEmbedding) — respeta una cancelación entre lotes', () => {
+  async function flush(vueltas = 10) {
+    for (let i = 0; i < vueltas; i++) await new Promise((r) => setImmediate(r));
+  }
+
+  /** 32 ids = dos lotes de `TAMANO_LOTE` (16), justo lo que hace falta para observar la vuelta 2. */
+  const CHUNK_IDS = Array.from({ length: 32 }, (_, i) => i + 1);
+  const JOB_ID = 900;
+
+  beforeEach(() => {
+    modeloActivo.mockResolvedValue({
+      id: 1, proveedor: 'ollama', modelo: 'bge-m3', dimension: 1024, activo: true, backfillPct: 0,
+    });
+  });
+
+  it('un job cancelado tras el primer lote no embebe el segundo ni se marca "completado"', async () => {
+    // Se cuenta la comprobación en vez de temporizarla con `flush`: la PRIMERA lectura (antes del
+    // lote 1) ve 'en_curso'; de ahí en adelante ve 'cancelado', como si el botón "Detener" hubiera
+    // llegado justo entre lotes — determinista sin depender de cuántos microtasks tarde cada await.
+    let lecturasEstado = 0;
+    const p = proveedor();
+    p.embeber.mockResolvedValue({
+      vectores: Array.from({ length: 16 }, () => [0.1, 0.2]),
+      uso: { tokensIn: 10, tokensOut: 0, estimado: false },
+    });
+
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT DISTINCT c.id')) return Promise.resolve(CHUNK_IDS.map((id) => ({ id })));
+      if (sql.includes('INSERT INTO rag.ingest_job')) return Promise.resolve([{ id: JOB_ID }]);
+      if (sql.includes('SELECT estado FROM rag.ingest_job WHERE id')) {
+        lecturasEstado++;
+        return Promise.resolve([{ estado: lecturasEstado === 1 ? 'en_curso' : 'cancelado' }]);
+      }
+      if (sql.includes('SELECT id, texto, cabecera_ctx FROM rag.chunk')) {
+        const ids = (query.mock.calls.at(-1)![1] as { bind: number[][] }).bind[0];
+        return Promise.resolve(ids.map((id) => ({ id, texto: `texto ${id}`, cabecera_ctx: null })));
+      }
+      return Promise.resolve([]);
+    });
+
+    await ingesta.iniciarJobEmbedding({}, 'admin', p);
+    await flush(20); // margen generoso: todos los awaits de este test resuelven sin I/O real
+
+    expect(lecturasEstado).toBeGreaterThanOrEqual(2); // llegó a comprobar antes del lote 2
+    expect(p.embeber).toHaveBeenCalledTimes(1); // el lote 2 nunca se intentó
+    const completado = query.mock.calls.find(
+      ([sql]: [string]) => sql.includes("SET estado = 'completado'"),
+    );
+    expect(completado).toBeUndefined();
+  });
+});
+
 // ── Fixtures compartidos por las pruebas de reparación manual ───────────────
 
 interface FilaDocFixture {
@@ -866,6 +918,21 @@ describe('pausarJob / reanudarJob / cancelarJob — transiciones válidas e inv�
     const omitido = query.mock.calls.find(([sql]: [string]) => sql.includes("SET estado = 'omitido'"));
     expect(omitido).toBeDefined();
     expect((omitido![1] as { bind: unknown[] }).bind).toEqual([5]);
+  });
+
+  it('cancelarJob: acepta también un job de tipo "embedding" (no se puede pausar, pero sí detener)', async () => {
+    let sqlUpdate = '';
+    query.mockImplementation((sql: string) => {
+      if (sql.includes("SET estado = 'cancelado'")) {
+        sqlUpdate = sql;
+        return Promise.resolve([{ id: 5 }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await ingesta.cancelarJob(5);
+
+    expect(sqlUpdate).toContain("'embedding'");
   });
 });
 

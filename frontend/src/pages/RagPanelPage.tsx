@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import { ListaDocumentosRag } from '../components/ListaDocumentosRag';
+import { ModalContinuarLote, type TipoCadena } from '../components/ModalContinuarLote';
 import { PanelJobIngesta } from '../components/PanelJobIngesta';
+import { ApiError } from '../api/cliente';
 import {
   activarBarrido,
   activarGC,
@@ -12,7 +14,9 @@ import {
   ejecutarGcAhora,
   ejecutarRetencionAhora,
   fetchJob,
+  fetchJobs,
   fetchPanel,
+  type FiltroIngesta,
   iniciarIngestaConversion,
   iniciarIngestaEmbeddings,
   iniciarIngestaLargos,
@@ -29,7 +33,7 @@ type Estado =
   | { tipo: 'listo'; panel: PanelRag };
 
 const ETIQUETA_ESTADO_DOC: Record<string, string> = {
-  pendiente: 'Pendientes',
+  pendientes: 'Pendientes',
   convertidos: 'Convertidos (sin embeber)',
   ok: 'Completos',
   sinTexto: 'Sin texto útil',
@@ -49,6 +53,99 @@ function papelConversor(
 
 const INTERVALO_POLL_MS = 1500;
 
+/** Cuenta atrás del diálogo entre lotes: sin respuesta, la cadena sigue sola. */
+const SEGUNDOS_CONFIRMACION = 30;
+
+/**
+ * Vocabulario y arranque de cada tipo de job que se puede encadenar por lotes. `limite` es el tope
+ * por job que ya aplicaba el backend — se repite aquí, no se descubre por prueba y error, porque el
+ * frontend lo necesita para pedir el lote siguiente con el mismo tamaño.
+ */
+const CONFIG_CADENA: Record<TipoCadena, {
+  limite: number;
+  unidad: string;
+  /** Plural liso ("documentos", no "documento(s)"), para frases donde el "(s)" ya sobra por
+   *  contexto — ej. "No quedan documentos pendientes." */
+  unidadPlural: string;
+  verbo: string;
+  /** Sustantivo para mensajes de error ("el job de …"): sin flexionar, distinto de las etiquetas
+   *  de abajo, que ya vienen concordadas en género y número. */
+  nombre: string;
+  etiquetaTerminada: string;
+  etiquetaDetenida: string;
+  mensajeSinPendientes: string;
+  mensajeError: string;
+  iniciar: (filtro: FiltroIngesta) => Promise<{ jobId: number }>;
+}> = {
+  conversion: {
+    limite: 500,
+    unidad: 'documento(s)',
+    unidadPlural: 'documentos',
+    verbo: 'convertido(s)',
+    nombre: 'conversión',
+    etiquetaTerminada: 'Conversión terminada',
+    etiquetaDetenida: 'Conversión detenida',
+    mensajeSinPendientes: 'No hay documentos pendientes por convertir.',
+    mensajeError: 'No se pudo iniciar la conversión',
+    iniciar: iniciarIngestaConversion,
+  },
+  embedding: {
+    limite: 2000,
+    unidad: 'fragmento(s)',
+    unidadPlural: 'fragmentos',
+    verbo: 'embebido(s)',
+    nombre: 'embeddings',
+    etiquetaTerminada: 'Ingesta de embeddings terminada',
+    etiquetaDetenida: 'Ingesta de embeddings detenida',
+    mensajeSinPendientes: 'No hay fragmentos pendientes de embeber.',
+    mensajeError: 'No se pudo iniciar la ingesta de embeddings',
+    iniciar: iniciarIngestaEmbeddings,
+  },
+};
+
+/**
+ * Una tanda encadenada de conversión o de embeddings: el backend procesa como mucho
+ * `CONFIG_CADENA[tipo].limite` unidades por job y termina, así que cubrir el corpus entero es
+ * lanzar un lote tras otro. `lote` es el que está corriendo ahora; `procesados`/`errores` acumulan
+ * los lotes YA cerrados.
+ */
+interface Cadena {
+  tipo: TipoCadena;
+  lote: number;
+  procesados: number;
+  errores: number;
+}
+
+/**
+ * La cadena vive en `sessionStorage` por la misma razón que existe `buscarJobActivo`: cambiar de
+ * pestaña desmonta esta página y se lleva su estado, pero el lote sigue corriendo en el servidor.
+ * Sin esto, salir del panel un momento mataría la tanda en silencio.
+ *
+ * Una sola clave basta para los dos tipos: solo puede haber un job de ingesta a la vez (el backend
+ * es un semáforo de 1), así que nunca hay dos cadenas vivas al mismo tiempo.
+ */
+const CLAVE_CADENA = 'rag.cadena.conversion';
+
+function leerCadenaGuardada(): Cadena | null {
+  try {
+    const crudo = sessionStorage.getItem(CLAVE_CADENA);
+    if (!crudo) return null;
+    const cadena = JSON.parse(crudo) as Partial<Cadena>;
+    if (typeof cadena?.lote !== 'number') return null;
+    return {
+      lote: cadena.lote,
+      procesados: cadena.procesados ?? 0,
+      errores: cadena.errores ?? 0,
+      // Una cadena guardada antes de que este campo existiera es, por definición, de conversión —
+      // era el único tipo que se encadenaba.
+      tipo: cadena.tipo === 'embedding' ? 'embedding' : 'conversion',
+    };
+  } catch {
+    // Almacenamiento bloqueado o contenido corrupto: se trabaja sin cadena recuperada.
+    return null;
+  }
+}
+
 export function RagPanelPage() {
   const [estado, setEstado] = useState<Estado>({ tipo: 'cargando' });
   const [jobActivo, setJobActivo] = useState<JobIngesta | null>(null);
@@ -56,6 +153,13 @@ export function RagPanelPage() {
   const [barriendo, setBarriendo] = useState(false);
   const [purgando, setPurgando] = useState(false);
   const [recolectando, setRecolectando] = useState(false);
+  /** Casillas de cada botón: encadenar lotes o hacer uno solo, como se hacía siempre. */
+  const [encadenar, setEncadenar] = useState(true);
+  const [encadenarEmbeddings, setEncadenarEmbeddings] = useState(true);
+  const [cadena, setCadena] = useState<Cadena | null>(null);
+  const [confirmacion, setConfirmacion] = useState<
+    { job: JobIngesta; segundos: number | null } | null
+  >(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cargar = useCallback(() => {
@@ -68,6 +172,17 @@ export function RagPanelPage() {
 
   useEffect(() => cargar(), [cargar]);
 
+  /** Única puerta de escritura de la cadena: el estado y su copia persistida nunca divergen. */
+  const aplicarCadena = useCallback((siguiente: Cadena | null) => {
+    setCadena(siguiente);
+    try {
+      if (siguiente) sessionStorage.setItem(CLAVE_CADENA, JSON.stringify(siguiente));
+      else sessionStorage.removeItem(CLAVE_CADENA);
+    } catch {
+      // Sin almacenamiento la cadena dura lo que dure la pantalla; no es motivo para fallar.
+    }
+  }, []);
+
   // Re-enganche al job que siguió corriendo mientras esta pantalla no existía.
   //
   // El job vive en el backend, no en el navegador: `App.tsx` renderiza las vistas con
@@ -79,11 +194,36 @@ export function RagPanelPage() {
   // Solo repuebla el estado inicial: el `useEffect` de sondeo de abajo se encarga a partir de ahí.
   useEffect(() => {
     let vigente = true;
+    const guardada = leerCadenaGuardada();
+
     buscarJobActivo()
-      .then((job) => {
-        if (!vigente || !job) return;
-        setJobActivo(job);
-        setJobIdFiltro(job.id); // devuelve también la lista de documentos a donde estaba
+      .then(async (job) => {
+        if (!vigente) return;
+        if (job) {
+          setJobActivo(job);
+          setJobIdFiltro(job.id); // devuelve también la lista de documentos a donde estaba
+          if (guardada) aplicarCadena(guardada);
+          return;
+        }
+
+        // Sin job vivo pero con una cadena guardada: el lote terminó mientras esta pantalla no
+        // existía. Se pregunta ahora, ya sin cuenta atrás — lanzar otros 500 documentos sin que
+        // nadie lo haya visto es justo lo que la pregunta existe para evitar.
+        if (!guardada) return;
+        const [ultimo] = await fetchJobs();
+        if (!vigente) return;
+        if (ultimo?.tipo === guardada.tipo && ultimo.estado === 'completado') {
+          aplicarCadena({
+            tipo: guardada.tipo,
+            lote: guardada.lote,
+            procesados: guardada.procesados + ultimo.procesados,
+            errores: guardada.errores + ultimo.errores,
+          });
+          setJobIdFiltro(ultimo.id);
+          setConfirmacion({ job: ultimo, segundos: null });
+        } else {
+          aplicarCadena(null); // se detuvo o falló: la cadena ya no tiene sentido
+        }
       })
       .catch(() => {
         // Sin re-enganche la pantalla sigue siendo usable; no merece tumbarla ni avisar.
@@ -91,7 +231,7 @@ export function RagPanelPage() {
     return () => {
       vigente = false;
     };
-  }, []);
+  }, [aplicarCadena]);
 
   // Sondeo del job de ingesta en curso, si lo hay. Sigue mientras haya un documento en vuelo
   // aunque el job ya no esté "en_curso" (pausado/cancelado): ese ítem nunca se aborta a mitad
@@ -110,6 +250,35 @@ export function RagPanelPage() {
         const documentoEnVueloTermino = !job.procesoActual && !!jobActivo.procesoActual;
         setJobActivo(job);
         if (yaNoEstaEnCurso || documentoEnVueloTermino) cargar(); // refresca el panel con las cifras finales
+
+        // Fin de lote de una tanda encadenada: toca preguntar si se sigue con el siguiente. Solo
+        // `completado` cuenta — 'cancelado' es una parada deliberada y 'pausado' no es un fin. La
+        // condición se cumple UNA sola vez: compara contra el estado anterior, y en el próximo
+        // tick el efecto ya ni siquiera sondea (el job dejó de estar en curso).
+        if (cadena && yaNoEstaEnCurso && job.estado === 'completado') {
+          aplicarCadena({
+            tipo: cadena.tipo,
+            lote: cadena.lote,
+            procesados: cadena.procesados + job.procesados,
+            errores: cadena.errores + job.errores,
+          });
+          // Un lote que no procesó NADA no arranca solo: en conversión los `no_soportado` vuelven
+          // a la cola mientras `intentos < 10`, y en embeddings un lote vacío suele ser un
+          // proveedor caído — en ambos casos una cadena automática podría girar en falso. Ahí se
+          // exige una decisión.
+          setConfirmacion({ job, segundos: job.procesados > 0 ? SEGUNDOS_CONFIRMACION : null });
+        } else if (cadena && yaNoEstaEnCurso && (job.estado === 'cancelado' || job.estado === 'error')) {
+          // 'cancelado' por el botón Detener ya cierra la cadena por su cuenta (ver `detener()`);
+          // esto cubre el caso en que nadie tocó nada y el job terminó solo en error — 3 lotes de
+          // embeddings fallidos seguidos, por ejemplo.
+          aplicarCadena(null);
+          if (job.estado === 'error') {
+            toast.error(
+              `El job de ${CONFIG_CADENA[cadena.tipo].nombre} terminó con error`
+              + (job.mensaje ? `: ${job.mensaje}` : '.'),
+            );
+          }
+        }
       } catch {
         // Un fallo de red al sondear no debe tumbar la pantalla; se reintenta en el próximo tick.
       }
@@ -117,7 +286,7 @@ export function RagPanelPage() {
     return () => {
       if (pollRef.current) clearTimeout(pollRef.current);
     };
-  }, [jobActivo, cargar]);
+  }, [jobActivo, cargar, cadena, aplicarCadena]);
 
   async function alternarBarrido(activo: boolean) {
     try {
@@ -197,15 +366,87 @@ export function RagPanelPage() {
     }
   }
 
-  async function convertir() {
+  /**
+   * Lanza un lote de `tipo`. Devuelve `false` cuando ya no quedaba nada que procesar — el backend
+   * responde 404 con ese filtro, que es la señal natural de fin de una cadena. Se mira el `status`
+   * de `ApiError`, no el texto del mensaje.
+   */
+  const lanzarLote = useCallback(async (tipo: TipoCadena): Promise<boolean> => {
+    const config = CONFIG_CADENA[tipo];
     try {
-      const { jobId } = await iniciarIngestaConversion({ limite: 500 });
+      const { jobId } = await config.iniciar({ limite: config.limite });
       setJobActivo(await fetchJob(jobId));
       setJobIdFiltro(jobId);
+      return true;
     } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : 'No se pudo iniciar la conversión');
+      if (error instanceof ApiError && error.status === 404) return false;
+      toast.error(error instanceof Error ? error.message : config.mensajeError);
+      throw error;
+    }
+  }, []);
+
+  async function convertir() {
+    // La cadena se abre ANTES de lanzar: un lote muy corto podría completarse antes de que el
+    // estado se hubiera actualizado, y el sondeo se perdería la pregunta.
+    aplicarCadena(encadenar ? { tipo: 'conversion', lote: 1, procesados: 0, errores: 0 } : null);
+    setConfirmacion(null);
+    try {
+      if (!(await lanzarLote('conversion'))) {
+        aplicarCadena(null);
+        toast.success(CONFIG_CADENA.conversion.mensajeSinPendientes);
+      }
+    } catch {
+      aplicarCadena(null); // `lanzarLote` ya avisó del error
     }
   }
+
+  async function embeber() {
+    // Simétrico de `convertir()`: misma razón para abrir la cadena antes de lanzar.
+    aplicarCadena(encadenarEmbeddings ? { tipo: 'embedding', lote: 1, procesados: 0, errores: 0 } : null);
+    setConfirmacion(null);
+    try {
+      if (!(await lanzarLote('embedding'))) {
+        aplicarCadena(null);
+        toast.success(CONFIG_CADENA.embedding.mensajeSinPendientes);
+      }
+    } catch {
+      aplicarCadena(null); // `lanzarLote` ya avisó del error
+    }
+  }
+
+  /** Siguiente lote de la tanda: lo llama el botón del diálogo y también su cuenta atrás. */
+  const continuarCadena = useCallback(async () => {
+    const enCurso = cadena;
+    setConfirmacion(null);
+    if (!enCurso) return;
+    const config = CONFIG_CADENA[enCurso.tipo];
+
+    try {
+      if (await lanzarLote(enCurso.tipo)) {
+        aplicarCadena({ ...enCurso, lote: enCurso.lote + 1 });
+        return;
+      }
+      toast.success(
+        `${config.etiquetaTerminada}: ${enCurso.procesados} ${config.unidad} en ${enCurso.lote} lote(s). `
+        + `No quedan ${config.unidadPlural} pendientes.`,
+      );
+    } catch {
+      // `lanzarLote` ya avisó; la cadena se cierra para no dejarla colgando sin job que sondear.
+    }
+    aplicarCadena(null);
+  }, [cadena, lanzarLote, aplicarCadena]);
+
+  const detenerCadena = useCallback(() => {
+    const enCurso = cadena;
+    setConfirmacion(null);
+    aplicarCadena(null);
+    if (enCurso) {
+      const config = CONFIG_CADENA[enCurso.tipo];
+      toast.success(
+        `${config.etiquetaDetenida} tras ${enCurso.lote} lote(s): ${enCurso.procesados} ${config.unidad} ${config.verbo}.`,
+      );
+    }
+  }, [cadena, aplicarCadena]);
 
   async function reparar() {
     try {
@@ -224,16 +465,6 @@ export function RagPanelPage() {
       setJobIdFiltro(jobId);
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : 'No se pudo iniciar la conversión de documentos largos');
-    }
-  }
-
-  async function embeber() {
-    try {
-      const { jobId } = await iniciarIngestaEmbeddings({ limite: 2000 });
-      setJobActivo(await fetchJob(jobId));
-      setJobIdFiltro(jobId);
-    } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : 'No se pudo iniciar la ingesta de embeddings');
     }
   }
 
@@ -259,6 +490,10 @@ export function RagPanelPage() {
     if (!jobActivo) return;
     try {
       setJobActivo(await cancelarJobIngesta(jobActivo.id));
+      // Parar a mano es parar la tanda entera, no solo este lote. Pausar, en cambio, NO la corta:
+      // se reanuda el mismo job y la cadena debe seguir viva.
+      aplicarCadena(null);
+      setConfirmacion(null);
       cargar(); // los ítems no alcanzados quedan "omitido" — refresca las cifras del panel
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : 'No se pudo detener el trabajo');
@@ -381,10 +616,10 @@ export function RagPanelPage() {
                 <tr><th scope="col">Estado</th><th scope="col">Documentos</th></tr>
               </thead>
               <tbody>
-                {(['ok', 'convertidos', 'pendiente', 'sinTexto', 'error', 'noSoportado'] as const).map((clave) => (
+                {(['ok', 'convertidos', 'pendientes', 'sinTexto', 'error', 'noSoportado'] as const).map((clave) => (
                   <tr key={clave}>
                     <td>{ETIQUETA_ESTADO_DOC[clave]}</td>
-                    <td>{documentos[clave as keyof typeof documentos]}</td>
+                    <td>{documentos[clave]}</td>
                   </tr>
                 ))}
                 <tr><td><strong>Total</strong></td><td><strong>{documentos.total}</strong></td></tr>
@@ -411,6 +646,27 @@ export function RagPanelPage() {
                 {panel.proveedores.conversion.proveedorRespaldo
                   && `, y reintenta con ${panel.proveedores.conversion.proveedorRespaldo} los documentos que fallen`}.
               </p>
+              <label className="checkbox-linea">
+                <input
+                  type="checkbox"
+                  // Etiqueta explícita: dos casillas idénticas ("Continuar por lotes", una aquí y
+                  // otra junto a "Generar embeddings") necesitan nombres accesibles distintos —
+                  // tanto para un lector de pantalla como para que las pruebas puedan pulsar una
+                  // sin ambigüedad con la otra.
+                  aria-label="Continuar por lotes (conversión)"
+                  checked={encadenar}
+                  onChange={(e) => setEncadenar(e.target.checked)}
+                  disabled={!!cadena || (!!jobActivo && jobActivo.estado === 'en_curso')}
+                />
+                <span>
+                  Continuar por lotes
+                  <span className="exp-nota">
+                    Cada lote toma {CONFIG_CADENA.conversion.limite} documento(s). Al terminar cada
+                    uno se pregunta si seguir con el siguiente; sin respuesta en{' '}
+                    {SEGUNDOS_CONFIRMACION} s, continúa solo. Sin marcar, se hace un único lote.
+                  </span>
+                </span>
+              </label>
             </div>
             <div>
               <button
@@ -426,6 +682,23 @@ export function RagPanelPage() {
                   ? 'Convierte los fragmentos ya troceados en vectores de búsqueda.'
                   : `Bloqueado: ${panel.proveedores.embedding.motivo}`}
               </p>
+              <label className="checkbox-linea">
+                <input
+                  type="checkbox"
+                  aria-label="Continuar por lotes (embeddings)"
+                  checked={encadenarEmbeddings}
+                  onChange={(e) => setEncadenarEmbeddings(e.target.checked)}
+                  disabled={!!cadena || (!!jobActivo && jobActivo.estado === 'en_curso')}
+                />
+                <span>
+                  Continuar por lotes
+                  <span className="exp-nota">
+                    Cada lote toma {CONFIG_CADENA.embedding.limite} fragmento(s). Al terminar cada
+                    uno se pregunta si seguir con el siguiente; sin respuesta en{' '}
+                    {SEGUNDOS_CONFIRMACION} s, continúa solo. Sin marcar, se hace un único lote.
+                  </span>
+                </span>
+              </label>
             </div>
             <div>
               <button
@@ -471,6 +744,21 @@ export function RagPanelPage() {
               onReanudar={reanudar}
               onDetener={detener}
               onVerDocumentos={() => setJobIdFiltro(jobActivo.id)}
+            />
+          )}
+
+          {confirmacion && cadena && (
+            <ModalContinuarLote
+              tipo={cadena.tipo}
+              lote={cadena.lote}
+              job={confirmacion.job}
+              acumulado={cadena}
+              pendientes={
+                cadena.tipo === 'conversion' ? documentos.pendientes : panel.corpus.embeddings.chunksSinEmbedding
+              }
+              segundos={confirmacion.segundos}
+              onContinuar={continuarCadena}
+              onDetener={detenerCadena}
             />
           )}
         </section>

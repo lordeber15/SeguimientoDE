@@ -66,6 +66,13 @@ async function abrirPanel(page: Page, panel: unknown = PANEL_BASE, documentos: u
     if (route.request().method() !== 'GET') return route.fallback();
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(documentos) });
   });
+  // La lista de trabajos: la piden al montar TANTO `SeguimientoPage` (la vista inicial) como el
+  // panel RAG, para reengancharse a un job que siguiera corriendo. Sin simularla cae en el backend
+  // real —que con el token falso responde 401— y el manejador global cierra la sesión: la app se va
+  // al login y la pestaña RAG se desmonta antes de poder pulsarla. Por defecto, ningún job vivo.
+  await page.route('**/api/rag/ingesta', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
+  );
   await iniciarSesionSimulada(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'RAG' }).click();
@@ -615,5 +622,272 @@ test.describe('Panel RAG — con API simulada', () => {
 
     await expect(page.getByText('ANTHROPIC_API_KEY')).toBeVisible();
     await expect(page.getByText(/Necesaria para usar Anthropic/)).toBeVisible();
+  });
+});
+
+/** Un job de conversión tal y como lo devuelve `GET /api/rag/ingesta/:id`. */
+function jobDe(
+  tipo: 'conversion' | 'embedding',
+  id: number,
+  estado: string,
+  procesados: number,
+  errores = 0,
+  total = 500,
+) {
+  return {
+    id, tipo, estado, total, procesados, errores,
+    mensaje: null,
+    feInicio: '2026-09-01T10:00:00.000Z',
+    feFin: estado === 'en_curso' ? null : '2026-09-01T10:30:00.000Z',
+  };
+}
+
+function comoJson(cuerpo: unknown, status = 200) {
+  return { status, contentType: 'application/json', body: JSON.stringify(cuerpo) };
+}
+
+/**
+ * Deja el panel listo para una tanda encadenada — de conversión o de embeddings, según `tipo` — el
+ * POST reparte jobIds correlativos y cada job responde `en_curso` la primera vez que se consulta y
+ * `completado` a partir de la segunda — que es justo la transición sobre la que el panel decide
+ * preguntar si sigue con el próximo lote.
+ *
+ * Devuelve el contador de lotes lanzados: lo que distingue "continuar" de "detener".
+ */
+async function simularCadena(
+  page: Page,
+  opciones: {
+    tipo?: 'conversion' | 'embedding';
+    procesados?: number;
+    errores?: number;
+    total?: number;
+    segundoLote?: { status: number; cuerpo: unknown };
+  } = {},
+) {
+  const tipo = opciones.tipo ?? 'conversion';
+  const total = opciones.total ?? (tipo === 'conversion' ? 500 : 2000);
+  const lanzados: number[] = [];
+
+  await page.route(`**/api/rag/ingesta/${tipo === 'conversion' ? 'conversion' : 'embeddings'}`, (route) => {
+    lanzados.push(Date.now());
+    if (lanzados.length > 1 && opciones.segundoLote) {
+      return route.fulfill(comoJson(opciones.segundoLote.cuerpo, opciones.segundoLote.status));
+    }
+    return route.fulfill(comoJson({ jobId: 100 + lanzados.length }, 202));
+  });
+
+  const consultas = new Map<string, number>();
+  await page.route('**/api/rag/ingesta/1*', (route) => {
+    const id = route.request().url().split('/').pop()!;
+    const vistas = (consultas.get(id) ?? 0) + 1;
+    consultas.set(id, vistas);
+    return route.fulfill(
+      comoJson(
+        jobDe(
+          tipo,
+          Number(id),
+          vistas > 1 ? 'completado' : 'en_curso',
+          opciones.procesados ?? total,
+          opciones.errores ?? 0,
+          total,
+        ),
+      ),
+    );
+  });
+
+  return lanzados;
+}
+
+test.describe('Panel RAG — conversión por lotes encadenados', () => {
+  test('al terminar un lote pregunta si continuar, con cuenta atrás', async ({ page }) => {
+    await abrirPanel(page);
+    await simularCadena(page, { procesados: 498, errores: 2 });
+
+    await expect(page.getByRole('checkbox', { name: 'Continuar por lotes (conversión)' })).toBeChecked();
+    await page.getByRole('button', { name: 'Convertir documentos pendientes' }).click();
+
+    const dialogo = page.getByRole('alertdialog');
+    await expect(dialogo.getByRole('heading', { name: 'Lote 1 terminado' })).toBeVisible();
+    await expect(dialogo.getByText('Se procesaron 498 de 500 documento(s) (2 con error).')).toBeVisible();
+    await expect(dialogo.getByText(/Quedan 5688 documento\(s\) pendiente\(s\)/)).toBeVisible();
+    await expect(dialogo.getByText(/Continúa automáticamente en/)).toBeVisible();
+  });
+
+  test('"Continuar ahora" lanza el siguiente lote', async ({ page }) => {
+    await abrirPanel(page);
+    const lanzados = await simularCadena(page);
+
+    await page.getByRole('button', { name: 'Convertir documentos pendientes' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Continuar ahora' }).click();
+
+    // El diálogo del lote 1 se cierra y el trabajo que se sondea es ya el segundo.
+    await expect(page.getByText(/Trabajo #102 \(conversion\)/)).toBeVisible();
+    expect(lanzados).toHaveLength(2);
+
+    // Y al terminar ESE lote vuelve a preguntar, contando bien el número de lote.
+    await expect(page.getByRole('alertdialog').getByRole('heading', { name: 'Lote 2 terminado' })).toBeVisible();
+  });
+
+  test('"No, detener" cierra la cadena sin lanzar otro lote', async ({ page }) => {
+    await abrirPanel(page);
+    const lanzados = await simularCadena(page, { procesados: 500 });
+
+    await page.getByRole('button', { name: 'Convertir documentos pendientes' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'No, detener' }).click();
+
+    await expect(page.getByText('Conversión detenida tras 1 lote(s): 500 documento(s) convertido(s).')).toBeVisible();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    expect(lanzados).toHaveLength(1);
+  });
+
+  test('un lote que no convirtió nada no continúa solo', async ({ page }) => {
+    await abrirPanel(page);
+    await simularCadena(page, { procesados: 0, errores: 500 });
+
+    await page.getByRole('button', { name: 'Convertir documentos pendientes' }).click();
+
+    const dialogo = page.getByRole('alertdialog');
+    await expect(dialogo.getByText(/no convirtió ningún documento/)).toBeVisible();
+    await expect(dialogo.getByText(/Continúa automáticamente/)).toHaveCount(0);
+  });
+
+  test('cuando ya no quedan pendientes, la cadena termina con el balance', async ({ page }) => {
+    await abrirPanel(page);
+    await simularCadena(page, {
+      procesados: 120,
+      // El 404 de `iniciarJobConversion` es la señal de fin: no es un error que mostrar.
+      segundoLote: { status: 404, cuerpo: { message: 'No hay documentos pendientes con ese filtro' } },
+    });
+
+    await page.getByRole('button', { name: 'Convertir documentos pendientes' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Continuar ahora' }).click();
+
+    await expect(
+      page.getByText('Conversión terminada: 120 documento(s) en 1 lote(s). No quedan documentos pendientes.'),
+    ).toBeVisible();
+    await expect(page.getByText(/No hay documentos pendientes con ese filtro/)).toHaveCount(0);
+  });
+
+  test('sin la casilla marcada se hace un solo lote, sin preguntar nada', async ({ page }) => {
+    await abrirPanel(page);
+    await simularCadena(page);
+
+    await page.getByRole('checkbox', { name: 'Continuar por lotes (conversión)' }).uncheck();
+    await page.getByRole('button', { name: 'Convertir documentos pendientes' }).click();
+
+    await expect(page.getByText(/Trabajo #101 \(conversion\)/)).toBeVisible();
+    // El trabajo llega a completarse (el sondeo lo ve en el segundo tick) y aun así no hay diálogo.
+    await expect(page.getByText(/Trabajo #101 \(conversion\) — completado/)).toBeVisible();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  });
+
+  test('sin responder en 30 s, continúa sola', async ({ page }) => {
+    // Reloj falso: la cuenta atrás real tardaría más que el propio tiempo límite de la prueba.
+    await page.clock.install();
+    await abrirPanel(page);
+    const lanzados = await simularCadena(page);
+
+    await page.getByRole('button', { name: 'Convertir documentos pendientes' }).click();
+    await page.clock.runFor(2000); // deja correr el sondeo (1500 ms) hasta ver el lote completado
+    await expect(page.getByRole('alertdialog')).toBeVisible();
+    expect(lanzados).toHaveLength(1);
+
+    await page.clock.runFor(30_000);
+    await expect(page.getByText(/Trabajo #102 \(conversion\)/)).toBeVisible();
+    expect(lanzados).toHaveLength(2);
+  });
+});
+
+test.describe('Panel RAG — embeddings por lotes encadenados', () => {
+  test('al terminar un lote de embeddings pregunta si continuar, con cuenta atrás', async ({ page }) => {
+    await abrirPanel(page);
+    await simularCadena(page, { tipo: 'embedding', procesados: 1998, errores: 2 });
+
+    await expect(page.getByRole('checkbox', { name: 'Continuar por lotes (embeddings)' })).toBeChecked();
+    await page.getByRole('button', { name: 'Generar embeddings' }).click();
+
+    const dialogo = page.getByRole('alertdialog');
+    await expect(dialogo.getByRole('heading', { name: 'Lote 1 terminado' })).toBeVisible();
+    await expect(dialogo.getByText('Se procesaron 1998 de 2000 fragmento(s) (2 con error).')).toBeVisible();
+    // PANEL_BASE.corpus.embeddings.chunksSinEmbedding = 119.
+    await expect(dialogo.getByText(/Quedan 119 fragmento\(s\) pendiente\(s\)/)).toBeVisible();
+    await expect(dialogo.getByText(/Continúa automáticamente en/)).toBeVisible();
+  });
+
+  test('"Continuar ahora" lanza el siguiente lote de embeddings', async ({ page }) => {
+    await abrirPanel(page);
+    const lanzados = await simularCadena(page, { tipo: 'embedding' });
+
+    await page.getByRole('button', { name: 'Generar embeddings' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Continuar ahora' }).click();
+
+    await expect(page.getByText(/Trabajo #102 \(embedding\)/)).toBeVisible();
+    expect(lanzados).toHaveLength(2);
+    await expect(page.getByRole('alertdialog').getByRole('heading', { name: 'Lote 2 terminado' })).toBeVisible();
+  });
+
+  test('"No, detener" cierra la cadena de embeddings sin lanzar otro lote', async ({ page }) => {
+    await abrirPanel(page);
+    const lanzados = await simularCadena(page, { tipo: 'embedding', procesados: 2000 });
+
+    await page.getByRole('button', { name: 'Generar embeddings' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'No, detener' }).click();
+
+    await expect(
+      page.getByText('Ingesta de embeddings detenida tras 1 lote(s): 2000 fragmento(s) embebido(s).'),
+    ).toBeVisible();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    expect(lanzados).toHaveLength(1);
+  });
+
+  test('un lote de embeddings que no embebió nada no continúa solo', async ({ page }) => {
+    await abrirPanel(page);
+    await simularCadena(page, { tipo: 'embedding', procesados: 0, errores: 2000 });
+
+    await page.getByRole('button', { name: 'Generar embeddings' }).click();
+
+    const dialogo = page.getByRole('alertdialog');
+    await expect(dialogo.getByText(/no embebió ningún fragmento/)).toBeVisible();
+    await expect(dialogo.getByText(/Continúa automáticamente/)).toHaveCount(0);
+  });
+
+  test('cuando ya no quedan fragmentos pendientes, la cadena de embeddings termina con el balance', async ({ page }) => {
+    await abrirPanel(page);
+    await simularCadena(page, {
+      tipo: 'embedding',
+      procesados: 1500,
+      // El 404 de `iniciarJobEmbedding` es la señal de fin: no es un error que mostrar.
+      segundoLote: { status: 404, cuerpo: { message: 'No hay chunks pendientes de embeber con ese filtro' } },
+    });
+
+    await page.getByRole('button', { name: 'Generar embeddings' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Continuar ahora' }).click();
+
+    await expect(
+      page.getByText(
+        'Ingesta de embeddings terminada: 1500 fragmento(s) en 1 lote(s). No quedan fragmentos pendientes.',
+      ),
+    ).toBeVisible();
+    await expect(page.getByText(/No hay chunks pendientes de embeber/)).toHaveCount(0);
+  });
+
+  test('el botón "Detener" funciona sobre un job de embeddings, sin "Pausar" ni "Reanudar"', async ({ page }) => {
+    await abrirPanel(page);
+    await page.route('**/api/rag/ingesta/embeddings', (route) => route.fulfill(comoJson({ jobId: 55 }, 202)));
+    await page.route('**/api/rag/ingesta/55', (route) =>
+      route.fulfill(comoJson(jobDe('embedding', 55, 'en_curso', 800, 0, 2000))),
+    );
+
+    await page.getByRole('button', { name: 'Generar embeddings' }).click();
+    await expect(page.getByRole('button', { name: 'Detener' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Pausar' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Reanudar' })).toHaveCount(0);
+
+    const jobCancelado = jobDe('embedding', 55, 'cancelado', 800, 0, 2000);
+    await page.route('**/api/rag/ingesta/55/cancelar', (route) => route.fulfill(comoJson(jobCancelado)));
+    await page.route('**/api/rag/ingesta/55', (route) => route.fulfill(comoJson(jobCancelado)));
+    await page.getByRole('button', { name: 'Detener' }).click();
+
+    await expect(page.getByText(/Trabajo #55 \(embedding\) — cancelado/)).toBeVisible();
   });
 });

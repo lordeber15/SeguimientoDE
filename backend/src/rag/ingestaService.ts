@@ -538,9 +538,14 @@ export async function reanudarJob(jobId: number): Promise<void> {
 }
 
 export async function cancelarJob(jobId: number): Promise<void> {
+  // 'embedding' entra aquí también: a diferencia de pausar/reanudar (que exigirían reconstruir el
+  // `EmbeddingProvider` para reanudar, ver `TIPOS_REANUDABLES`), detener es una parada definitiva —
+  // `ejecutarJobEmbedding` la respeta releyendo el estado en cada vuelta, igual que el loop de
+  // conversión.
   const [fila] = await appSequelize.query<{ id: number }>(
     `UPDATE rag.ingest_job SET estado = 'cancelado', fe_fin = now()
-      WHERE id = $1 AND estado IN ('en_curso', 'pausado') AND tipo IN ('conversion', 'reparacion', 'largos')
+      WHERE id = $1 AND estado IN ('en_curso', 'pausado')
+        AND tipo IN ('conversion', 'reparacion', 'largos', 'embedding')
       RETURNING id`,
     { bind: [jobId], type: QueryTypes.SELECT },
   );
@@ -1175,6 +1180,15 @@ async function ejecutarJobEmbedding(
   // en cada vuelta): así el índice siempre avanza, sin importar si un lote falla, y no hay riesgo
   // de reprocesar el mismo lote para siempre.
   for (let i = 0; i < chunkIds.length; i += TAMANO_LOTE) {
+    // Se comprueba ANTES de embeber el siguiente lote: pausar no existe para este tipo, pero
+    // detener sí, y el mismo patrón que `ejecutarJobConversionLoop` — comprobar entre unidades de
+    // trabajo, nunca a mitad — evita cortar una llamada al proveedor a medias.
+    const [filaJob] = await appSequelize.query<{ estado: string }>(
+      'SELECT estado FROM rag.ingest_job WHERE id = $1',
+      { bind: [jobId], type: QueryTypes.SELECT },
+    );
+    if (filaJob?.estado !== 'en_curso') return;
+
     const idsLote = chunkIds.slice(i, i + TAMANO_LOTE);
     const lote = await appSequelize.query<{ id: number; texto: string; cabecera_ctx: string | null }>(
       'SELECT id, texto, cabecera_ctx FROM rag.chunk WHERE id = ANY($1::bigint[]) ORDER BY id',
@@ -1249,8 +1263,11 @@ async function ejecutarJobEmbedding(
   }
 
   if (!huboErrorFatal) {
+    // `estado = 'en_curso'`, no `!= 'error'`: un job ya `cancelado` (detenido a mitad, ver el
+    // chequeo al principio del `for`) tampoco debe reescribirse como `completado` — eso es lo que
+    // le dice al frontend que pregunte por el siguiente lote de la cadena.
     await appSequelize.query(
-      `UPDATE rag.ingest_job SET estado = 'completado', fe_fin = now() WHERE id = $1 AND estado != 'error'`,
+      `UPDATE rag.ingest_job SET estado = 'completado', fe_fin = now() WHERE id = $1 AND estado = 'en_curso'`,
       { bind: [jobId], type: QueryTypes.UPDATE },
     );
 

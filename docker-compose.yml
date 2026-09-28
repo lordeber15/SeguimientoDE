@@ -33,11 +33,24 @@ services:
         condition: service_healthy
     ports:
       - '${BACKEND_HOST_PORT:-3012}:${PORT:-3012}'
+    # sshfs MANUAL (`docker compose exec -u root backend sgd-sshfs montar usuario@host:/ruta`):
+    # FUSE necesita el dispositivo y la capacidad de montar. SYS_ADMIN es amplia, pero node sigue
+    # corriendo como appuser; solo la usa root en ese exec explícito. apparmor:unconfined aplica en
+    # hosts Linux con AppArmor (Ubuntu); Docker Desktop lo ignora.
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
     volumes:
       # Repositorio de documentos y anexos del SGD, montado en SOLO LECTURA (:ro).
       # El SGD es la fuente de verdad de estos archivos y este sistema nunca los modifica;
       # el :ro lo garantiza a nivel de Docker, no solo por convención del código.
-      - ${STORAGE_HOST_PATH}:${STORAGE_PATH:-/mnt/sgd/storage}:ro
+      # Si STORAGE_HOST_PATH no está definido (producción con sshfs), en su lugar se monta el
+      # volumen con nombre vacío sgd_storage_vacio; el sshfs se monta encima y al desmontar
+      # vuelve a verse vacío.
+      - ${STORAGE_HOST_PATH:-sgd_storage_vacio}:${STORAGE_PATH:-/mnt/sgd/storage}:ro
       # Temporales del PDF unificado. Lectura/escritura: es nuestro directorio de trabajo, no
       # el repositorio del SGD. El servicio solo crea y borra ahí archivos "Union_*.pdf".
       - ${UNION_TMP_DIR}:${UNION_TMP_PATH:-/mnt/sgd/tmp}
@@ -58,3 +71,5 @@ services:
 
 volumes:
   db_app_data:
+  # Punto de montaje vacío para el backend cuando no hay STORAGE_HOST_PATH (ver servicio backend).
+  sgd_storage_vacio:

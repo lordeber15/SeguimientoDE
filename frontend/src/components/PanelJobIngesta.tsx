@@ -212,10 +212,13 @@ export function PanelJobIngesta({
       </p>
 
       {(onPausar || onReanudar || onDetener)
-        && (job.tipo === 'conversion' || job.tipo === 'reparacion' || job.tipo === 'largos')
+        && (job.tipo === 'conversion' || job.tipo === 'reparacion' || job.tipo === 'largos' || job.tipo === 'embedding')
         && (job.estado === 'en_curso' || job.estado === 'pausado') && (
         <div className="rag-job-controles">
-          {job.estado === 'en_curso' && onPausar && (
+          {/* Un job de embedding no se puede pausar/reanudar: reanudarlo exigiría reconstruir el
+              `EmbeddingProvider`, y `pausarJob`/`reanudarJob` lo rechazan a propósito (ver
+              `TIPOS_REANUDABLES` en el backend). Solo "Detener" — una parada definitiva — aplica. */}
+          {job.estado === 'en_curso' && job.tipo !== 'embedding' && onPausar && (
             <button type="button" className="boton-secundario" onClick={onPausar}>Pausar</button>
           )}
           {job.estado === 'pausado' && onReanudar && (

@@ -13,6 +13,12 @@ export interface DependenciaPadre {
   deDependencia: string | null;
 }
 
+export interface Miembro {
+  coEmpleado: string;
+  nombreCompleto: string | null;
+  cargoDescripcion: string | null;
+}
+
 export interface Dependencia {
   coDependencia: string;
   deDependencia: string | null;
@@ -22,6 +28,10 @@ export interface Dependencia {
   padre: DependenciaPadre | null;
   tipoEncargaturaDescripcion: string | null;
   cargoDescripcion: string | null;
+  /** `true` cuando `RHTM_DEPENDENCIA.TI_DEPENDENCIA = '1'` (comité de evaluación); `false` para
+   *  una unidad institucional. Misma regla que usa el dashboard (Fase 6). */
+  esComite: boolean;
+  miembros: Miembro[];
 }
 
 export function fetchDependencias(): Promise<Dependencia[]> {

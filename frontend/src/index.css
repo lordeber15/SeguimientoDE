@@ -217,6 +217,77 @@ tbody tr:hover {
   color: var(--color-destructive);
 }
 
+/* --- Miembros de dependencia (DependenciaTable) --- */
+
+.link-button {
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font-weight: 500;
+  font-size: 14px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.link-button:hover {
+  color: var(--color-foreground);
+}
+
+.fila-miembros td {
+  background: var(--color-background);
+}
+
+.lista-miembros {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.lista-miembros li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* --- Buscador de persona en comités (DependenciasPage) --- */
+
+.panel-busqueda-persona {
+  margin-bottom: 16px;
+  padding: 16px;
+}
+
+.lista-personas-comite {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 16px;
+}
+
+.lista-personas-comite > li:not(:last-child) {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.lista-comites-persona {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.lista-comites-persona li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .skeleton-row td {
   padding: 14px 16px;
 }

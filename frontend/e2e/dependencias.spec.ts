@@ -10,13 +10,69 @@ async function irADependencias(page: Page, sesion: (p: Page) => Promise<void> = 
   await page.getByRole('button', { name: 'Dependencias' }).click();
 }
 
+/** Dependencias simuladas: 1 institución (con miembros) y 2 comités (con presidente y miembros
+ *  compartidos), para poder probar filas expandibles y el buscador de persona en comités. */
+function dependenciasSimuladas() {
+  return [
+    {
+      coDependencia: '01',
+      deDependencia: 'Oficina General de Administración',
+      deSigla: 'OGA',
+      coTipoEncargatura: null,
+      jefe: { cempCodemp: 'E01', cempApepat: 'Rios', cempApemat: 'Soto', cempDenom: 'Juan', nombreCompleto: 'Rios Soto Juan' },
+      padre: null,
+      tipoEncargaturaDescripcion: null,
+      cargoDescripcion: 'Jefe de Oficina',
+      esComite: false,
+      miembros: [
+        { coEmpleado: 'E01', nombreCompleto: 'Rios Soto Juan', cargoDescripcion: 'Jefe de Oficina' },
+        { coEmpleado: 'E02', nombreCompleto: 'Diaz Perez Ana', cargoDescripcion: 'Analista' },
+      ],
+    },
+    {
+      coDependencia: '02',
+      deDependencia: 'Comité de Evaluación - RJ 001-2026',
+      deSigla: 'RJ0012026',
+      coTipoEncargatura: '1',
+      jefe: {
+        cempCodemp: 'E10',
+        cempApepat: 'Lopez',
+        cempApemat: 'Chamorro',
+        cempDenom: 'Carlos',
+        nombreCompleto: 'Lopez Chamorro Carlos',
+      },
+      padre: null,
+      tipoEncargaturaDescripcion: 'Titular',
+      cargoDescripcion: 'Presidente de Comité',
+      esComite: true,
+      miembros: [
+        { coEmpleado: 'E20', nombreCompleto: 'Torres Ponce Erika', cargoDescripcion: 'Miembro' },
+        { coEmpleado: 'E21', nombreCompleto: 'Jara Cardenas Richard', cargoDescripcion: 'Miembro' },
+      ],
+    },
+    {
+      coDependencia: '03',
+      deDependencia: 'Comité de Evaluación - RJ 002-2026',
+      deSigla: 'RJ0022026',
+      coTipoEncargatura: '1',
+      jefe: { cempCodemp: 'E22', cempApepat: 'Herrera', cempApemat: 'Burstein', cempDenom: 'Valia', nombreCompleto: 'Herrera Burstein Valia' },
+      padre: null,
+      tipoEncargaturaDescripcion: 'Titular',
+      cargoDescripcion: 'Presidente de Comité',
+      esComite: true,
+      // Torres Ponce Erika también aparece acá, como miembro, para probar que el buscador de
+      // persona agrupa sus dos comités con roles distintos ("Presidente" en 02 no aplica; acá
+      // sigue siendo Miembro en ambos, pero en comités distintos).
+      miembros: [{ coEmpleado: 'E20', nombreCompleto: 'Torres Ponce Erika', cargoDescripcion: 'Miembro' }],
+    },
+  ];
+}
+
 test.describe('Página de Dependencias — integración real', () => {
-  test('carga la lista de dependencias desde el backend', async ({ page }) => {
+  test('carga instituciones y comités en sus pestañas', async ({ page }) => {
     await irADependencias(page, iniciarSesionReal);
 
     await expect(page.getByRole('heading', { name: 'Seguimiento de Dependencias' })).toBeVisible();
-
-    // Espera a que salga del estado "cargando" (skeleton) hacia tabla o error.
     await expect(page.getByRole('status', { name: 'Cargando dependencias' })).toBeHidden({ timeout: 15_000 });
 
     const errorMessage = page.getByRole('alert');
@@ -25,14 +81,19 @@ test.describe('Página de Dependencias — integración real', () => {
       return;
     }
 
+    const tabInstituciones = page.getByRole('tab', { name: /^Instituciones/ });
+    const tabComites = page.getByRole('tab', { name: /^Comités/ });
+    await expect(tabInstituciones).toBeVisible();
+    await expect(tabComites).toBeVisible();
+
     await expect(page.getByRole('columnheader', { name: 'Dependencia' })).toBeVisible();
     await expect(page.getByRole('columnheader', { name: 'Jefe / Responsable' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Miembros' })).toBeVisible();
+    await expect(page.locator('tbody tr').first()).toBeVisible();
 
-    const filas = page.locator('tbody tr');
-    await expect(filas.first()).toBeVisible();
-
-    const contador = page.locator('.result-count');
-    await expect(contador).toContainText('de');
+    await tabComites.click();
+    await expect(page.getByRole('columnheader', { name: 'Presidente / Encargado' })).toBeVisible();
+    await expect(page.locator('tbody tr').first()).toBeVisible();
   });
 
   test('filtra dependencias al escribir en el buscador', async ({ page }) => {
@@ -58,7 +119,7 @@ test.describe('Página de Dependencias — integración real', () => {
 
     // Un término sin coincidencias muestra el mensaje de "sin resultados".
     await buscador.fill('zzzzznoexiste12345');
-    await expect(page.getByText('No se encontraron dependencias que coincidan con la búsqueda.')).toBeVisible();
+    await expect(page.getByText('No se encontraron instituciones que coincidan con la búsqueda.')).toBeVisible();
   });
 });
 
@@ -86,10 +147,12 @@ test.describe('Página de Dependencias — estados con API simulada', () => {
     await page.getByRole('button', { name: 'Reintentar' }).click();
 
     await expect(alerta).toBeHidden();
-    await expect(page.getByText('No se encontraron dependencias que coincidan con la búsqueda.')).toBeVisible();
+    await expect(page.getByText('No se encontraron instituciones que coincidan con la búsqueda.')).toBeVisible();
   });
 
-  test('muestra "Sin jefe asignado" cuando la dependencia no tiene jefe', async ({ page }) => {
+  test('muestra "Sin jefe asignado" y "Sin miembros registrados" cuando la dependencia no tiene ninguno', async ({
+    page,
+  }) => {
     await page.route('**/api/dependencias', async (route) => {
       await route.fulfill({
         status: 200,
@@ -104,6 +167,8 @@ test.describe('Página de Dependencias — estados con API simulada', () => {
             padre: null,
             tipoEncargaturaDescripcion: null,
             cargoDescripcion: null,
+            esComite: false,
+            miembros: [],
           },
         ]),
       });
@@ -114,6 +179,80 @@ test.describe('Página de Dependencias — estados con API simulada', () => {
     await expect(page.getByText('Dependencia de Prueba')).toBeVisible();
     await expect(page.getByText('DEP-TEST')).toBeVisible();
     await expect(page.getByText('Sin jefe asignado')).toBeVisible();
+    await expect(page.getByText('Sin miembros registrados')).toBeVisible();
     await expect(page.locator('tbody tr').first().locator('td').nth(3)).toHaveText('—');
+  });
+
+  test('separa instituciones y comités en pestañas con contador', async ({ page }) => {
+    await page.route('**/api/dependencias', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(dependenciasSimuladas()) }),
+    );
+
+    await irADependencias(page);
+
+    const tabInstituciones = page.getByRole('tab', { name: 'Instituciones (1)' });
+    const tabComites = page.getByRole('tab', { name: 'Comités (2)' });
+    await expect(tabInstituciones).toBeVisible();
+    await expect(tabComites).toBeVisible();
+    await expect(tabInstituciones).toHaveAttribute('aria-selected', 'true');
+
+    await expect(page.getByText('Oficina General de Administración')).toBeVisible();
+    await expect(page.getByText('Comité de Evaluación - RJ 001-2026')).not.toBeVisible();
+
+    await tabComites.click();
+    await expect(tabComites).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText('Comité de Evaluación - RJ 001-2026')).toBeVisible();
+    await expect(page.getByText('Comité de Evaluación - RJ 002-2026')).toBeVisible();
+    await expect(page.getByText('Oficina General de Administración')).not.toBeVisible();
+  });
+
+  test('expande y oculta la lista de miembros de una dependencia', async ({ page }) => {
+    await page.route('**/api/dependencias', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(dependenciasSimuladas()) }),
+    );
+
+    await irADependencias(page);
+
+    const boton = page.getByRole('button', { name: 'Ver (2)' });
+    await expect(boton).toBeVisible();
+    await expect(page.getByText('Diaz Perez Ana')).not.toBeVisible();
+
+    await boton.click();
+    await expect(page.getByText('Diaz Perez Ana')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Ocultar' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Ocultar' }).click();
+    await expect(page.getByText('Diaz Perez Ana')).not.toBeVisible();
+  });
+
+  test('el buscador de persona solo aparece en Comités y agrupa presidente/miembro por comité', async ({ page }) => {
+    await page.route('**/api/dependencias', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(dependenciasSimuladas()) }),
+    );
+
+    await irADependencias(page);
+
+    await expect(page.getByRole('searchbox', { name: 'Buscar persona en comités' })).toBeHidden();
+
+    await page.getByRole('tab', { name: 'Comités (2)' }).click();
+    const buscadorPersona = page.getByRole('searchbox', { name: 'Buscar persona en comités' });
+    await expect(buscadorPersona).toBeVisible();
+
+    // Presidente de un único comité.
+    await buscadorPersona.fill('Lopez Chamorro');
+    await expect(page.getByText('Lopez Chamorro Carlos — 1 comité')).toBeVisible();
+    await expect(page.getByText('Presidente / Encargado')).toBeVisible();
+    await expect(page.getByText('Comité de Evaluación - RJ 002-2026')).not.toBeVisible();
+
+    // Miembro presente en los dos comités simulados.
+    await buscadorPersona.fill('Torres Ponce');
+    await expect(page.getByText('Torres Ponce Erika — 2 comités')).toBeVisible();
+    const filasMiembro = page.locator('.lista-comites-persona li');
+    await expect(filasMiembro).toHaveCount(2);
+    await expect(filasMiembro.first().getByText('Miembro')).toBeVisible();
+
+    // Sin coincidencias.
+    await buscadorPersona.fill('zzzzznoexiste12345');
+    await expect(page.getByText('Ninguna persona coincide en los comités.')).toBeVisible();
   });
 });

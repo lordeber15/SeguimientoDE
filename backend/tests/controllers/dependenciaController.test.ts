@@ -24,10 +24,15 @@ function fakeResponse() {
 }
 
 // Responde según a qué función de dominio apunta el SQL, devolviendo una descripción
-// derivada del código para poder aseverar sobre qué códigos se enviaron (bind[0]).
-function mockQueryPorDominio() {
-  mockQuery.mockImplementation((sql: string, options: { bind: [string[]] }) => {
-    const codigos = options.bind[0];
+// derivada del código para poder aseverar sobre qué códigos se enviaron (bind[0]). La consulta de
+// miembros (obtenerMiembros) no manda bind y por defecto no devuelve filas, salvo que un test
+// configure `filasMiembros`.
+function mockQueryPorDominio(filasMiembros: unknown[] = []) {
+  mockQuery.mockImplementation((sql: string, options?: { bind: [string[]] }) => {
+    if (sql.includes('tdtx_dependencia_empleado')) {
+      return Promise.resolve(filasMiembros);
+    }
+    const codigos = options!.bind[0];
     const prefijo = sql.includes('pk_sgd_descripcion_de_dominios') ? 'TipoEnc' : 'Cargo';
     return Promise.resolve(codigos.map((codigo) => ({ codigo, descripcion: `${prefijo}-${codigo}` })));
   });
@@ -58,6 +63,49 @@ describe('getAllDependencias', () => {
         cargoDescripcion: 'Cargo-C01',
       }),
     ]);
+  });
+
+  it('marca esComite según tiDependencia y agrupa miembros por dependencia con cargoDescripcion', async () => {
+    mockQueryPorDominio([
+      { coDependencia: '01', coEmpleado: 'E10', nombreCompleto: 'Ana Ramos', coCargo: 'C02' },
+      { coDependencia: '01', coEmpleado: 'E11', nombreCompleto: 'Beto Diaz', coCargo: null },
+      { coDependencia: '02', coEmpleado: 'E12', nombreCompleto: 'Cira Soto', coCargo: 'C02' },
+    ]);
+    mockFindAll.mockResolvedValue([
+      fakeInstance({ coDependencia: '01', tiDependencia: '1', coTipoEncargatura: null, coCargo: null, jefe: null, padre: null }),
+      fakeInstance({ coDependencia: '02', tiDependencia: '0', coTipoEncargatura: null, coCargo: null, jefe: null, padre: null }),
+    ]);
+
+    const res = fakeResponse();
+    await getAllDependencias({} as Request, res);
+
+    const [data] = (res.json as jest.Mock).mock.calls[0];
+    expect(data[0]).toMatchObject({
+      coDependencia: '01',
+      esComite: true,
+      miembros: [
+        { coEmpleado: 'E10', nombreCompleto: 'Ana Ramos', cargoDescripcion: 'Cargo-C02' },
+        { coEmpleado: 'E11', nombreCompleto: 'Beto Diaz', cargoDescripcion: null },
+      ],
+    });
+    expect(data[1]).toMatchObject({
+      coDependencia: '02',
+      esComite: false,
+      miembros: [{ coEmpleado: 'E12', nombreCompleto: 'Cira Soto', cargoDescripcion: 'Cargo-C02' }],
+    });
+  });
+
+  it('deja miembros en [] cuando la dependencia no tiene filas en la consulta de miembros', async () => {
+    mockQueryPorDominio([]);
+    mockFindAll.mockResolvedValue([
+      fakeInstance({ coDependencia: '01', tiDependencia: '0', coTipoEncargatura: null, coCargo: null, jefe: null, padre: null }),
+    ]);
+
+    const res = fakeResponse();
+    await getAllDependencias({} as Request, res);
+
+    const [data] = (res.json as jest.Mock).mock.calls[0];
+    expect(data[0].miembros).toEqual([]);
   });
 
   it('deja jefe en null cuando la dependencia no tiene jefe asignado', async () => {
@@ -110,7 +158,8 @@ describe('getAllDependencias', () => {
     const res = fakeResponse();
     await getAllDependencias({} as Request, res);
 
-    expect(mockQuery).toHaveBeenCalledTimes(2);
+    // 3 llamadas: obtenerMiembros (sin bind) + resolverDominio de tipo de encargatura + de cargo.
+    expect(mockQuery).toHaveBeenCalledTimes(3);
     const llamadaTipoEnc = mockQuery.mock.calls.find(([sql]) => sql.includes('pk_sgd_descripcion_de_dominios'));
     const llamadaCargo = mockQuery.mock.calls.find(([sql]) => sql.includes('pk_sgd_descripcion_de_cargo'));
 
@@ -118,7 +167,8 @@ describe('getAllDependencias', () => {
     expect(llamadaCargo?.[1].bind[0]).toEqual(['C01']);
   });
 
-  it('no consulta la BD para resolver dominios cuando todos los códigos son null', async () => {
+  it('no consulta pk_sgd_descripcion_* para resolver dominios cuando todos los códigos son null', async () => {
+    mockQueryPorDominio(); // igual se necesita para responder la consulta (siempre activa) de miembros
     mockFindAll.mockResolvedValue([
       fakeInstance({ coDependencia: '01', coTipoEncargatura: null, coCargo: null, jefe: null, padre: null }),
     ]);
@@ -126,7 +176,8 @@ describe('getAllDependencias', () => {
     const res = fakeResponse();
     await getAllDependencias({} as Request, res);
 
-    expect(mockQuery).not.toHaveBeenCalled();
+    // La única llamada es la de obtenerMiembros; ninguna a las funciones de dominio.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
     const [data] = (res.json as jest.Mock).mock.calls[0];
     expect(data[0].tipoEncargaturaDescripcion).toBeNull();
     expect(data[0].cargoDescripcion).toBeNull();

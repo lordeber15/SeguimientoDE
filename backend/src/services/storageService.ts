@@ -265,7 +265,20 @@ export function resolverNombreAnexo(
   return primerArchivo(carpeta) ?? nombreBd;
 }
 
+/**
+ * ¿Está el repositorio de archivos realmente disponible? `existsSync` no basta: el punto de
+ * montaje (volumen vacío, carpeta de WSL o destino del sshfs) existe siempre, esté o no montado
+ * el repositorio encima. Montado, la raíz tiene las carpetas por año; caído, está vacía.
+ */
+export function almacenamientoDisponible(): boolean {
+  try {
+    return fs.readdirSync(STORAGE_BASE).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Para diagnóstico: si el volumen no está montado, todo lo demás falla con 404 y no se sabe por qué. */
 export function estadoAlmacenamiento(): { ruta: string; montado: boolean } {
-  return { ruta: STORAGE_BASE, montado: fs.existsSync(STORAGE_BASE) };
+  return { ruta: STORAGE_BASE, montado: almacenamientoDisponible() };
 }

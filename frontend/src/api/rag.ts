@@ -221,6 +221,16 @@ export function iniciarIngestaReparacion(filtro: FiltroIngesta = {}): Promise<{ 
 }
 
 /**
+ * Reintenta TODOS los documentos "sin archivo", también los que agotaron sus intentos. El backend
+ * responde 409 si el repositorio de archivos no está montado.
+ */
+export function reintentarTodosSinArchivo(): Promise<{ jobId: number; total: number }> {
+  return apiJson('/api/rag/ingesta/sin-archivo', 'reintentar los documentos sin archivo', {
+    method: 'POST',
+  });
+}
+
+/**
  * Reintenta documentos largos atascados en un estado terminal (`error`, `sin_texto`) o que siguen
  * `pendiente` — el troceo por bloques se aplica igual desde cualquier job; este solo selecciona
  * los que la conversión normal ya no vuelve a alcanzar.

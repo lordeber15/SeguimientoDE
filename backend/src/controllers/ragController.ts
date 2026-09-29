@@ -28,6 +28,7 @@ import {
   iniciarJobConversion,
   iniciarJobEmbedding,
   iniciarJobLargos,
+  iniciarJobReintentoSinArchivo,
   iniciarJobReparacion,
   listarJobs,
   pausarJob,
@@ -331,6 +332,19 @@ export async function postIngestaReparacion(req: Request, res: Response) {
     res.status(202).json({ jobId });
   } catch (error) {
     manejar(res, error, 'Error al iniciar la reparación');
+  }
+}
+
+/**
+ * Reintenta TODOS los "sin archivo", incluidos los que agotaron sus intentos (típicamente marcados
+ * mientras el repositorio de archivos estaba desmontado). Rechaza con 409 si sigue desmontado.
+ */
+export async function postIngestaReintentoSinArchivo(req: Request, res: Response) {
+  try {
+    const resultado = await iniciarJobReintentoSinArchivo(req.usuario!.codUser);
+    res.status(202).json(resultado);
+  } catch (error) {
+    manejar(res, error, 'Error al reintentar los documentos sin archivo');
   }
 }
 

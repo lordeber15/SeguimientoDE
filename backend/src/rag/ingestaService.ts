@@ -11,6 +11,7 @@ import {
   getDatosDocumentoGenerado,
 } from '../services/documentoService';
 import {
+  almacenamientoDisponible,
   mimePorNombre,
   resolverAnexo,
   resolverDocumento,
@@ -327,6 +328,60 @@ export async function iniciarJobReparacion(filtro: FiltroIngesta, actor: string)
   });
 
   return { jobId };
+}
+
+/**
+ * Reintenta TODOS los documentos "sin archivo", incluidos los que agotaron
+ * `MAX_INTENTOS_SIN_ARCHIVO` y que `documentosReparables` ya no selecciona.
+ *
+ * El caso que lo motivó (2026-09): con el repositorio de archivos desmontado, ~6.000 documentos
+ * que sí tienen archivo en disco (`de_ruta_origen` lleno, sin BLOB) se marcaron `no_soportado` y
+ * quemaron sus 10 intentos. Una vez montado el repositorio, la única salida era reintentarlos uno
+ * a uno. Por eso se exige que el almacenamiento esté disponible: lanzarlo con el disco caído
+ * volvería a marcarlos todos igual.
+ *
+ * Reinicia `intentos` a 0 para que, si alguno vuelve a fallar, quede otra vez al alcance de la
+ * reparación normal. Es un job de tipo `reparacion`: mismo loop, misma pausa/cancelación.
+ */
+export async function iniciarJobReintentoSinArchivo(actor: string): Promise<{ jobId: number; total: number }> {
+  await exigirSinJobEnCurso();
+
+  if (!almacenamientoDisponible()) {
+    throw new IngestaError(
+      'El repositorio de archivos del SGD no está montado: reintentar ahora volvería a marcarlos '
+        + 'como "sin archivo". Monte el almacenamiento y vuelva a intentarlo.',
+      409,
+    );
+  }
+
+  const documentos = await appSequelize.query<{ id: number }>(
+    `UPDATE rag.documento SET intentos = 0
+      WHERE vigente AND estado = 'no_soportado'
+      RETURNING id`,
+    { type: QueryTypes.SELECT },
+  );
+  if (documentos.length === 0) {
+    throw new IngestaError('No hay documentos "sin archivo" para reintentar', 404);
+  }
+
+  const ids = documentos.map((d) => d.id).sort((a, b) => Number(a) - Number(b));
+  const [{ id: jobId }] = await appSequelize.query<{ id: number }>(
+    `INSERT INTO rag.ingest_job (tipo, estado, filtro, total, creado_por)
+     VALUES ('reparacion', 'en_curso', $1::jsonb, $2, $3) RETURNING id`,
+    { bind: [JSON.stringify({ sinArchivo: true }), ids.length, actor], type: QueryTypes.SELECT },
+  );
+
+  await appSequelize.query(
+    `INSERT INTO rag.ingest_item (job_id, documento_id)
+     SELECT $1, unnest($2::bigint[])`,
+    { bind: [jobId, ids], type: QueryTypes.INSERT },
+  );
+
+  void ejecutarJobConversion(jobId).catch((error) => {
+    console.error(`ingesta: job de reintento sin archivo ${jobId} falló:`, error);
+  });
+
+  return { jobId, total: ids.length };
 }
 
 /**

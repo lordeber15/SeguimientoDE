@@ -21,6 +21,7 @@ import {
   iniciarIngestaEmbeddings,
   iniciarIngestaLargos,
   iniciarIngestaReparacion,
+  reintentarTodosSinArchivo,
   type JobIngesta,
   type PanelRag,
   pausarJobIngesta,
@@ -458,6 +459,22 @@ export function RagPanelPage() {
     }
   }
 
+  async function reintentarSinArchivo() {
+    const total = panel?.corpus.documentos.noSoportado ?? 0;
+    if (!window.confirm(
+      `Se volverán a intentar los ${total} documento(s) "sin archivo", incluidos los que ya agotaron `
+        + 'sus intentos. Asegúrese de que el repositorio de archivos del SGD esté montado. ¿Continuar?',
+    )) return;
+    try {
+      const { jobId, total: encolados } = await reintentarTodosSinArchivo();
+      toast.success(`${encolados} documento(s) "sin archivo" en cola de reintento.`);
+      setJobActivo(await fetchJob(jobId));
+      setJobIdFiltro(jobId);
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'No se pudieron reintentar los documentos sin archivo');
+    }
+  }
+
   async function largos() {
     try {
       const { jobId } = await iniciarIngestaLargos({ limite: 500 });
@@ -718,6 +735,21 @@ export function RagPanelPage() {
                 {panel.proveedores.conversion.proveedorRespaldo
                   && ` (con ${panel.proveedores.conversion.proveedorRespaldo} de respaldo)`}.{' '}
                 <strong>Nunca llama a ChatGPT: no consume tokens.</strong>
+              </p>
+            </div>
+            <div>
+              <button
+                className="boton-secundario"
+                onClick={reintentarSinArchivo}
+                disabled={(!!jobActivo && jobActivo.estado === 'en_curso') || documentos.noSoportado === 0}
+              >
+                Reintentar todos los sin archivo
+              </button>
+              <p className="exp-nota">
+                Vuelve a buscar el archivo de los {documentos.noSoportado} documento(s) "sin
+                archivo", incluidos los que ya agotaron sus intentos (por ejemplo, porque se
+                marcaron con el repositorio de archivos desmontado). Se rechaza si el repositorio
+                sigue sin montar.
               </p>
             </div>
             <div>

@@ -238,6 +238,15 @@ tbody tr:hover {
   background: var(--color-background);
 }
 
+.titulo-miembros {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-primary);
+  margin-bottom: 10px;
+}
+
 .lista-miembros {
   list-style: none;
   margin: 0;

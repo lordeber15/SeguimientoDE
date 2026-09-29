@@ -217,12 +217,19 @@ test.describe('Página de Dependencias — estados con API simulada', () => {
     await expect(boton).toBeVisible();
     await expect(page.getByText('Diaz Perez Ana')).not.toBeVisible();
 
+    // En instituciones el título sobre la lista es "Consultores", no "Miembros".
     await boton.click();
     await expect(page.getByText('Diaz Perez Ana')).toBeVisible();
+    await expect(page.getByText('Consultores')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Ocultar' })).toBeVisible();
 
     await page.getByRole('button', { name: 'Ocultar' }).click();
     await expect(page.getByText('Diaz Perez Ana')).not.toBeVisible();
+
+    // En comités el título es "Miembros".
+    await page.getByRole('tab', { name: 'Comités (2)' }).click();
+    await page.getByRole('button', { name: 'Ver (2)' }).click();
+    await expect(page.locator('.titulo-miembros')).toHaveText('Miembros');
   });
 
   test('el buscador de persona solo aparece en Comités y agrupa presidente/miembro por comité', async ({ page }) => {

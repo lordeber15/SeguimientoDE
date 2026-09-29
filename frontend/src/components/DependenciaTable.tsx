@@ -6,13 +6,19 @@ interface Props {
   dependencias: Dependencia[];
   /** "Jefe / Responsable" para instituciones, "Presidente / Encargado" para comités. */
   etiquetaJefe?: string;
+  /** Título sobre la lista al expandir "Ver": "Consultores" en instituciones, "Miembros" en comités. */
+  etiquetaMiembros?: string;
 }
 
 function idFilaMiembros(coDependencia: string): string {
   return `miembros-${coDependencia}`;
 }
 
-export function DependenciaTable({ dependencias, etiquetaJefe = 'Jefe / Responsable' }: Props) {
+export function DependenciaTable({
+  dependencias,
+  etiquetaJefe = 'Jefe / Responsable',
+  etiquetaMiembros = 'Miembros',
+}: Props) {
   const [expandidas, setExpandidas] = useState<Set<string>>(new Set());
 
   function alternar(coDependencia: string) {
@@ -79,6 +85,7 @@ export function DependenciaTable({ dependencias, etiquetaJefe = 'Jefe / Responsa
                   {expandida && (
                     <tr id={idFilaMiembros(dep.coDependencia)} className="fila-miembros">
                       <td colSpan={5}>
+                        <div className="titulo-miembros">{etiquetaMiembros}</div>
                         <ul className="lista-miembros">
                           {dep.miembros.map((miembro) => (
                             <li key={miembro.coEmpleado}>

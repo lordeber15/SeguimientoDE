@@ -69,6 +69,9 @@ interface FilaFusionada {
 export async function buscarHibrido(
   consultaTexto: string,
   filtro: FiltroAcceso,
+  /** Chat "Por expediente": solo chunks de documentos de ESTE expediente. Sin él, la búsqueda
+   *  recorría todo el corpus y respondía con documentos de otros expedientes. */
+  expediente?: { nuAnnExp: string; nuSecExp: string },
 ): Promise<ResultadoBusqueda> {
   const modelo = await modeloActivo();
   let vecLiteral: string | null = null;
@@ -94,6 +97,11 @@ export async function buscarHibrido(
 
   return appSequelize.transaction(async (tx) => {
     const permisoSql = 'AND ($1::text IS NULL OR d.co_dep_emi = $1)';
+    const expAnn = expediente?.nuAnnExp ?? null;
+    const expSec = expediente?.nuSecExp ?? null;
+    // Los índices de bind cambian por rama (la vectorial usa $2/$3), de ahí que se arme por rama.
+    const expedienteSql = (i: number) =>
+      `AND ($${i}::text IS NULL OR (d.nu_ann_exp = $${i} AND d.nu_sec_exp = $${i + 1}))`;
 
     let filasVec: FilaVec[] = [];
     if (vecLiteral && tabla) {
@@ -104,11 +112,15 @@ export async function buscarHibrido(
           WHERE e.modelo_id = $2
             AND EXISTS (
               SELECT 1 FROM rag.documento d
-               WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql}
+               WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(4)}
             )
           ORDER BY e.vec <=> $3::vector
           LIMIT ${LIMITE_RAMA}`,
-        { bind: [filtro.coDependencia, modeloId, vecLiteral], type: QueryTypes.SELECT, transaction: tx },
+        {
+          bind: [filtro.coDependencia, modeloId, vecLiteral, expAnn, expSec],
+          type: QueryTypes.SELECT,
+          transaction: tx,
+        },
       );
     }
 
@@ -118,11 +130,15 @@ export async function buscarHibrido(
         WHERE c.tsv @@ consulta
           AND EXISTS (
             SELECT 1 FROM rag.documento d
-             WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql}
+             WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(3)}
           )
         ORDER BY ts_rank_cd(c.tsv, consulta) DESC
         LIMIT ${LIMITE_RAMA}`,
-      { bind: [filtro.coDependencia, consultaTexto], type: QueryTypes.SELECT, transaction: tx },
+      {
+        bind: [filtro.coDependencia, consultaTexto, expAnn, expSec],
+        type: QueryTypes.SELECT,
+        transaction: tx,
+      },
     );
 
     const escaneoExacto = filasVec.length + filasFts.length < UMBRAL_ESCANEO_EXACTO;

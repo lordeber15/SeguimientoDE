@@ -77,6 +77,9 @@ export class OllamaChat implements ChatProvider {
         model: this.modelo,
         messages: mensajes.map((m) => ({ role: m.rol, content: m.contenido })),
         stream: false,
+        // Los modelos con razonamiento (qwen3.5) piensan por defecto y ese "thinking" consume el
+        // mismo `num_predict`: con 800 tokens se agotaban pensando y `content` llegaba vacío.
+        think: false,
         options: opciones?.maxTokens ? { num_predict: opciones.maxTokens } : undefined,
       },
       cabeceras: {},

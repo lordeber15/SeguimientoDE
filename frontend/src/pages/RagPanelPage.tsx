@@ -150,6 +150,9 @@ function leerCadenaGuardada(): Cadena | null {
 export function RagPanelPage() {
   const [estado, setEstado] = useState<Estado>({ tipo: 'cargando' });
   const [jobActivo, setJobActivo] = useState<JobIngesta | null>(null);
+  // Contador que solo existe para volver a disparar el sondeo tras un fallo de red: sin él,
+  // `jobActivo` no cambia en el `catch` y el efecto no vuelve a programar el siguiente tick.
+  const [reintentoPoll, setReintentoPoll] = useState(0);
   const [jobIdFiltro, setJobIdFiltro] = useState<number | null>(null);
   const [barriendo, setBarriendo] = useState(false);
   const [purgando, setPurgando] = useState(false);
@@ -281,13 +284,15 @@ export function RagPanelPage() {
           }
         }
       } catch {
-        // Un fallo de red al sondear no debe tumbar la pantalla; se reintenta en el próximo tick.
+        // Un fallo de red al sondear no debe tumbar la pantalla. El reintento hay que forzarlo:
+        // sin cambio de dependencias el efecto no se re-ejecuta y el sondeo moriría aquí.
+        setReintentoPoll((n) => n + 1);
       }
     }, INTERVALO_POLL_MS);
     return () => {
       if (pollRef.current) clearTimeout(pollRef.current);
     };
-  }, [jobActivo, cargar, cadena, aplicarCadena]);
+  }, [jobActivo, reintentoPoll, cargar, cadena, aplicarCadena]);
 
   async function alternarBarrido(activo: boolean) {
     try {

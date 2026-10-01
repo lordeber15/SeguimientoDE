@@ -53,6 +53,10 @@ const FASES_DE_ESPERA: FaseConversion[] = ['esperando_circuito', 'en_cola_conver
 
 const INTERVALO_RELOJ_MS = 500;
 
+/** Sin respuesta nueva del sondeo durante más de esto (10 ticks de 1500 ms), la foto ya no es de
+ *  fiar: el reloj local deja de sumar y el panel lo dice, en vez de inflar "X s de máx." sin fin. */
+const DATO_VIEJO_MS = 15_000;
+
 /**
  * Milisegundos transcurridos desde que llegó ESTA respuesta del sondeo.
  *

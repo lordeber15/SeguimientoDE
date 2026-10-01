@@ -332,7 +332,9 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
   const filtro: FiltroAcceso = { coDependencia: p.sinRestriccionDependencia ? null : p.coDependencia };
 
   const [resultado, timeline] = await Promise.all([
-    buscarHibrido(p.mensaje, filtro),
+    p.modo === 'expediente' && p.expediente
+      ? buscarHibrido(p.mensaje, filtro, p.expediente)
+      : buscarHibrido(p.mensaje, filtro),
     p.modo === 'expediente' && p.expediente
       ? estadoExpediente(p.expediente.nuAnnExp, p.expediente.nuSecExp)
       : Promise.resolve(null),

@@ -4,6 +4,7 @@ import { appSequelize } from './compartido/config/appDatabase';
 import { aplicarMigraciones } from './compartido/config/migraciones';
 import { validarEntorno } from './compartido/config/validarEntorno';
 import { sequelize } from './modulos/sgd/models';
+import { stdDisponible, stdSequelize } from './modulos/std/config/stdDatabase';
 import { iniciarPlanificadorResumen } from './modulos/sgd/services/dashboardResumenService';
 import { iniciarPlanificadorBarrido } from './modulos/sgd/rag/barridoService';
 import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './modulos/sgd/rag/ingestaService';
@@ -28,6 +29,21 @@ async function start() {
         ? `BD propia lista. Migraciones aplicadas: ${nuevas.join(', ')}`
         : 'BD propia lista. Sin migraciones pendientes.',
     );
+
+    // El STD es opcional (sistema legado, casi solo de consulta): si no está habilitado o le
+    // falta alguna credencial, el arranque sigue igual — solo se avisa en el log. Nunca bloquea
+    // el inicio del resto del backend, a diferencia del SGD y la BD propia de arriba.
+    const std = stdDisponible();
+    if (std.disponible) {
+      try {
+        await stdSequelize.authenticate();
+        console.log('Conexión de solo lectura al STD (MariaDB) establecida correctamente.');
+      } catch (error) {
+        console.error('STD configurado pero no se pudo conectar:', error);
+      }
+    } else {
+      console.log(`STD no disponible (${std.motivo}); el backend sigue sin él.`);
+    }
 
     // Barre los PDF unidos caducados y los huérfanos que dejó una ejecución anterior.
     iniciarLimpiezaPeriodica();

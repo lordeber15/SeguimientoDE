@@ -1,17 +1,17 @@
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
-import adminRoutes from './routes/adminRoutes';
-import authRoutes from './routes/authRoutes';
-import calidadProcesosRoutes from './routes/calidadProcesosRoutes';
-import chatRoutes from './routes/chatRoutes';
-import dashboardRoutes from './routes/dashboardRoutes';
-import dependenciaRoutes from './routes/dependenciaRoutes';
-import documentoRoutes from './routes/documentoRoutes';
-import ragRoutes from './routes/ragRoutes';
-import seguimientoRoutes from './routes/seguimientoRoutes';
-import unirPdfRoutes from './routes/unirPdfRoutes';
-import { requiereAuth, requierePermiso } from './middlewares/authMiddleware';
+import adminRoutes from './modulos/sgd/routes/adminRoutes';
+import authRoutes from './modulos/sgd/routes/authRoutes';
+import calidadProcesosRoutes from './modulos/sgd/routes/calidadProcesosRoutes';
+import chatRoutes from './modulos/sgd/routes/chatRoutes';
+import dashboardRoutes from './modulos/sgd/routes/dashboardRoutes';
+import dependenciaRoutes from './modulos/sgd/routes/dependenciaRoutes';
+import documentoRoutes from './modulos/sgd/routes/documentoRoutes';
+import ragRoutes from './modulos/sgd/routes/ragRoutes';
+import seguimientoRoutes from './modulos/sgd/routes/seguimientoRoutes';
+import unirPdfRoutes from './modulos/sgd/routes/unirPdfRoutes';
+import { requiereAuth, requierePermiso } from './compartido/middlewares/authMiddleware';
 
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
   .split(',')

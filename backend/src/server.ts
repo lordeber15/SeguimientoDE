@@ -1,15 +1,15 @@
-import './config/env';
+import './compartido/config/env';
 import app from './app';
-import { appSequelize } from './config/appDatabase';
-import { aplicarMigraciones } from './config/migraciones';
-import { validarEntorno } from './config/validarEntorno';
-import { sequelize } from './models';
-import { iniciarPlanificadorResumen } from './services/dashboardResumenService';
-import { iniciarPlanificadorBarrido } from './rag/barridoService';
-import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './rag/ingestaService';
-import { iniciarMantenimientoPeriodico } from './rag/mantenimientoService';
-import { revisarConfiguracionIA } from './ai/providerFactory';
-import { iniciarLimpiezaPeriodica } from './services/unirPdfService';
+import { appSequelize } from './compartido/config/appDatabase';
+import { aplicarMigraciones } from './compartido/config/migraciones';
+import { validarEntorno } from './compartido/config/validarEntorno';
+import { sequelize } from './modulos/sgd/models';
+import { iniciarPlanificadorResumen } from './modulos/sgd/services/dashboardResumenService';
+import { iniciarPlanificadorBarrido } from './modulos/sgd/rag/barridoService';
+import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './modulos/sgd/rag/ingestaService';
+import { iniciarMantenimientoPeriodico } from './modulos/sgd/rag/mantenimientoService';
+import { revisarConfiguracionIA } from './compartido/ai/providerFactory';
+import { iniciarLimpiezaPeriodica } from './modulos/sgd/services/unirPdfService';
 
 const PORT = Number(process.env.PORT ?? 3012);
 

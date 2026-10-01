@@ -6,6 +6,8 @@ import { validarEntorno } from './compartido/config/validarEntorno';
 import { sequelize } from './modulos/sgd/models';
 import { STD_HABILITADO, stdDisponible, stdSequelize } from './modulos/std/config/stdDatabase';
 import { asegurarBaseStdRag, aplicarMigracionesStd } from './modulos/std/config/stdRagDatabase';
+import { iniciarPlanificadorBarridoStd } from './modulos/std/rag/barridoStdService';
+import { iniciarSupervisorIngestaStd, reanudarJobsInterrumpidosStd } from './modulos/std/rag/ingestaStdService';
 import { iniciarPlanificadorResumen } from './modulos/sgd/services/dashboardResumenService';
 import { iniciarPlanificadorBarrido } from './modulos/sgd/rag/barridoService';
 import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './modulos/sgd/rag/ingestaService';
@@ -60,6 +62,14 @@ async function start() {
       } else {
         console.log(`STD sin conexión de lectura (${std.motivo}); std_rag sigue disponible igual.`);
       }
+
+      // Mismo patrón que el SGD: el planificador y el supervisor siempre corren, los
+      // interruptores (`rag.barrido.activo`, que arranca en 'false') se leen en cada tick. Que la
+      // conexión a MariaDB no esté lista todavía no impide arrancarlos — un tick que falle por
+      // eso simplemente se registra y se reintenta en el siguiente.
+      iniciarPlanificadorBarridoStd();
+      await reanudarJobsInterrumpidosStd();
+      iniciarSupervisorIngestaStd();
     } else {
       console.log('STD_HABILITADO no está activado; el backend arranca sin el módulo STD.');
     }

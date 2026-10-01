@@ -70,7 +70,13 @@ CREATE TABLE IF NOT EXISTS rag.documento_std (
   documento         text,                 -- tbl_documento.documento, copiado para mostrar sin ir al STD
   -- Watermark de lo último visto en el STD (mismo cedazo que el SGD): si no cambió, no se mira.
   adjuntos_pdf_std  integer     NOT NULL DEFAULT 0,
-  watermark_std     timestamptz,
+  -- `text`, NO `timestamptz`: es un token de comparación OPACO que viene tal cual de un
+  -- `GREATEST(...)` de MariaDB (motor y formato de fecha distintos a Postgres). Guardarlo como
+  -- timestamptz y volver a leerlo con `::text` le añade el offset de huso horario de esta sesión
+  -- de Postgres, así que ya no coincide carácter a carácter con el string que devuelve MariaDB en
+  -- el siguiente barrido — cada documento se vería "cambiado" para siempre. Comparar el string tal
+  -- cual, sin que ningún motor lo reinterprete, es lo único que hace el cedazo idempotente.
+  watermark_std     text,
   docs_ingestados   integer     NOT NULL DEFAULT 0,
   docs_pendientes   integer     NOT NULL DEFAULT 0,
   docs_sin_texto    integer     NOT NULL DEFAULT 0,
@@ -123,6 +129,7 @@ CREATE TABLE IF NOT EXISTS rag.documento (
   area_origen       text,     -- área/unidad relacionada con este archivo concreto
   flg_confidencial  boolean NOT NULL DEFAULT false,
   nombre_archivo    text,     -- tbl_adjunto.nombre (nombre original, con extensión)
+  mime              text,     -- tbl_adjunto.mime, tal cual (puede traer "; charset=..."), ver limpiarMime()
   sha1_std          text,     -- tbl_adjunto.hash (sha1 del contenido tal como lo calculó el STD)
 
   contenido_sha256  text REFERENCES rag.contenido(sha256),

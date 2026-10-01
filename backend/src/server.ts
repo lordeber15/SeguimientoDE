@@ -4,7 +4,8 @@ import { appSequelize } from './compartido/config/appDatabase';
 import { aplicarMigraciones } from './compartido/config/migraciones';
 import { validarEntorno } from './compartido/config/validarEntorno';
 import { sequelize } from './modulos/sgd/models';
-import { stdDisponible, stdSequelize } from './modulos/std/config/stdDatabase';
+import { STD_HABILITADO, stdDisponible, stdSequelize } from './modulos/std/config/stdDatabase';
+import { asegurarBaseStdRag, aplicarMigracionesStd } from './modulos/std/config/stdRagDatabase';
 import { iniciarPlanificadorResumen } from './modulos/sgd/services/dashboardResumenService';
 import { iniciarPlanificadorBarrido } from './modulos/sgd/rag/barridoService';
 import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './modulos/sgd/rag/ingestaService';
@@ -30,19 +31,37 @@ async function start() {
         : 'BD propia lista. Sin migraciones pendientes.',
     );
 
-    // El STD es opcional (sistema legado, casi solo de consulta): si no está habilitado o le
-    // falta alguna credencial, el arranque sigue igual — solo se avisa en el log. Nunca bloquea
-    // el inicio del resto del backend, a diferencia del SGD y la BD propia de arriba.
-    const std = stdDisponible();
-    if (std.disponible) {
+    // El STD es opcional (sistema legado, casi solo de consulta): nada de esto bloquea el
+    // arranque del resto del backend, a diferencia del SGD y la BD propia de arriba.
+    if (STD_HABILITADO) {
+      // La base `std_rag` (vectores, chunks, chat del STD) es infraestructura PROPIA — solo
+      // necesita las credenciales de APP_DB_*, que ya son obligatorias, así que se prepara
+      // aunque todavía no haya credenciales de MariaDB del STD cargadas.
       try {
-        await stdSequelize.authenticate();
-        console.log('Conexión de solo lectura al STD (MariaDB) establecida correctamente.');
+        await asegurarBaseStdRag();
+        const nuevasStd = await aplicarMigracionesStd();
+        console.log(
+          nuevasStd.length > 0
+            ? `BD std_rag lista. Migraciones aplicadas: ${nuevasStd.join(', ')}`
+            : 'BD std_rag lista. Sin migraciones pendientes.',
+        );
       } catch (error) {
-        console.error('STD configurado pero no se pudo conectar:', error);
+        console.error('No se pudo preparar la base std_rag; el módulo STD queda sin RAG:', error);
+      }
+
+      const std = stdDisponible();
+      if (std.disponible) {
+        try {
+          await stdSequelize.authenticate();
+          console.log('Conexión de solo lectura al STD (MariaDB) establecida correctamente.');
+        } catch (error) {
+          console.error('STD configurado pero no se pudo conectar:', error);
+        }
+      } else {
+        console.log(`STD sin conexión de lectura (${std.motivo}); std_rag sigue disponible igual.`);
       }
     } else {
-      console.log(`STD no disponible (${std.motivo}); el backend sigue sin él.`);
+      console.log('STD_HABILITADO no está activado; el backend arranca sin el módulo STD.');
     }
 
     // Barre los PDF unidos caducados y los huérfanos que dejó una ejecución anterior.

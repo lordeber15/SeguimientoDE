@@ -10,6 +10,9 @@ blob-report/
 playwright/.cache/
 coverage/
 docs
-.claude
-.agents 
+.claude/*
+!.claude/skills
+.claude/skills/*
+!.claude/skills/std-database
+.agents
 skills-lock.json

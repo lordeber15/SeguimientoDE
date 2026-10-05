@@ -8,6 +8,13 @@ import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../../..
 import { rerankear } from '../../../compartido/rag/rerankService';
 import { terminosDelPlan } from './busquedaExpedientesService';
 import {
+  ejecutarParticipantes,
+  ejecutarUltimoDocumento,
+  agruparPorObra,
+  type BloqueParticipantes,
+  type TarjetaDocumento,
+} from './respuestasEstructuradasService';
+import {
   ejecutarListado,
   esMetaListado,
   paginaDesdeMeta,
@@ -80,9 +87,10 @@ export interface CitaRespuesta {
 
 /**
  * 'fijo' = mensaje de cierre sin LLM (ver `compartido/rag/cierreChat.ts`); 'tabla' = listado de
- * expedientes sin LLM (ver `listadoChatService.ts`).
+ * expedientes (ver `listadoChatService.ts`); 'documento' / 'participantes' = respuestas
+ * estructuradas sin LLM (ver `respuestasEstructuradasService.ts`).
  */
-export type TipoRespuesta = 'texto' | 'tabla' | 'fijo';
+export type TipoRespuesta = 'texto' | 'tabla' | 'fijo' | 'documento' | 'participantes';
 
 export interface RespuestaChat {
   sesionId: number;
@@ -92,6 +100,10 @@ export interface RespuestaChat {
   citas: CitaRespuesta[];
   /** Solo en `tipo='tabla'`: la primera página. Las siguientes, con `paginaResultados`. */
   tabla?: TablaExpedientes;
+  /** Solo en `tipo='documento'`. */
+  documento?: TarjetaDocumento;
+  /** Solo en `tipo='participantes'`. */
+  participantes?: BloqueParticipantes;
   candidatosVec: number;
   candidatosFts: number;
   marcadoresAlucinados: number;
@@ -373,6 +385,49 @@ export function limpiarMarcadores(
 }
 
 /**
+ * Guarda una respuesta estructurada (tabla, documento, participantes) y registra el turno. Común a
+ * todas las respuestas que no pasan por la llamada de respuesta del modelo.
+ */
+async function guardarRespuestaEstructurada(datos: {
+  sesionId: number;
+  peticion: PeticionChat;
+  tipo: Exclude<TipoRespuesta, 'texto' | 'fijo'>;
+  texto: string;
+  meta: unknown;
+  resultados: number;
+  planificador: ResultadoPlanificador | null;
+  inicio: number;
+  uso?: { tokensIn: number; tokensOut: number };
+}): Promise<number> {
+  const filas = await appSequelize.query<{ id: number }>(
+    `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto, tipo, meta, tokens_in, tokens_out)
+     VALUES ($1, 'assistant', $2, $3, $4::jsonb, $5, $6) RETURNING id`,
+    {
+      bind: [
+        datos.sesionId, datos.texto, datos.tipo, JSON.stringify(datos.meta),
+        datos.uso?.tokensIn ?? 0, datos.uso?.tokensOut ?? 0,
+      ],
+      type: QueryTypes.SELECT,
+    },
+  );
+  await tocarSesion(datos.sesionId);
+  await registrarRetrieval({
+    sesionId: datos.sesionId,
+    consulta: datos.peticion.mensaje,
+    modo: datos.peticion.modo,
+    candidatosVec: 0,
+    candidatosFts: 0,
+    fusionados: datos.resultados,
+    escaneoExacto: false,
+    marcadoresAlucinados: 0,
+    ms: Date.now() - datos.inicio,
+    planificador: datos.planificador,
+    respuestaFija: null,
+  });
+  return filas[0].id;
+}
+
+/**
  * Responde con un mensaje FIJO (cierre, D3): se guarda como mensaje del asistente con `tipo='fijo'`
  * para que el historial lo muestre igual que cualquier otro, pero sin citas ni tokens de respuesta.
  * El plan va en `meta` para auditar después por qué se cerró.
@@ -467,44 +522,60 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
     ? await conjuntoActivo(sesion.id)
     : null;
 
+  const base = { sesionId: sesion.id, peticion: p, planificador, inicio };
+  const sinModelo = { citas: [], candidatosVec: 0, candidatosFts: 0, marcadoresAlucinados: 0 };
+
   // [2] listar / contar: tabla de expedientes por SQL, sin modelo de respuesta (D6). En el modo
   // "por expediente" no aplica — ya se está dentro de uno —, así que sigue a la búsqueda de contenido.
-  // último / participantes / agrupar llegan con sus ejecutores en la Fase 5.
   if (p.modo === 'general' && (plan.intencion === 'listar' || plan.intencion === 'contar')) {
     const listado = await ejecutarListado(plan.intencion, plan, filtro, conjunto ? { dentroDe: conjunto } : {});
     if (!listado) return fijo('sin_resultados', planificador);
 
-    const filas = await appSequelize.query<{ id: number }>(
-      `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto, tipo, meta, tokens_in, tokens_out)
-       VALUES ($1, 'assistant', $2, 'tabla', $3::jsonb, 0, 0) RETURNING id`,
-      { bind: [sesion.id, listado.texto, JSON.stringify(listado.meta)], type: QueryTypes.SELECT },
-    );
-    await tocarSesion(sesion.id);
-    await registrarRetrieval({
-      sesionId: sesion.id,
-      consulta: p.mensaje,
-      modo: p.modo,
-      candidatosVec: 0,
-      candidatosFts: 0,
-      fusionados: listado.meta.busqueda.total,
-      escaneoExacto: false,
-      marcadoresAlucinados: 0,
-      ms: Date.now() - inicio,
-      planificador,
-      respuestaFija: null,
+    const mensajeId = await guardarRespuestaEstructurada({
+      ...base, tipo: 'tabla', texto: listado.texto, meta: listado.meta, resultados: listado.meta.busqueda.total,
     });
+    return { sesionId: sesion.id, mensajeId, tipo: 'tabla', texto: listado.texto, tabla: listado.tabla, ...sinModelo };
+  }
 
-    return {
-      sesionId: sesion.id,
-      mensajeId: filas[0].id,
-      tipo: 'tabla',
-      texto: listado.texto,
-      citas: [],
-      tabla: listado.tabla,
-      candidatosVec: 0,
-      candidatosFts: 0,
-      marcadoresAlucinados: 0,
-    };
+  // [2] último documento / participantes: SQL + SGD en vivo, sin modelo (Fase 5). También en el modo
+  // "por expediente", donde operan sobre ese expediente.
+  const objetivo = {
+    expediente: p.modo === 'expediente' ? p.expediente : undefined,
+    conjunto,
+  };
+  if (plan.intencion === 'ultimo_documento') {
+    const r = await ejecutarUltimoDocumento(plan, filtro, objetivo);
+    if (!r) return fijo('sin_resultados', planificador);
+    const mensajeId = await guardarRespuestaEstructurada({ ...base, tipo: 'documento', texto: r.texto, meta: r.meta, resultados: 1 });
+    return { sesionId: sesion.id, mensajeId, tipo: 'documento', texto: r.texto, documento: r.documento, ...sinModelo };
+  }
+  if (plan.intencion === 'participantes') {
+    const r = await ejecutarParticipantes(plan, filtro, objetivo);
+    if (!r) return fijo('sin_resultados', planificador);
+    const mensajeId = await guardarRespuestaEstructurada({
+      ...base, tipo: 'participantes', texto: r.texto, meta: r.meta, resultados: r.participantes.totalExpedientes,
+    });
+    return { sesionId: sesion.id, mensajeId, tipo: 'participantes', texto: r.texto, participantes: r.participantes, ...sinModelo };
+  }
+
+  // [2] agrupar: el listado da los expedientes y se agrupan por el contrato que más citan (con el
+  // nombre de su proyecto), sin modelo — ver `agruparPorContrato`. Se responde como tabla para que
+  // cada grupo sea verificable abajo.
+  if (p.modo === 'general' && plan.intencion === 'agrupar') {
+    const listado = await ejecutarListado('listar', plan, filtro, conjunto ? { dentroDe: conjunto } : {});
+    if (!listado) return fijo('sin_resultados', planificador);
+
+    const agrupacion = await agruparPorObra(listado.meta, filtro);
+    const alcance = agrupacion.soloDirectos
+      ? ` Agrupé por obra los ${agrupacion.agrupados} que coinciden directamente (los demás solo lo mencionan en su contenido y están en la tabla):`
+      : listado.meta.busqueda.total > agrupacion.agrupados
+        ? ` Agrupé por obra los ${agrupacion.agrupados} más relevantes de ${listado.meta.busqueda.total}:`
+        : ' Agrupados por obra:';
+    const texto = `${listado.texto}${alcance}\n\n${agrupacion.texto}`;
+    const mensajeId = await guardarRespuestaEstructurada({
+      ...base, tipo: 'tabla', texto, meta: listado.meta, resultados: listado.meta.busqueda.total,
+    });
+    return { sesionId: sesion.id, mensajeId, tipo: 'tabla', texto, tabla: listado.tabla, ...sinModelo };
   }
 
   const [resultado, timeline] = await Promise.all([
@@ -641,6 +712,9 @@ export interface MensajeHistorial {
   /** En `tipo='tabla'`: totales sin filas (`filas: []`, `pagina: 0`). El frontend pide la página 1
    *  al pintarla: abrir una conversación no re-consulta el SGD por cada listado del historial. */
   tabla?: TablaExpedientes;
+  /** En `tipo='documento'` / `'participantes'`: la foto guardada al responder (estado de entonces). */
+  documento?: TarjetaDocumento;
+  participantes?: BloqueParticipantes;
 }
 
 export async function listarSesiones(usuarioId: string): Promise<
@@ -714,7 +788,7 @@ export async function obtenerHistorialSesion(
 
   const filas = await appSequelize.query<FilaMensajeHistorial>(
     `SELECT id, rol, tipo, texto, fe_alta::text,
-            CASE WHEN tipo = 'tabla' THEN meta END AS meta
+            CASE WHEN tipo IN ('tabla', 'documento', 'participantes') THEN meta END AS meta
        FROM rag.chat_mensaje WHERE sesion_id = $1 ORDER BY id ASC`,
     { bind: [sesionId], type: QueryTypes.SELECT },
   );
@@ -730,7 +804,15 @@ export async function obtenerHistorialSesion(
     feAlta: f.fe_alta,
     citas: citasPorMensaje.get(f.id) ?? [],
     ...(f.tipo === 'tabla' && esMetaListado(f.meta) ? { tabla: resumenTabla(f.meta) } : {}),
+    ...(f.tipo === 'documento' && metaConCampo(f.meta, 'documento') ? { documento: f.meta.documento as TarjetaDocumento } : {}),
+    ...(f.tipo === 'participantes' && metaConCampo(f.meta, 'participantes')
+      ? { participantes: f.meta.participantes as BloqueParticipantes }
+      : {}),
   }));
+}
+
+function metaConCampo<K extends string>(meta: unknown, campo: K): meta is Record<K, unknown> {
+  return typeof meta === 'object' && meta !== null && campo in meta;
 }
 
 /**

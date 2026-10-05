@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { AdaptadorChat, CitaBasica, FilaResultadoChat, TablaResultadosChat as Tabla, TipoRespuestaChat } from '../api/chatComun';
+import type {
+  AdaptadorChat,
+  BloqueParticipantesChat,
+  CitaBasica,
+  DocumentoChat,
+  FilaResultadoChat,
+  ReferenciaExpediente,
+  TablaResultadosChat as Tabla,
+  TarjetaDocumentoChat,
+  TipoRespuestaChat,
+} from '../api/chatComun';
+import { ParticipantesChat, TarjetaUltimoDocumento } from '../components/RespuestasEstructuradasChat';
 import { TablaResultadosChat } from '../components/TablaResultadosChat';
 import { useSesion } from '../auth/SesionContext';
 import { idCita, ListaCitas } from '../components/CitaBadge';
@@ -17,6 +28,8 @@ interface MensajeUI<C extends CitaBasica> {
   texto: string;
   citas?: C[];
   tabla?: Tabla;
+  documento?: TarjetaDocumentoChat;
+  participantes?: BloqueParticipantesChat;
   marcadoresAlucinados?: number;
 }
 
@@ -124,7 +137,10 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
           const historial = await adaptador.fetchHistorial(sesion.id);
           if (!vigente) return;
           setMensajes(
-            historial.map((m) => ({ id: String(m.id), rol: m.rol, tipo: m.tipo, texto: m.texto, citas: m.citas, tabla: m.tabla })),
+            historial.map((m) => ({
+              id: String(m.id), rol: m.rol, tipo: m.tipo, texto: m.texto, citas: m.citas,
+              tabla: m.tabla, documento: m.documento, participantes: m.participantes,
+            })),
           );
         }
       } catch (err) {
@@ -254,6 +270,18 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
     elegirEntidad(entidad);
   }
 
+  function chatearConExpediente(ref: ReferenciaExpediente) {
+    const entidad = adaptador.entidadDesdeExpediente?.(ref);
+    if (!entidad) return;
+    cambiarModo('contexto');
+    elegirEntidad(entidad);
+  }
+
+  function abrirDocumentoTarjeta(doc: DocumentoChat) {
+    if (!adaptador.abrirDocumento) return;
+    setDocumentoAbierto(adaptador.abrirDocumento(doc));
+  }
+
   function cambiarEntidad() {
     setSeleccionado(null);
     setSesionId(undefined);
@@ -296,6 +324,8 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
           texto: respuesta.texto,
           citas: respuesta.citas,
           tabla: respuesta.tabla,
+          documento: respuesta.documento,
+          participantes: respuesta.participantes,
           marcadoresAlucinados: respuesta.marcadoresAlucinados,
         },
       ]);
@@ -415,7 +445,7 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
             {mensajes.map((m) => (
               <li
                 key={m.id}
-                className={`chat-mensaje chat-mensaje--${m.rol}${m.tipo === 'fijo' ? ' chat-mensaje--fijo' : ''}${m.tabla ? ' chat-mensaje--tabla' : ''}`}
+                className={`chat-mensaje chat-mensaje--${m.rol}${m.tipo === 'fijo' ? ' chat-mensaje--fijo' : ''}${m.tabla || m.documento || m.participantes ? ' chat-mensaje--tabla' : ''}`}
               >
                 {m.rol === 'assistant' && m.citas && m.citas.length > 0 ? (
                   <RespuestaConCitas
@@ -435,6 +465,22 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
                     cargarPagina={adaptador.fetchResultados}
                     etiquetaFila={adaptador.etiquetaFila}
                     onChatear={adaptador.entidadDesdeFila ? chatearConFila : undefined}
+                  />
+                )}
+
+                {m.documento && (
+                  <TarjetaUltimoDocumento
+                    documento={m.documento}
+                    mostrarExpediente={modo === 'general'}
+                    onAbrir={adaptador.abrirDocumento ? abrirDocumentoTarjeta : undefined}
+                    onChatear={adaptador.entidadDesdeExpediente ? chatearConExpediente : undefined}
+                  />
+                )}
+
+                {m.participantes && (
+                  <ParticipantesChat
+                    participantes={m.participantes}
+                    onChatear={modo === 'general' && adaptador.entidadDesdeExpediente ? chatearConExpediente : undefined}
                   />
                 )}
 

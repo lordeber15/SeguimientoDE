@@ -14,6 +14,9 @@ const query = jest.fn();
 const planificar = jest.fn();
 const leerBooleano = jest.fn();
 const ejecutarListado = jest.fn();
+const ejecutarUltimoDocumento = jest.fn();
+const ejecutarParticipantes = jest.fn();
+const agruparPorObra = jest.fn();
 /** Meta del último listado de la sesión (conjunto activo); null = la sesión no tiene ninguno. */
 let metaConjunto: unknown = null;
 const ordenLlamadas: string[] = [];
@@ -48,6 +51,13 @@ jest.mock('../../../../src/modulos/sgd/rag/listadoChatService', () => ({
   ejecutarListado: (...a: unknown[]) => ejecutarListado(...a),
 }));
 
+jest.mock('../../../../src/modulos/sgd/rag/respuestasEstructuradasService', () => ({
+  ...jest.requireActual('../../../../src/modulos/sgd/rag/respuestasEstructuradasService'),
+  ejecutarUltimoDocumento: (...a: unknown[]) => ejecutarUltimoDocumento(...a),
+  ejecutarParticipantes: (...a: unknown[]) => ejecutarParticipantes(...a),
+  agruparPorObra: (...a: unknown[]) => agruparPorObra(...a),
+}));
+
 jest.mock('../../../../src/compartido/config/appDatabase', () => ({
   appSequelize: { query: (...a: unknown[]) => query(...a) },
 }));
@@ -66,7 +76,7 @@ function instalarQueryPorDefecto() {
   query.mockReset();
   ordenLlamadas.length = 0;
 
-  query.mockImplementation((sql: string) => {
+  query.mockImplementation((sql: string, opts?: unknown) => {
     if (sql.includes('SELECT id, usuario_id, modo')) {
       return Promise.resolve([{ id: 42, usuario_id: 'u1', modo: 'general', nu_ann_exp: null, nu_sec_exp: null }]);
     }
@@ -79,8 +89,8 @@ function instalarQueryPorDefecto() {
     if (sql.includes("rol, texto FROM rag.chat_mensaje")) {
       return Promise.resolve([]); // sin historial previo
     }
-    if (sql.includes("'assistant', $2, 'tabla'")) {
-      ordenLlamadas.push('guardar-tabla');
+    if (sql.includes("'assistant', $2, $3, $4::jsonb")) {
+      ordenLlamadas.push(`guardar-${(opts as { bind: unknown[] }).bind[2]}`);
       return Promise.resolve([{ id: 88 }]);
     }
     if (sql.includes("'assistant', $2, 'fijo'")) {
@@ -112,6 +122,9 @@ beforeEach(() => {
   responder.mockReset().mockResolvedValue({ texto: 'respuesta', uso: { tokensIn: 10, tokensOut: 5, estimado: false } });
   leerBooleano.mockReset().mockResolvedValue(true);
   ejecutarListado.mockReset();
+  ejecutarUltimoDocumento.mockReset();
+  ejecutarParticipantes.mockReset();
+  agruparPorObra.mockReset();
   metaConjunto = null;
   planificar.mockReset().mockImplementation((_prov: unknown, mensaje: string) => Promise.resolve({
     plan: planDeRespaldoReal(mensaje), uso: null, respaldo: false, ms: 1,
@@ -401,6 +414,68 @@ describe('responderChat — contexto de la conversación', () => {
     const previo = mensajes.find((m) => m.rol === 'assistant')!;
     expect(previo.contenido.length).toBeLessThanOrEqual(701);
     expect(mensajes.find((m) => m.contenido === 'pregunta previa')).toBeDefined();
+  });
+});
+
+describe('responderChat — último documento, participantes y agrupar', () => {
+  const plan = (intencion: string, over: Record<string, unknown> = {}) => ({
+    plan: { ...planDeRespaldoReal('x'), intencion, ...over }, uso: null, respaldo: false, ms: 1,
+  });
+  const expediente = { nuAnnExp: '2026', nuSecExp: '0000000001' };
+
+  it('último documento → tarjeta sin modelo de respuesta', async () => {
+    planificar.mockResolvedValue(plan('ultimo_documento'));
+    const documento = { nuAnn: '2026', nuEmi: '1', titulo: 'OFICIO N° 1', indicaciones: [] };
+    ejecutarUltimoDocumento.mockResolvedValue({ texto: 'El documento más reciente…', documento, meta: { kind: 'documento' } });
+
+    const r = await chat.responderChat(peticionBase({ mensaje: 'dame el último documento de controversia' }));
+
+    expect(r.tipo).toBe('documento');
+    expect(r.documento).toEqual(documento);
+    expect(responder).not.toHaveBeenCalled();
+    expect(ordenLlamadas).toEqual(['guardar-documento']);
+  });
+
+  it('en modo expediente, último documento y participantes operan sobre ese expediente', async () => {
+    planificar.mockResolvedValue(plan('participantes'));
+    ejecutarParticipantes.mockResolvedValue({ texto: 'Participaron…', participantes: { totalExpedientes: 1 }, meta: {} });
+
+    const r = await chat.responderChat(peticionBase({ modo: 'expediente', expediente }));
+
+    expect(r.tipo).toBe('participantes');
+    expect(ejecutarParticipantes).toHaveBeenCalledWith(expect.anything(), { coDependencia: null }, { expediente, conjunto: null });
+  });
+
+  it('participantes que continúan usan el conjunto activo', async () => {
+    metaConjunto = { version: 1, expedientes: [{ a: '2026', s: '0000000009', n: 1, dm: 0, dc: 0, r: false, t: 0, bm: 0, bc: 0 }] };
+    planificar.mockResolvedValue(plan('participantes', { continuaAnterior: true }));
+    ejecutarParticipantes.mockResolvedValue(null);
+
+    const r = await chat.responderChat(peticionBase({ mensaje: '¿quiénes participaron en esos?' }));
+
+    expect(ejecutarParticipantes).toHaveBeenCalledWith(expect.anything(), { coDependencia: null }, {
+      expediente: undefined, conjunto: [{ nuAnnExp: '2026', nuSecExp: '0000000009' }],
+    });
+    expect(r.tipo).toBe('fijo'); // sin datos → "no encontré"
+  });
+
+  it('agrupar: grupos por contrato sin modelo, respondido como tabla', async () => {
+    planificar.mockResolvedValue(plan('agrupar', { consulta: '¿qué obras tienen controversias?' }));
+    const tabla = { filas: [], pagina: 1, porPagina: 10, total: 2, nivel1: 1, nivel2: 1, hayMas: false };
+    ejecutarListado.mockResolvedValue({ texto: 'Encontré 2 expedientes…', tabla, meta: { version: 1, busqueda: { total: 2 }, expedientes: [] } });
+    agruparPorObra.mockResolvedValue({
+      texto: '- Laboratorios de Camélidos (contrato 341-2025-MCEBS): 2026-0000001 (en trámite)',
+      grupos: [], agrupados: 1, soloDirectos: true,
+    });
+
+    const r = await chat.responderChat(peticionBase({ mensaje: '¿qué obras tienen controversias?' }));
+
+    expect(r.tipo).toBe('tabla');
+    expect(r.texto).toContain('Encontré 2 expedientes…');
+    expect(r.texto).toContain('Agrupé por obra los 1 que coinciden directamente');
+    expect(r.texto).toContain('- Laboratorios de Camélidos (contrato 341-2025-MCEBS): 2026-0000001 (en trámite)');
+    expect(responder).not.toHaveBeenCalled();
+    expect(buscarHibrido).not.toHaveBeenCalled();
   });
 });
 

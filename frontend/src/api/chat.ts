@@ -1,4 +1,12 @@
-import type { AdaptadorChat, FilaResultadoChat, TablaResultadosChat, TipoRespuestaChat } from './chatComun';
+import type {
+  AdaptadorChat,
+  BloqueParticipantesChat,
+  FilaResultadoChat,
+  ReferenciaExpediente,
+  TablaResultadosChat,
+  TarjetaDocumentoChat,
+  TipoRespuestaChat,
+} from './chatComun';
 import { apiJson } from './cliente';
 import { rutaAnexo, rutaDocumento } from './documentos';
 
@@ -36,6 +44,8 @@ export interface RespuestaChat {
   texto: string;
   citas: CitaChat[];
   tabla?: TablaResultadosChat<FilaExpedienteChat>;
+  documento?: TarjetaDocumentoChat;
+  participantes?: BloqueParticipantesChat;
   candidatosVec: number;
   candidatosFts: number;
   marcadoresAlucinados: number;
@@ -57,6 +67,8 @@ export interface MensajeHistorial {
   feAlta: string;
   citas: CitaChat[];
   tabla?: TablaResultadosChat<FilaExpedienteChat>;
+  documento?: TarjetaDocumentoChat;
+  participantes?: BloqueParticipantesChat;
 }
 
 export interface EstadoIngestaExpediente {
@@ -240,6 +252,11 @@ export const adaptadorChatSgd: AdaptadorChat<ExpedienteChat, CitaChat> = {
     const f = fila as FilaExpedienteChat;
     return { nuAnnExp: f.nuAnnExp, nuSecExp: f.nuSecExp, numeroExpediente: f.numeroExpediente, documentos: f.documentos, ingestados: 0 };
   },
+  entidadDesdeExpediente: (ref: ReferenciaExpediente) =>
+    ref.nuAnnExp && ref.nuSecExp
+      ? { nuAnnExp: ref.nuAnnExp, nuSecExp: ref.nuSecExp, numeroExpediente: ref.numeroExpediente, documentos: 0, ingestados: 0 }
+      : null,
+  abrirDocumento: (doc) => ({ url: rutaDocumento(doc.nuAnn, doc.nuEmi), titulo: doc.titulo ?? 'Documento', visualizable: true }),
 
   permisoGestionar: 'rag.gestionar',
 };

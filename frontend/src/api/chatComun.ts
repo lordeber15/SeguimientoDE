@@ -30,7 +30,7 @@ export interface EstadoIngestaBase {
 
 /** 'fijo' = mensaje de cierre sin LLM (fuera de alcance, ayuda, sin resultados). Opcional: el
  *  chat STD todavía no lo envía. */
-export type TipoRespuestaChat = 'texto' | 'tabla' | 'fijo';
+export type TipoRespuestaChat = 'texto' | 'tabla' | 'fijo' | 'documento' | 'participantes';
 
 /**
  * Fila de una respuesta tabla (listar / contar): lo común a cualquier sistema. Cada adaptador
@@ -54,6 +54,61 @@ export interface FilaResultadoChat {
   coincidencia: string;
 }
 
+/** Referencia a un expediente, para "Chatear" desde una tarjeta o un trámite. */
+export interface ReferenciaExpediente {
+  nuAnnExp: string | null;
+  nuSecExp: string | null;
+  numeroExpediente: string | null;
+}
+
+/** Derivación de un documento: a quién y con qué indicación (en vivo del SGD al responder). */
+export interface IndicacionDestinoChat {
+  destino: string | null;
+  persona: string | null;
+  tramite: string | null;
+  indicacion: string | null;
+  estado: string | null;
+  fecha: string | null;
+}
+
+export interface DocumentoChat extends ReferenciaExpediente {
+  nuAnn: string;
+  nuEmi: string;
+  titulo: string | null;
+  asunto: string | null;
+  fecha: string | null;
+  emisor: string | null;
+  remitente: string | null;
+  terminosCoinciden: number;
+}
+
+/** Respuesta `documento` ("el último documento de…"). */
+export interface TarjetaDocumentoChat extends DocumentoChat {
+  totalTerminos: number;
+  indicaciones: IndicacionDestinoChat[];
+  anteriores: DocumentoChat[];
+}
+
+export interface MovimientoChat {
+  fecha: string | null;
+  documento: string | null;
+  emisor: string | null;
+  destino: string | null;
+  persona: string | null;
+  tramite: string | null;
+  indicacion: string | null;
+  estado: string | null;
+}
+
+/** Respuesta `participantes`. */
+export interface BloqueParticipantesChat {
+  totalExpedientes: number;
+  remitentes: { nombre: string; documento: string | null; documentos: number; expedientes: number }[];
+  emisores: { dependencia: string | null; empleado: string | null; documentos: number; expedientes: number }[];
+  destinatarios: { dependencia: string | null; persona: string | null; veces: number; expedientes: number }[];
+  tramites: (ReferenciaExpediente & { movimientos: MovimientoChat[] })[];
+}
+
 /** Una página de resultados. `pagina: 0` + `filas: []` = viene del historial, falta pedir la 1. */
 export interface TablaResultadosChat<F extends FilaResultadoChat = FilaResultadoChat> {
   filas: F[];
@@ -72,6 +127,8 @@ export interface RespuestaChatBase<C extends CitaBasica> {
   texto: string;
   citas: C[];
   tabla?: TablaResultadosChat;
+  documento?: TarjetaDocumentoChat;
+  participantes?: BloqueParticipantesChat;
   candidatosVec: number;
   candidatosFts: number;
   marcadoresAlucinados: number;
@@ -84,6 +141,8 @@ export interface MensajeHistorialBase<C extends CitaBasica> {
   texto: string;
   citas: C[];
   tabla?: TablaResultadosChat;
+  documento?: TarjetaDocumentoChat;
+  participantes?: BloqueParticipantesChat;
 }
 
 /**
@@ -126,6 +185,10 @@ export interface AdaptadorChat<E, C extends CitaBasica> {
   etiquetaFila?(fila: FilaResultadoChat): string;
   /** Entidad para "Chatear" con esa fila en el modo por contexto. */
   entidadDesdeFila?(fila: FilaResultadoChat): E | null;
+  /** Igual, desde la referencia de una tarjeta de documento o de un trámite. */
+  entidadDesdeExpediente?(ref: ReferenciaExpediente): E | null;
+  /** Abrir el documento de una tarjeta `documento` en el visor. */
+  abrirDocumento?(doc: DocumentoChat): { url: string; titulo: string; visualizable: boolean };
 
   /** Permiso que habilita el enlace "Documentos (n)" hacia el panel de gestión. */
   permisoGestionar: string;

@@ -72,6 +72,15 @@ export async function buscarHibrido(
   /** Chat "Por expediente": solo chunks de documentos de ESTE expediente. Sin él, la búsqueda
    *  recorría todo el corpus y respondía con documentos de otros expedientes. */
   expediente?: { nuAnnExp: string; nuSecExp: string },
+  /** Conjunto activo de la conversación (el listado anterior, docs/PLAN-CHAT-CONSULTAS.md Fase 4):
+   *  "de esos, ¿cuál habla de penalidades?" busca solo dentro de esos expedientes. */
+  conjunto?: { nuAnnExp: string; nuSecExp: string }[],
+  /** Términos del planificador para la rama FTS, unidos con OR (ts_rank_cd premia los fragmentos
+   *  que traen más de ellos). Sin esto, la consulta REESCRITA — más larga que el mensaje original —
+   *  iba entera a `plainto_tsquery`, que exige TODAS sus palabras: "qué dicen sobre la resolución del
+   *  contrato de la obra de Junín" encontraba 3 fragmentos. La rama vectorial sigue usando la
+   *  consulta completa, que es donde la paráfrasis sí ayuda. */
+  terminosFts?: string[],
 ): Promise<ResultadoBusqueda> {
   const modelo = await modeloActivo();
   let vecLiteral: string | null = null;
@@ -102,6 +111,10 @@ export async function buscarHibrido(
     // Los índices de bind cambian por rama (la vectorial usa $2/$3), de ahí que se arme por rama.
     const expedienteSql = (i: number) =>
       `AND ($${i}::text IS NULL OR (d.nu_ann_exp = $${i} AND d.nu_sec_exp = $${i + 1}))`;
+    const conjAnn = conjunto && conjunto.length > 0 ? conjunto.map((c) => c.nuAnnExp) : null;
+    const conjSec = conjunto && conjunto.length > 0 ? conjunto.map((c) => c.nuSecExp) : null;
+    const conjuntoSql = (i: number) =>
+      `AND ($${i}::text[] IS NULL OR (d.nu_ann_exp, d.nu_sec_exp) IN (SELECT unnest($${i}::text[]), unnest($${i + 1}::text[])))`;
 
     let filasVec: FilaVec[] = [];
     if (vecLiteral && tabla) {
@@ -113,11 +126,12 @@ export async function buscarHibrido(
             AND EXISTS (
               SELECT 1 FROM rag.documento d
                WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(4)}
+                 ${conjuntoSql(6)}
             )
           ORDER BY e.vec <=> $3::vector
           LIMIT ${LIMITE_RAMA}`,
         {
-          bind: [filtro.coDependencia, modeloId, vecLiteral, expAnn, expSec],
+          bind: [filtro.coDependencia, modeloId, vecLiteral, expAnn, expSec, conjAnn, conjSec],
           type: QueryTypes.SELECT,
           transaction: tx,
         },
@@ -126,16 +140,25 @@ export async function buscarHibrido(
 
     const filasFts = await appSequelize.query<FilaFts>(
       `SELECT c.id AS chunk_id
-         FROM rag.chunk c, plainto_tsquery('es_unaccent', $2) AS consulta
+         FROM rag.chunk c,
+              COALESCE(
+                (SELECT NULLIF(string_agg(NULLIF(phraseto_tsquery('es_unaccent', t)::text, ''), ' | '), '')::tsquery
+                   FROM unnest($7::text[]) AS t),
+                plainto_tsquery('es_unaccent', $2)
+              ) AS consulta
         WHERE c.tsv @@ consulta
           AND EXISTS (
             SELECT 1 FROM rag.documento d
              WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(3)}
+               ${conjuntoSql(5)}
           )
         ORDER BY ts_rank_cd(c.tsv, consulta) DESC
         LIMIT ${LIMITE_RAMA}`,
       {
-        bind: [filtro.coDependencia, consultaTexto, expAnn, expSec],
+        bind: [
+          filtro.coDependencia, consultaTexto, expAnn, expSec, conjAnn, conjSec,
+          terminosFts && terminosFts.length > 0 ? terminosFts : null,
+        ],
         type: QueryTypes.SELECT,
         transaction: tx,
       },

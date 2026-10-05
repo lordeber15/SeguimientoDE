@@ -14,6 +14,8 @@ const query = jest.fn();
 const planificar = jest.fn();
 const leerBooleano = jest.fn();
 const ejecutarListado = jest.fn();
+/** Meta del último listado de la sesión (conjunto activo); null = la sesión no tiene ninguno. */
+let metaConjunto: unknown = null;
 const ordenLlamadas: string[] = [];
 
 jest.mock('../../../../src/compartido/ai/providerFactory', () => ({
@@ -71,6 +73,9 @@ function instalarQueryPorDefecto() {
     if (sql.includes('INSERT INTO rag.chat_sesion')) {
       return Promise.resolve([{ id: 42, usuario_id: 'u1', modo: 'general', nu_ann_exp: null, nu_sec_exp: null }]);
     }
+    if (sql.includes("WHERE sesion_id = $1 AND tipo = 'tabla'")) {
+      return Promise.resolve(metaConjunto ? [{ meta: metaConjunto }] : []);
+    }
     if (sql.includes("rol, texto FROM rag.chat_mensaje")) {
       return Promise.resolve([]); // sin historial previo
     }
@@ -107,6 +112,7 @@ beforeEach(() => {
   responder.mockReset().mockResolvedValue({ texto: 'respuesta', uso: { tokensIn: 10, tokensOut: 5, estimado: false } });
   leerBooleano.mockReset().mockResolvedValue(true);
   ejecutarListado.mockReset();
+  metaConjunto = null;
   planificar.mockReset().mockImplementation((_prov: unknown, mensaje: string) => Promise.resolve({
     plan: planDeRespaldoReal(mensaje), uso: null, respaldo: false, ms: 1,
   }));
@@ -146,12 +152,12 @@ describe('responderChat', () => {
 
   it('pasa coDependencia=null cuando el usuario no tiene restricción (admin/jefe)', async () => {
     await chat.responderChat(peticionBase({ sinRestriccionDependencia: true, coDependencia: '00104' }));
-    expect(buscarHibrido).toHaveBeenCalledWith(expect.any(String), { coDependencia: null });
+    expect(buscarHibrido.mock.calls[0][1]).toEqual({ coDependencia: null });
   });
 
   it('filtra por la propia dependencia cuando el usuario SÍ tiene restricción — el filtro más importante del diseño', async () => {
     await chat.responderChat(peticionBase({ sinRestriccionDependencia: false, coDependencia: '00104' }));
-    expect(buscarHibrido).toHaveBeenCalledWith(expect.any(String), { coDependencia: '00104' });
+    expect(buscarHibrido.mock.calls[0][1]).toEqual({ coDependencia: '00104' });
   });
 
   it('rechaza si la sesión indicada pertenece a otro usuario', async () => {
@@ -284,7 +290,7 @@ describe('responderChat — listar / contar', () => {
 
     expect(r.tipo).toBe('tabla');
     expect(r.tabla).toEqual(tabla);
-    expect(ejecutarListado).toHaveBeenCalledWith('listar', expect.anything(), { coDependencia: null });
+    expect(ejecutarListado).toHaveBeenCalledWith('listar', expect.anything(), { coDependencia: null }, {});
     expect(buscarHibrido).not.toHaveBeenCalled();
     expect(responder).not.toHaveBeenCalled();
     expect(ordenLlamadas).toEqual(['guardar-tabla']);
@@ -295,7 +301,7 @@ describe('responderChat — listar / contar', () => {
     ejecutarListado.mockResolvedValue({ texto: 'Hay 3…', tabla, meta: { version: 1, busqueda: { total: 3 } } });
 
     await chat.responderChat(peticionBase({ sinRestriccionDependencia: false, coDependencia: '00104' }));
-    expect(ejecutarListado).toHaveBeenCalledWith('contar', expect.anything(), { coDependencia: '00104' });
+    expect(ejecutarListado).toHaveBeenCalledWith('contar', expect.anything(), { coDependencia: '00104' }, {});
   });
 
   it('sin expedientes → mensaje fijo de "no encontré"', async () => {
@@ -313,6 +319,88 @@ describe('responderChat — listar / contar', () => {
     await chat.responderChat(peticionBase({ modo: 'expediente', expediente: { nuAnnExp: '2026', nuSecExp: '0000000001' } }));
     expect(ejecutarListado).not.toHaveBeenCalled();
     expect(buscarHibrido).toHaveBeenCalled();
+  });
+});
+
+describe('responderChat — contexto de la conversación', () => {
+  const meta = {
+    version: 1,
+    expedientes: [
+      { a: '2026', s: '0000000001', n: 1, dm: 1, dc: 0, r: false, t: 1, bm: 1, bc: 0 },
+      { a: '2026', s: '0000000002', n: 2, dm: 0, dc: 3, r: false, t: 1, bm: 0, bc: 1 },
+    ],
+  };
+  const conjunto = [{ nuAnnExp: '2026', nuSecExp: '0000000001' }, { nuAnnExp: '2026', nuSecExp: '0000000002' }];
+  const plan = (over: Record<string, unknown>) => ({
+    plan: { ...planDeRespaldoReal('x'), ...over }, uso: null, respaldo: false, ms: 1,
+  });
+
+  it('busca con la consulta reescrita, no con el texto literal', async () => {
+    planificar.mockResolvedValue(plan({ consulta: 'último documento de controversia de la obra Huancavelica' }));
+
+    await chat.responderChat(peticionBase({ mensaje: '¿y el último?' }));
+    expect(buscarHibrido.mock.calls[0][0]).toBe('último documento de controversia de la obra Huancavelica');
+  });
+
+  it('"de esos" filtra el listado dentro del conjunto anterior', async () => {
+    metaConjunto = meta;
+    planificar.mockResolvedValue(plan({ intencion: 'listar', continuaAnterior: true }));
+    ejecutarListado.mockResolvedValue(null);
+
+    await chat.responderChat(peticionBase({ mensaje: 'de esos, ¿cuáles tienen penalidades?' }));
+    expect(ejecutarListado).toHaveBeenCalledWith('listar', expect.anything(), { coDependencia: null }, { dentroDe: conjunto });
+  });
+
+  it('una pregunta de contenido que continúa acota la búsqueda al conjunto', async () => {
+    metaConjunto = meta;
+    planificar.mockResolvedValue(plan({ consulta: 'monto de penalidades', continuaAnterior: true }));
+
+    await chat.responderChat(peticionBase({ mensaje: '¿y cuánto suman las penalidades ahí?' }));
+    expect(buscarHibrido.mock.calls[0].slice(0, 4)).toEqual(['monto de penalidades', { coDependencia: null }, undefined, conjunto]);
+  });
+
+  it('un tema nuevo ignora el listado anterior', async () => {
+    metaConjunto = meta;
+    planificar.mockResolvedValue(plan({ intencion: 'listar', continuaAnterior: false }));
+    ejecutarListado.mockResolvedValue(null);
+
+    await chat.responderChat(peticionBase({ mensaje: 'expedientes de Ayacucho' }));
+    expect(ejecutarListado).toHaveBeenCalledWith('listar', expect.anything(), { coDependencia: null }, {});
+  });
+
+  it('con el plan de respaldo no se confía en la reescritura ni en el conjunto', async () => {
+    metaConjunto = meta;
+    planificar.mockResolvedValue({ ...plan({ consulta: 'otra cosa', continuaAnterior: true }), respaldo: true });
+
+    await chat.responderChat(peticionBase({ mensaje: 'texto original' }));
+    expect(buscarHibrido.mock.calls[0]).toEqual(['texto original', { coDependencia: null }, undefined, undefined, undefined]);
+  });
+
+  it('la rama FTS recibe los términos del plan, no la consulta reescrita entera', async () => {
+    planificar.mockResolvedValue(plan({
+      consulta: 'qué dicen sobre la resolución del contrato de la obra de Junín',
+      terminos: { obligatorios: ['resolución', 'contrato', 'Junín'], opcionales: [] },
+    }));
+
+    await chat.responderChat(peticionBase({ mensaje: '¿qué dicen sobre la resolución del contrato?' }));
+    expect(buscarHibrido.mock.calls[0][4]).toEqual(['resolución', 'contrato', 'Junín']);
+  });
+
+  it('recorta las respuestas largas del asistente al reenviarlas como historial', async () => {
+    buscarHibrido.mockResolvedValue(UN_CHUNK);
+    elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
+    const largo = 'x'.repeat(2000);
+    const original = query.getMockImplementation()!;
+    query.mockImplementation((sql: string, opts: unknown) => (sql.includes('rol, texto FROM rag.chat_mensaje')
+      ? Promise.resolve([{ rol: 'assistant', texto: largo }, { rol: 'user', texto: 'pregunta previa' }])
+      : original(sql, opts)));
+
+    await chat.responderChat(peticionBase());
+
+    const mensajes = responder.mock.calls.at(-1)![0] as { rol: string; contenido: string }[];
+    const previo = mensajes.find((m) => m.rol === 'assistant')!;
+    expect(previo.contenido.length).toBeLessThanOrEqual(701);
+    expect(mensajes.find((m) => m.contenido === 'pregunta previa')).toBeDefined();
   });
 });
 

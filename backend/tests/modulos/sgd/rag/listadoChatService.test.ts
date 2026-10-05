@@ -14,7 +14,7 @@ describe('textoListado', () => {
   it('listar: total, criterio y los dos niveles', () => {
     const t = textoListado('listar', planDeRespaldo('x'), busqueda(), 3);
     expect(t).toContain('Encontré 58 expedientes relacionados con «controversia» + «Huancavelica».');
-    expect(t).toContain('3 coinciden directamente');
+    expect(t).toContain('3 coinciden con todos los términos en sus datos');
     expect(t).toContain('55 lo mencionan solo dentro del contenido');
   });
 
@@ -24,7 +24,7 @@ describe('textoListado', () => {
       { enTramite: 1, archivados: 0, sinDato: 0 });
     expect(t).toContain('Hay 1 expediente con documentos remitidos por «China Civil» con movimiento en los últimos 3 meses.');
     expect(t).toContain('1 sigue en trámite y 0 están archivados');
-    expect(t).not.toContain('coincide directamente'); // sin términos no hay niveles que explicar
+    expect(t).not.toContain('todos los términos en sus datos'); // sin términos no hay niveles que explicar
   });
 
   it('avisa el modo "alguno", el truncado y los documentos sin expediente', () => {
@@ -32,6 +32,13 @@ describe('textoListado', () => {
     expect(t).toMatch(/^Ningún expediente cumple todos los términos/);
     expect(t).toContain('precise la búsqueda');
     expect(t).toContain('2 documentos sin expediente mencionan');
+  });
+});
+
+describe('textoListado — dentro del listado anterior', () => {
+  it('lo dice al comienzo de la frase', () => {
+    const t = textoListado('listar', planDeRespaldo('x'), busqueda({ total: 4, terminos: ['penalidades'] }), 3, undefined, 58);
+    expect(t).toMatch(/^Dentro de los 58 expedientes del listado anterior, encontré 4 expedientes relacionados con «penalidades»\./);
   });
 });
 

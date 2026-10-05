@@ -71,6 +71,8 @@ export function textoListado(
   b: Omit<ResultadoBusquedaExpedientes, 'candidatos'>,
   mesesActual: number,
   estados?: MetaListado['estados'],
+  /** Tamaño del conjunto anterior si se buscó dentro de él ("de esos…"). */
+  dentroDe?: number,
 ): string {
   const criterio = descripcionCriterio(plan, b.terminos, b.total);
   const actual = plan.filtros.actual ? ` con movimiento en los últimos ${plural(mesesActual, 'mes', 'meses')}` : '';
@@ -81,12 +83,15 @@ export function textoListado(
   }
 
   const verbo = intencion === 'contar' ? 'Hay' : 'Encontré';
-  const cabeza = `${verbo} ${plural(b.total, 'expediente', 'expedientes')}${criterio}${actual}.`;
+  const ambito = dentroDe ? `Dentro de los ${plural(dentroDe, 'expediente', 'expedientes')} del listado anterior, ` : '';
+  const cabeza = ambito
+    ? `${ambito}${verbo.toLowerCase()} ${plural(b.total, 'expediente', 'expedientes')}${criterio}${actual}.`
+    : `${verbo} ${plural(b.total, 'expediente', 'expedientes')}${criterio}${actual}.`;
   lineas.push(cabeza);
 
   if (b.terminos.length > 0 && b.total > 0) {
     lineas.push(
-      `${plural(b.nivel1, 'coincide', 'coinciden')} directamente (asunto o remitente) y `
+      `${plural(b.nivel1, 'coincide', 'coinciden')} con todos los términos en sus datos (asunto, remitente o emisor) y `
       + `${plural(b.nivel2, 'lo menciona', 'lo mencionan')} solo dentro del contenido de sus documentos.`,
     );
   }
@@ -140,7 +145,11 @@ export async function ejecutarListado(
 
   const meta: MetaListado = { version: 1, plan, busqueda, expedientes: candidatos, estados };
   const tabla = await paginaDesdeMeta(meta, 1, filtro);
-  return { texto: textoListado(intencion, plan, busqueda, parametros.mesesActual, estados), tabla, meta };
+  return {
+    texto: textoListado(intencion, plan, busqueda, parametros.mesesActual, estados, opciones.dentroDe?.length),
+    tabla,
+    meta,
+  };
 }
 
 /** Una página de la lista guardada en `meta`, con el estado en vivo de esas filas. */

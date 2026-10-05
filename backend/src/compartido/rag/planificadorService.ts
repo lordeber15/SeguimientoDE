@@ -128,7 +128,8 @@ Intenciones:
 - "listar": pide expedientes/documentos que cumplan algo ("dame los expedientes de…", "lista…", "busca…").
 - "contar": pide cuántos ("¿cuántos expedientes…?").
 - "ultimo_documento": pide el último / más reciente documento de algo.
-- "participantes": pide quiénes participaron, intervinieron, firmaron, remitieron o recibieron.
+- "participantes": pide QUIÉNES participaron, intervinieron, firmaron, remitieron o recibieron. \
+"¿En cuáles participó X?" pide expedientes, no personas: es "listar" con filtros.remitente X.
 - "agrupar": pide QUÉ OBRAS / PROYECTOS / TEMAS (no qué expedientes) cumplen algo ("¿qué obras \
 tienen controversias?"). "¿Qué expedientes hablan de…?" es "listar", no "agrupar".
 - "contenido": pregunta sobre lo que DICEN los documentos (montos, plazos, motivos, estado, resúmenes).
@@ -167,6 +168,8 @@ obligatorios ["controversia", "Junín"].
 obligatorios ["China Civil"], filtros.remitente "China Civil".
 - "¿qué obras tienen controversias actualmente?" → "agrupar", obligatorios ["controversia"], \
 filtros.actual true.
+- (tras un listado) "¿y en cuáles participó China Civil?" → "listar", obligatorios ["China Civil"], \
+filtros.remitente "China Civil", continua_anterior true.
 - "¿cuál es el monto del contrato de la obra de Junín?" → "contenido", obligatorios ["monto", \
 "contrato", "Junín"], tipo_doc null.
 

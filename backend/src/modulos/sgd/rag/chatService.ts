@@ -6,6 +6,7 @@ import { filtroGratis, mensajeFijo, type MotivoFijo } from '../../../compartido/
 import { leerBooleano } from '../../../compartido/rag/configService';
 import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../../../compartido/rag/planificadorService';
 import { rerankear } from '../../../compartido/rag/rerankService';
+import { terminosDelPlan } from './busquedaExpedientesService';
 import {
   ejecutarListado,
   esMetaListado,
@@ -38,6 +39,14 @@ import {
 const PRESUPUESTO_TOKENS_CONTEXTO = Number(process.env.RAG_CHAT_PRESUPUESTO_TOKENS ?? 3000);
 const MAX_TOKENS_RESPUESTA = Number(process.env.RAG_CHAT_MAX_TOKENS_RESPUESTA ?? 800);
 const MENSAJES_HISTORIAL = 8;
+/**
+ * Tope por respuesta previa del asistente al reenviarla como historial: una respuesta con citas
+ * ronda los 800 tokens y 8 de ellas multiplicaban el costo de cada turno en un chat largo. Para
+ * seguir el hilo basta el comienzo (la tesis de la respuesta); el detalle sigue en los fragmentos.
+ */
+const MAX_CHARS_HISTORIAL_ASISTENTE = 700;
+/** Tope del conjunto activo al acotar la búsqueda de contenido (un IN de miles no aporta foco). */
+const MAX_CONJUNTO_CONTENIDO = 300;
 
 export class ChatError extends Error {
   readonly status: number;
@@ -203,7 +212,29 @@ async function historialReciente(sesionId: number, excluirMensajeId: number): Pr
       ORDER BY id DESC LIMIT $3`,
     { bind: [sesionId, excluirMensajeId, MENSAJES_HISTORIAL], type: QueryTypes.SELECT },
   );
-  return filas.reverse().map((f) => ({ rol: f.rol, contenido: f.texto }));
+  return filas.reverse().map((f) => ({
+    rol: f.rol,
+    contenido: f.rol === 'assistant' && f.texto.length > MAX_CHARS_HISTORIAL_ASISTENTE
+      ? `${f.texto.slice(0, MAX_CHARS_HISTORIAL_ASISTENTE).trimEnd()}…`
+      : f.texto,
+  }));
+}
+
+/**
+ * Conjunto activo de la conversación (docs/PLAN-CHAT-CONSULTAS.md, Fase 4): los expedientes del
+ * último listado de la sesión. Es lo que da sentido a "de esos", "entre ellos", "¿y el último?".
+ * `null` si la sesión nunca respondió con una tabla.
+ */
+async function conjuntoActivo(sesionId: number): Promise<{ nuAnnExp: string; nuSecExp: string }[] | null> {
+  const filas = await appSequelize.query<{ meta: unknown }>(
+    `SELECT meta FROM rag.chat_mensaje
+      WHERE sesion_id = $1 AND tipo = 'tabla'
+      ORDER BY id DESC LIMIT 1`,
+    { bind: [sesionId], type: QueryTypes.SELECT },
+  );
+  const meta = filas[0]?.meta;
+  if (!esMetaListado(meta)) return null;
+  return meta.expedientes.map((e) => ({ nuAnnExp: e.a, nuSecExp: e.s }));
 }
 
 interface CitaPendiente {
@@ -425,11 +456,22 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
 
   const filtro: FiltroAcceso = { coDependencia: p.sinRestriccionDependencia ? null : p.coDependencia };
 
+  // Contexto (Fase 4). La consulta REESCRITA por el planificador ("¿y el último?" → "último documento
+  // de controversia de la obra Huancavelica") es la que se busca; el texto literal no encuentra nada.
+  // Si la pregunta continúa la anterior, se acota al conjunto del último listado. Con el plan de
+  // respaldo no hay reescritura confiable: se busca el mensaje tal cual y sin conjunto.
+  const planConfiable = planificador !== null && !planificador.respaldo;
+  const consultaBusqueda = planConfiable ? plan.consulta : p.mensaje;
+  const terminosFts = planConfiable ? terminosDelPlan(plan) : undefined;
+  const conjunto = planConfiable && plan.continuaAnterior && p.modo === 'general'
+    ? await conjuntoActivo(sesion.id)
+    : null;
+
   // [2] listar / contar: tabla de expedientes por SQL, sin modelo de respuesta (D6). En el modo
   // "por expediente" no aplica — ya se está dentro de uno —, así que sigue a la búsqueda de contenido.
   // último / participantes / agrupar llegan con sus ejecutores en la Fase 5.
   if (p.modo === 'general' && (plan.intencion === 'listar' || plan.intencion === 'contar')) {
-    const listado = await ejecutarListado(plan.intencion, plan, filtro);
+    const listado = await ejecutarListado(plan.intencion, plan, filtro, conjunto ? { dentroDe: conjunto } : {});
     if (!listado) return fijo('sin_resultados', planificador);
 
     const filas = await appSequelize.query<{ id: number }>(
@@ -467,14 +509,14 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
 
   const [resultado, timeline] = await Promise.all([
     p.modo === 'expediente' && p.expediente
-      ? buscarHibrido(p.mensaje, filtro, p.expediente)
-      : buscarHibrido(p.mensaje, filtro),
+      ? buscarHibrido(consultaBusqueda, filtro, p.expediente, undefined, terminosFts)
+      : buscarHibrido(consultaBusqueda, filtro, undefined, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO), terminosFts),
     p.modo === 'expediente' && p.expediente
       ? estadoExpediente(p.expediente.nuAnnExp, p.expediente.nuSecExp)
       : Promise.resolve(null),
   ]);
 
-  const rerank = await rerankear(provider, p.mensaje, resultado.chunks);
+  const rerank = await rerankear(provider, consultaBusqueda, resultado.chunks);
   if (rerank.uso) await registrarUsoToken(provider, 'chat_rerank', rerank.uso);
 
   const chunksAcotados = recortarPorPresupuesto(rerank.chunks, PRESUPUESTO_TOKENS_CONTEXTO);

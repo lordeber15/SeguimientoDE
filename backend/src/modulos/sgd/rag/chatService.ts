@@ -6,7 +6,7 @@ import { filtroGratis, mensajeFijo, type MotivoFijo } from '../../../compartido/
 import { leerBooleano } from '../../../compartido/rag/configService';
 import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../../../compartido/rag/planificadorService';
 import { rerankear } from '../../../compartido/rag/rerankService';
-import { terminosDelPlan } from './busquedaExpedientesService';
+import { leerParametros, prepararTerminos, terminosDelPlan } from './busquedaExpedientesService';
 import {
   ejecutarParticipantes,
   ejecutarUltimoDocumento,
@@ -517,7 +517,6 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
   // respaldo no hay reescritura confiable: se busca el mensaje tal cual y sin conjunto.
   const planConfiable = planificador !== null && !planificador.respaldo;
   const consultaBusqueda = planConfiable ? plan.consulta : p.mensaje;
-  const terminosFts = planConfiable ? terminosDelPlan(plan) : undefined;
   const conjunto = planConfiable && plan.continuaAnterior && p.modo === 'general'
     ? await conjuntoActivo(sesion.id)
     : null;
@@ -577,6 +576,12 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
     });
     return { sesionId: sesion.id, mensajeId, tipo: 'tabla', texto, tabla: listado.tabla, ...sinModelo };
   }
+
+  // Términos del plan (con sus sinónimos) para la rama FTS: la consulta reescrita completa es demasiado
+  // estricta para plainto_tsquery.
+  const terminosFts = planConfiable
+    ? prepararTerminos(terminosDelPlan(plan), plan, await leerParametros()).consultas
+    : undefined;
 
   const [resultado, timeline] = await Promise.all([
     p.modo === 'expediente' && p.expediente

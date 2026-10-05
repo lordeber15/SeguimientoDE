@@ -42,7 +42,8 @@ jest.mock('../../../../src/compartido/rag/planificadorService', () => ({
 
 jest.mock('../../../../src/compartido/rag/configService', () => ({
   leerBooleano: (...a: unknown[]) => leerBooleano(...a),
-  leerConfig: () => Promise.resolve(null), // mensajes fijos: siempre el texto por defecto
+  leerConfig: () => Promise.resolve(null), // mensajes fijos y sinónimos: siempre el valor por defecto
+  leerNumero: (_clave: string, porDefecto: number) => Promise.resolve(porDefecto),
 }));
 
 // El listado (búsqueda de expedientes + SGD en vivo) se prueba en sus propios archivos.

@@ -43,9 +43,22 @@ const esquemaPlan = z.object({
   intencion: z.enum(INTENCIONES),
   consulta: textoONull,
   terminos: z
-    .object({ obligatorios: listaTerminos, opcionales: listaTerminos })
+    .object({
+      obligatorios: listaTerminos,
+      opcionales: listaTerminos,
+      // Un valor mal formado no invalida el plan: los sinónimos son una ayuda, no un requisito.
+      sinonimos: z.record(z.unknown()).nullish().catch(null).transform((v) => {
+        const limpio: Record<string, string[]> = {};
+        for (const [k, lista] of Object.entries(v ?? {})) {
+          if (!Array.isArray(lista)) continue;
+          const textos = lista.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim());
+          if (k.trim() && textos.length > 0) limpio[k.trim()] = textos.slice(0, 3);
+        }
+        return limpio;
+      }),
+    })
     .nullish()
-    .transform((v) => v ?? { obligatorios: [], opcionales: [] }),
+    .transform((v) => v ?? { obligatorios: [], opcionales: [], sinonimos: {} }),
   filtros: z
     .object({
       remitente: textoONull,
@@ -74,7 +87,9 @@ export interface PlanConsulta {
   intencion: Intencion;
   /** Pregunta autónoma (ya resuelta contra el historial). Nunca vacía: cae al mensaje original. */
   consulta: string;
-  terminos: { obligatorios: string[]; opcionales: string[] };
+  /** `sinonimos`: término obligatorio → otras formas de decirlo en los documentos ("alquiler" →
+   *  ["arrendamiento"]). Se suman a los de `chat.sinonimos` (Fase 6). */
+  terminos: { obligatorios: string[]; opcionales: string[]; sinonimos?: Record<string, string[]> };
   filtros: {
     remitente: string | null;
     emisor: string | null;
@@ -93,6 +108,8 @@ export interface ResultadoPlanificador {
   /** true si se usó el plan de respaldo (proveedor caído o respuesta no interpretable). */
   respaldo: boolean;
   ms: number;
+  /** Solo con respaldo, para diagnosticar: la salida del modelo que no se pudo interpretar, o el error. */
+  diagnostico?: string;
 }
 
 export interface ContextoPlanificador {
@@ -145,36 +162,54 @@ Campos:
 obra Junín", los dos son obligatorios: ["controversia", "Junín"]. Conserva juntas las expresiones \
 de varias palabras ("in house", "China Civil"). Nunca incluyas palabras genéricas: "expediente(s)", \
 "documento(s)", "obra", "proyecto(s)", "relacionado", "dame", "todos", "último".
-- "terminos.opcionales": sinónimos o palabras que ayudan pero no son imprescindibles.
+- "terminos.opcionales": palabras que ayudan pero no son imprescindibles.
+- "terminos.sinonimos": para cada término obligatorio que los documentos oficiales suelen escribir de \
+otra forma, esas formas (máximo 3, sinónimos EXACTOS, no temas relacionados): {"alquiler": \
+["arrendamiento"], "computadoras": ["equipos de cómputo"]}. Lugares, nombres propios y siglas no \
+llevan sinónimos. Si no hay, {}.
 - "filtros.remitente": empresa o persona SOLO si la pregunta dice que presentó/envió/remitió \
 documentos ("donde la empresa X presentó documentos" → "X"). Si solo dice "relacionados con X", va en términos.
-- "filtros.emisor": persona o dependencia interna que emitió, si se pide explícitamente.
-- "filtros.dependencia": si se pide explícitamente una oficina.
+- "filtros.emisor": PERSONA interna que emitió o firmó, si se pide explícitamente.
+- "filtros.dependencia": OFICINA, área, unidad o dirección interna que emitió ("los informes de la \
+Oficina de Asesoría Legal" → "Oficina de Asesoría Legal"; "lo que envió logística" → "logística").
 - "filtros.tipo_doc" (OFICIO, INFORME, CARTA…): SOLO si se piden documentos de ese tipo ("los \
 oficios de…", "el último informe de…"). "El monto del contrato" habla de un tema: tipo_doc = null.
 - "filtros.desde"/"filtros.hasta": fechas AAAA-MM-DD si se pide un rango.
 - "filtros.actual": true si pide lo "actual", "vigente", "en curso", "actualmente".
-- "continua_anterior": true si la pregunta depende de lo conversado antes ("de esos", "y el último", \
-"¿quiénes participaron ahí?"); false si es un tema nuevo.
+- "continua_anterior": true si la pregunta se refiere a lo que se acaba de listar o conversar: \
+usa "esos", "ellos", "ahí", "de ellos", "en cuáles", "cuáles de", "y el último", o pregunta un \
+detalle (quiénes, cuándo, qué dicen, el último) sin nombrar otra obra o lugar. false si REEMPLAZA \
+la obra o el lugar anterior por otro ("¿y los de Huancavelica?", "¿y en Puno?", "ahora los de…"), \
+o si no hay historial. Filtrar lo anterior por una empresa o un tema ("¿en cuáles participó X?", \
+"¿cuáles hablan de penalidades?") sí es true.
 
 Ejemplos (solo los campos relevantes; tu salida SIEMPRE lleva el formato completo):
 - "dale los expedientes que contengan controversia en la obra huancavelica" → intencion "listar", \
 obligatorios ["controversia", "Huancavelica"].
 - "dame todos los expedientes del alquiler de computadoras para el in house" → "listar", \
-obligatorios ["alquiler", "computadoras", "in house"].
+obligatorios ["alquiler", "computadoras", "in house"], sinonimos {"alquiler": ["arrendamiento"], \
+"computadoras": ["equipos de cómputo"]}.
+- "dame todos los expedientes relacionados con proyectos in house" → "listar", obligatorios \
+["in house"] ("proyectos" es genérico).
 - "quiénes participaron en las controversias de la obra Junín" → "participantes", \
 obligatorios ["controversia", "Junín"].
 - "listame los expedientes donde la empresa China Civil presentó documentos" → "listar", \
 obligatorios ["China Civil"], filtros.remitente "China Civil".
+- "¿cuál es el último documento que presentó China Civil?" → "ultimo_documento", obligatorios \
+["China Civil"], filtros.remitente "China Civil".
 - "¿qué obras tienen controversias actualmente?" → "agrupar", obligatorios ["controversia"], \
 filtros.actual true.
 - (tras un listado) "¿y en cuáles participó China Civil?" → "listar", obligatorios ["China Civil"], \
 filtros.remitente "China Civil", continua_anterior true.
 - "¿cuál es el monto del contrato de la obra de Junín?" → "contenido", obligatorios ["monto", \
 "contrato", "Junín"], tipo_doc null.
+- (tras listar los expedientes de Junín) "¿qué dicen sobre la resolución del contrato?" → \
+"contenido", obligatorios ["resolución del contrato"], continua_anterior true.
+- (tras listar los expedientes de Junín) "¿y los de Huancavelica?" → "listar", obligatorios \
+["Huancavelica"], continua_anterior false (otra obra).
 
 Formato exacto:
-{"intencion":"…","consulta":"…","terminos":{"obligatorios":[],"opcionales":[]},\
+{"intencion":"…","consulta":"…","terminos":{"obligatorios":[],"opcionales":[],"sinonimos":{}},\
 "filtros":{"remitente":null,"emisor":null,"dependencia":null,"tipo_doc":null,"desde":null,"hasta":null,"actual":false},\
 "continua_anterior":false}`;
 
@@ -270,8 +305,14 @@ export async function planificar(
     const plan = interpretarPlan(respuesta.texto, mensaje);
     return plan
       ? { plan, uso: respuesta.uso, respaldo: false, ms: Date.now() - inicio }
-      : { plan: planDeRespaldo(mensaje), uso: respuesta.uso, respaldo: true, ms: Date.now() - inicio };
-  } catch {
-    return { plan: planDeRespaldo(mensaje), uso: null, respaldo: true, ms: Date.now() - inicio };
+      : {
+        plan: planDeRespaldo(mensaje), uso: respuesta.uso, respaldo: true, ms: Date.now() - inicio,
+        diagnostico: `salida no interpretable: ${respuesta.texto.slice(0, 600)}`,
+      };
+  } catch (e) {
+    return {
+      plan: planDeRespaldo(mensaje), uso: null, respaldo: true, ms: Date.now() - inicio,
+      diagnostico: `error del proveedor: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600),
+    };
   }
 }

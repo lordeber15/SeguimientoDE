@@ -3,8 +3,10 @@ import {
   buscarExpedientesPorPlan,
   detallePagina,
   leerParametros,
+  prepararTerminos,
   terminosDelPlan,
   type FilaExpedienteChat,
+  type TerminosPreparados,
 } from './busquedaExpedientesService';
 import {
   contratosPorExpediente,
@@ -13,6 +15,8 @@ import {
   indicacionesDocumento,
   nombresDeContratos,
   participantesRag,
+  type NombreContrato,
+  type TipoContrato,
   tramiteExpedientes,
   type Destinatario,
   type DocumentoEncontrado,
@@ -53,29 +57,50 @@ interface Objetivo {
   pares: Par[];
   total: number;
   terminos: string[];
+  /** Lo que se busca por término (sinónimos y frases estándar), para elegir documentos. */
+  preparados: TerminosPreparados;
   /** Cómo se llegó a los expedientes, para la frase. */
   ambito: 'expediente' | 'busqueda' | 'conjunto';
+  /** Se buscó dentro del listado anterior sin resultados y se pasó a toda la base. */
+  fueraDelConjunto?: boolean;
 }
+
+/** Lo que usan las frases de respuesta (puras, se prueban sin BD). */
+type ObjetivoTexto = Pick<Objetivo, 'total' | 'terminos' | 'ambito' | 'fueraDelConjunto'>;
 
 async function expedientesObjetivo(plan: PlanConsulta, filtro: FiltroAcceso, op: OpcionesObjetivo): Promise<Objetivo | null> {
   const terminos = terminosDelPlan(plan);
-  if (op.expediente) return { pares: [op.expediente], total: 1, terminos, ambito: 'expediente' };
-
   const parametros = await leerParametros();
+  const preparados = prepararTerminos(terminos, plan, parametros);
+  if (op.expediente) return { pares: [op.expediente], total: 1, terminos, preparados, ambito: 'expediente' };
+
   const r = await buscarExpedientesPorPlan(plan, filtro, parametros, {
     dentroDe: op.conjunto ?? undefined,
     soloActuales: plan.filtros.actual,
   });
-  if (r.total > 0) {
-    return {
-      pares: r.candidatos.slice(0, MAX_EXPEDIENTES).map((c) => ({ nuAnnExp: c.a, nuSecExp: c.s })),
-      total: r.total,
-      terminos: r.terminos,
-      ambito: 'busqueda',
-    };
+  const desde = (b: typeof r, fueraDelConjunto: boolean): Objetivo => ({
+    pares: b.candidatos.slice(0, MAX_EXPEDIENTES).map((c) => ({ nuAnnExp: c.a, nuSecExp: c.s })),
+    total: b.total,
+    terminos: b.terminos,
+    preparados,
+    ambito: 'busqueda',
+    fueraDelConjunto,
+  });
+  if (r.total > 0) return desde(r, false);
+
+  // Misma red de seguridad que el listado: nada dentro del conjunto anterior → toda la base.
+  if (op.conjunto && op.conjunto.length > 0 && r.terminos.length > 0) {
+    const global = await buscarExpedientesPorPlan(plan, filtro, parametros, { soloActuales: plan.filtros.actual });
+    if (global.total > 0) return desde(global, true);
   }
   if (op.conjunto && op.conjunto.length > 0 && r.terminos.length === 0) {
-    return { pares: op.conjunto.slice(0, MAX_EXPEDIENTES), total: op.conjunto.length, terminos: [], ambito: 'conjunto' };
+    return {
+      pares: op.conjunto.slice(0, MAX_EXPEDIENTES),
+      total: op.conjunto.length,
+      terminos: [],
+      preparados: { etiquetas: [], consultas: [], exclusiones: [] },
+      ambito: 'conjunto',
+    };
   }
   return null;
 }
@@ -88,11 +113,12 @@ const fecha = (iso: string | null) => {
   return `${d}/${m}/${a}`;
 };
 
-function fraseAmbito(o: Objetivo): string {
+function fraseAmbito(o: ObjetivoTexto): string {
   if (o.ambito === 'expediente') return 'en este expediente';
   const sobre = o.terminos.length > 0 ? ` relacionados con ${comillas(o.terminos)}` : '';
   if (o.ambito === 'conjunto') return `entre los ${plural(o.total, 'expediente', 'expedientes')} del listado anterior`;
-  return `entre ${o.total === 1 ? 'el expediente' : `los ${o.total} expedientes`}${sobre}`;
+  const aviso = o.fueraDelConjunto ? ' de toda la base (ninguno del listado anterior cumplía)' : '';
+  return `entre ${o.total === 1 ? 'el expediente' : `los ${o.total} expedientes`}${sobre}${aviso}`;
 }
 
 // ── Último documento ────────────────────────────────────────────────────────────────────────────
@@ -110,7 +136,7 @@ export interface RespuestaUltimoDocumento {
   meta: { version: 1; kind: 'documento'; plan: PlanConsulta; documento: TarjetaDocumento };
 }
 
-export function textoUltimoDocumento(o: Objetivo, d: TarjetaDocumento): string {
+export function textoUltimoDocumento(o: ObjetivoTexto, d: TarjetaDocumento): string {
   const partes = [
     `El documento más reciente ${fraseAmbito(o)} es ${d.titulo ?? 'un documento sin título'} del ${fecha(d.fecha)}`
     + (o.ambito !== 'expediente' && d.numeroExpediente ? `, en el expediente ${d.numeroExpediente}` : '') + '.',
@@ -130,7 +156,7 @@ export async function ejecutarUltimoDocumento(
   const objetivo = await expedientesObjetivo(plan, filtro, op);
   if (!objetivo) return null;
 
-  const docs = await documentosRecientes(objetivo.pares, objetivo.terminos, filtro, 5);
+  const docs = await documentosRecientes(objetivo.pares, objetivo.preparados, filtro, 5);
   // Con términos, un documento que no cumple ninguno no es "el último documento de X".
   const relevantes = objetivo.terminos.length > 0 ? docs.filter((d) => d.terminosCoinciden > 0) : docs;
   const [primero, ...resto] = relevantes;
@@ -166,7 +192,7 @@ export interface RespuestaParticipantes {
   meta: { version: 1; kind: 'participantes'; plan: PlanConsulta; participantes: BloqueParticipantes };
 }
 
-export function textoParticipantes(o: Objetivo, b: BloqueParticipantes): string {
+export function textoParticipantes(o: ObjetivoTexto, b: BloqueParticipantes): string {
   const cuenta = [
     plural(b.remitentes.length, 'remitente externo', 'remitentes externos'),
     plural(b.emisores.length, 'emisor interno', 'emisores internos'),
@@ -224,6 +250,8 @@ export interface GrupoObra {
   /** Contrato que define el grupo (el más citado de sus expedientes); null = sin contrato. */
   contrato: string | null;
   nombre: string | null;
+  /** Obra, consultoría o servicio (null = no se pudo saber). */
+  tipo?: TipoContrato;
   /** Menos de 10 fragmentos citan el contrato: el nombre puede venir de otro documento. */
   dudoso: boolean;
   expedientes: { numero: string; archivado: boolean; ultimoMovimiento: string | null }[];
@@ -256,7 +284,7 @@ const claveNombre = (n: string) =>
 export function agruparPorContrato(
   filas: Pick<FilaExpedienteChat, 'nuAnnExp' | 'nuSecExp' | 'numeroExpediente' | 'archivado' | 'ultimoMovimiento'>[],
   contratos: Map<string, string[]>,
-  nombres: Map<string, { nombre: string; menciones: number }>,
+  nombres: Map<string, Pick<NombreContrato, 'nombre' | 'menciones'> & { tipo?: TipoContrato }>,
 ): GrupoObra[] {
   const grupos = new Map<string, GrupoObra>();
   for (const f of filas) {
@@ -268,6 +296,7 @@ export function agruparPorContrato(
       g = {
         contrato,
         nombre: info?.nombre ?? null,
+        tipo: info?.tipo ?? null,
         dudoso: info ? info.menciones < UMBRAL_NOMBRE_CONFIABLE : false,
         expedientes: [],
       };
@@ -279,17 +308,26 @@ export function agruparPorContrato(
       ultimoMovimiento: f.ultimoMovimiento,
     });
   }
-  // Los grupos con más expedientes primero; "sin contrato" siempre al final.
+  // Obras primero (es lo que se preguntó), luego lo no clasificado, luego consultorías y servicios;
+  // dentro de cada tipo, los grupos con más expedientes. "Sin contrato" siempre al final.
+  const rangoTipo = (g: GrupoObra) => (g.tipo === 'obra' ? 0 : g.tipo ? 2 : 1);
   return [...grupos.values()].sort((a, b) =>
-    Number(a.contrato === null) - Number(b.contrato === null) || b.expedientes.length - a.expedientes.length);
+    Number(a.contrato === null) - Number(b.contrato === null)
+    || rangoTipo(a) - rangoTipo(b)
+    || b.expedientes.length - a.expedientes.length);
 }
+
+const ETIQUETA_TIPO: Record<'consultoria' | 'servicio' | 'adquisicion', string> = {
+  consultoria: 'Consultoría', servicio: 'Servicio', adquisicion: 'Adquisición',
+};
 
 export function textoGrupos(grupos: GrupoObra[]): string {
   return grupos.map((g) => {
     const titulo = g.contrato === null
       ? 'Sin contrato identificado'
       : g.nombre
-        ? `${g.nombre} (contrato ${g.contrato}${g.dudoso ? ', nombre no confirmado' : ''})`
+        ? `${g.tipo && g.tipo !== 'obra' ? `${ETIQUETA_TIPO[g.tipo]} «${g.nombre}»` : g.nombre}`
+          + ` (contrato ${g.contrato}${g.dudoso ? ', nombre no confirmado' : ''})`
         : `Contrato ${g.contrato} (sin nombre de proyecto identificado)`;
     const expedientes = g.expedientes
       .map((e) => `${e.numero} (${e.archivado ? 'archivado' : 'en trámite'})`)
@@ -309,11 +347,11 @@ export async function agruparPorObra(meta: MetaListado, filtro: FiltroAcceso): P
   const elegidos = (soloDirectos ? directos : meta.expedientes).slice(0, MAX_AGRUPAR);
 
   const [filas, contratos] = await Promise.all([
-    detallePagina(elegidos, meta.busqueda.terminos, filtro, parametros.mesesActual),
+    detallePagina(elegidos, meta.busqueda.terminos, filtro, parametros.mesesActual, meta.busqueda.consultas ?? meta.busqueda.terminos),
     contratosPorExpediente(elegidos.map((c) => ({ nuAnnExp: c.a, nuSecExp: c.s }))).catch(() => new Map<string, string[]>()),
   ]);
   const principales = [...new Set([...contratos.values()].map((l) => l[0]).filter(Boolean))].slice(0, 30);
-  const nombres = await nombresDeContratos(principales).catch(() => new Map<string, { nombre: string; menciones: number }>());
+  const nombres = await nombresDeContratos(principales).catch(() => new Map<string, NombreContrato>());
 
   const grupos = agruparPorContrato(filas, contratos, nombres);
   return { texto: textoGrupos(grupos), grupos, agrupados: elegidos.length, soloDirectos };

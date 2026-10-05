@@ -1,6 +1,6 @@
 import { QueryTypes } from 'sequelize';
 import { appSequelize } from '../../../compartido/config/appDatabase';
-import { leerNumero } from '../../../compartido/rag/configService';
+import { leerConfig, leerNumero } from '../../../compartido/rag/configService';
 import type { PlanConsulta } from '../../../compartido/rag/planificadorService';
 import { clave, estadoVivoExpedientes } from './enriquecimientoSgdService';
 import type { FiltroAcceso } from './retrievalService';
@@ -18,6 +18,12 @@ import type { FiltroAcceso } from './retrievalService';
  * - Ranking por rareza (IDF): una coincidencia del término que aparece en pocos expedientes pesa
  *   más que la del término frecuente. Sin esto, "controversia + Huancavelica" ponía arriba informes
  *   con la obra en el asunto y la cláusula estándar de "solución de controversias" en el contrato.
+ * - Calibración (Fase 6): cada término se busca con sus sinónimos (`chat.sinonimos`: "alquiler" ↔
+ *   "arrendamiento") y un fragmento con una frase de cláusula estándar (`chat.frases_estandar`:
+ *   "solución de controversias") no cuenta como coincidencia del término que la frase contiene.
+ * - Dentro del nivel 2, primero los expedientes con algún fragmento que contiene TODOS los términos
+ *   juntos: "controversia" y "Junín" en el mismo párrafo es evidencia; en documentos distintos de un
+ *   informe que repasa diez obras, no (medido: 33 de 96 en Junín los tienen juntos).
  * - Los filtros del plan (remitente, emisor, dependencia, tipo, fechas) se exigen a nivel de
  *   expediente: basta un documento que los cumpla.
  * - Permisos: el mismo `FiltroAcceso` del chat, siempre sobre `rag.documento`.
@@ -38,6 +44,8 @@ export interface CandidatoExpediente {
   /** Máscaras de bits: qué términos (por índice) coinciden en metadatos / en contenido. */
   bm: number;
   bc: number;
+  /** Fragmentos que contienen todos los términos juntos (solo con 2+ términos; ausente = 0). */
+  j?: number;
 }
 
 export type ModoTerminos = 'todos' | 'alguno' | 'sin_terminos';
@@ -48,7 +56,11 @@ export interface ResultadoBusquedaExpedientes {
   nivel1: number;
   nivel2: number;
   modoTerminos: ModoTerminos;
+  /** Etiquetas de los términos (lo que se muestra). */
   terminos: string[];
+  /** Lo que se buscó por término, con sus alternativas ("alquiler|arrendamiento"). Ausente en
+   *  listados guardados antes de la Fase 6: ahí equivale a `terminos`. */
+  consultas?: string[];
   /** Documentos sin expediente que también coinciden en metadatos (no se listan). */
   sinExpediente: number;
   /** El total superó el tope y la lista guardada está truncada. */
@@ -61,17 +73,45 @@ export interface ParametrosBusqueda {
   topeDocsPorTermino: number;
   mesesActual: number;
   maxCandidatos: number;
+  /** Término (sin tildes, minúsculas) → alternativas. */
+  sinonimos: Record<string, string[]>;
+  frasesEstandar: string[];
 }
 
+/** JSON de `app.config`; ante una clave ausente o un JSON inválido, el valor por defecto (una
+ *  coma de más al editar desde la BD no debe tumbar el chat). */
+async function leerJson<T>(clave: string, valido: (v: unknown) => v is T, porDefecto: T): Promise<T> {
+  try {
+    const crudo = await leerConfig(clave);
+    if (!crudo) return porDefecto;
+    const valor: unknown = JSON.parse(crudo);
+    return valido(valor) ? valor : porDefecto;
+  } catch {
+    return porDefecto;
+  }
+}
+
+const esListaTextos = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
+const esMapaSinonimos = (v: unknown): v is Record<string, string[]> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) && Object.values(v).every(esListaTextos);
+
 export async function leerParametros(): Promise<ParametrosBusqueda> {
-  const [pesoAsunto, pesoContenido, topeDocsPorTermino, mesesActual, maxCandidatos] = await Promise.all([
-    leerNumero('chat.peso_asunto', 3),
-    leerNumero('chat.peso_contenido', 1),
-    leerNumero('chat.tope_docs_por_termino', 5),
-    leerNumero('chat.meses_actual', 3),
-    leerNumero('chat.max_candidatos', 1000),
-  ]);
-  return { pesoAsunto, pesoContenido, topeDocsPorTermino, mesesActual, maxCandidatos };
+  const [pesoAsunto, pesoContenido, topeDocsPorTermino, mesesActual, maxCandidatos, sinonimos, frasesEstandar] =
+    await Promise.all([
+      leerNumero('chat.peso_asunto', 3),
+      leerNumero('chat.peso_contenido', 1),
+      leerNumero('chat.tope_docs_por_termino', 5),
+      leerNumero('chat.meses_actual', 3),
+      leerNumero('chat.max_candidatos', 1000),
+      leerJson('chat.sinonimos', esMapaSinonimos, {}),
+      leerJson('chat.frases_estandar', esListaTextos, []),
+    ]);
+  const sinonimosNormalizados: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(sinonimos)) sinonimosNormalizados[normal(k).trim()] = v;
+  return {
+    pesoAsunto, pesoContenido, topeDocsPorTermino, mesesActual, maxCandidatos,
+    sinonimos: sinonimosNormalizados, frasesEstandar,
+  };
 }
 
 const RE_FECHA = /^\d{4}-\d{2}-\d{2}$/;
@@ -85,7 +125,9 @@ const PALABRAS_VACIAS = new Set([
   'expedientes', 'documento', 'documentos', 'relacionado', 'relacionados', 'relacionadas', 'sobre', 'obra',
   'obras', 'proyecto', 'proyectos', 'para', 'por', 'con', 'del', 'los', 'las', 'una', 'uno', 'unos', 'unas',
   'esta', 'estan', 'este', 'estos', 'hay', 'tiene', 'tienen', 'contengan', 'contenga', 'hablan', 'habla',
-  'ultimo', 'ultima', 'actual', 'actualmente', 'base', 'datos', 'favor',
+  'ultimo', 'ultima', 'ultimos', 'ultimas', 'actual', 'actualmente', 'base', 'datos', 'favor', 'mas',
+  'reciente', 'recientes', 'presento', 'presentaron', 'presentado', 'presentados', 'envio', 'enviaron',
+  'enviado', 'remitio', 'remitieron', 'remitido', 'participo', 'participaron', 'empresa', 'entidad',
 ]);
 
 /**
@@ -100,14 +142,35 @@ export function terminosDeConsulta(consulta: string): string[] {
     .filter((w) => w.length >= 3 && !PALABRAS_VACIAS.has(w));
 }
 
+const soloLetras = (w: string) => normal(w).replace(/[^a-z0-9ñ]/g, '');
+const esGenerica = (w: string) => soloLetras(w).length < 2 || PALABRAS_VACIAS.has(soloLetras(w));
+
 /**
- * Términos únicos (sin distinguir mayúsculas/tildes): los obligatorios; si no hay, los opcionales;
- * si tampoco, las palabras de la consulta.
+ * Quita las palabras genéricas de los extremos de un término: "proyectos in house" → "in house",
+ * "obra Junín" → "Junín". Las del medio se conservan ("alquiler de computadoras"). `null` si no queda
+ * nada. El planificador las conserva a veces aunque el prompt se lo prohíbe, y cuestan caro: medido,
+ * "proyectos" + "in house" sumaba 186 expedientes de nivel 2 y 4,5 s de búsqueda.
+ */
+export function limpiarTermino(termino: string): string | null {
+  const palabras = termino.trim().split(/\s+/).filter(Boolean);
+  let inicio = 0;
+  let fin = palabras.length;
+  while (inicio < fin && esGenerica(palabras[inicio])) inicio++;
+  while (fin > inicio && esGenerica(palabras[fin - 1])) fin--;
+  return inicio < fin ? palabras.slice(inicio, fin).join(' ') : null;
+}
+
+/**
+ * Términos únicos (sin distinguir mayúsculas/tildes) y sin palabras genéricas: los obligatorios; si
+ * no queda ninguno, los opcionales; si tampoco, las palabras de la consulta.
  */
 export function terminosDelPlan(plan: PlanConsulta): string[] {
-  const fuente = plan.terminos.obligatorios.length > 0
-    ? plan.terminos.obligatorios
-    : plan.terminos.opcionales.length > 0 ? plan.terminos.opcionales : terminosDeConsulta(plan.consulta);
+  const limpios = (lista: string[]) => lista.map(limpiarTermino).filter((t): t is string => t !== null);
+  const obligatorios = limpios(plan.terminos.obligatorios);
+  const opcionales = limpios(plan.terminos.opcionales);
+  const fuente = obligatorios.length > 0
+    ? obligatorios
+    : opcionales.length > 0 ? opcionales : terminosDeConsulta(plan.consulta);
   const vistos = new Set<string>();
   const unicos: string[] = [];
   for (const t of fuente) {
@@ -120,34 +183,112 @@ export function terminosDelPlan(plan: PlanConsulta): string[] {
   return unicos.slice(0, 6);
 }
 
+export interface TerminosPreparados {
+  /** Cómo se muestran: "alquiler". */
+  etiquetas: string[];
+  /** Qué se busca, para `rag.tsq_alternativas`: "alquiler|arrendamiento". */
+  consultas: string[];
+  /** Frases estándar que no cuentan como coincidencia de ese término, separadas por "|" ('' = ninguna). */
+  exclusiones: string[];
+}
+
+const MAX_ALTERNATIVAS = 4;
+
+/** Raíz aproximada de una palabra para saber si una frase estándar la contiene: "controversia" →
+ *  "controvers" (cubre "controversias"). */
+const raiz = (palabra: string) => palabra.slice(0, Math.max(4, palabra.length - 2));
+
+/**
+ * Alternativas (el término + sinónimos de `chat.sinonimos` + los que propuso el planificador) y
+ * frases estándar de cada término. Pura: se prueba sin BD.
+ */
+export function prepararTerminos(
+  terminos: string[],
+  plan: PlanConsulta | null,
+  p: Pick<ParametrosBusqueda, 'sinonimos' | 'frasesEstandar'>,
+): TerminosPreparados {
+  const delPlan = new Map<string, string[]>();
+  for (const [k, v] of Object.entries(plan?.terminos.sinonimos ?? {})) delPlan.set(normal(k).trim(), v);
+  const sinBarra = (t: string) => t.replace(/\|/g, ' ').trim();
+
+  const consultas: string[] = [];
+  const exclusiones: string[] = [];
+  for (const t of terminos) {
+    const n = normal(t).trim();
+    const vistas = new Set<string>();
+    const alternativas: string[] = [];
+    for (const a of [t, ...(p.sinonimos[n] ?? []), ...(delPlan.get(n) ?? [])].map(sinBarra)) {
+      const na = normal(a);
+      if (na.length >= 2 && !vistas.has(na) && alternativas.length < MAX_ALTERNATIVAS) {
+        vistas.add(na);
+        alternativas.push(a);
+      }
+    }
+    consultas.push(alternativas.join('|'));
+
+    // Solo alternativas de una palabra: una frase estándar rara vez contiene un término compuesto.
+    const raices = [...vistas].filter((a) => !a.includes(' ')).map(raiz);
+    exclusiones.push(p.frasesEstandar
+      .filter((f) => raices.some((r) => normal(f).includes(r)))
+      .map(sinBarra)
+      .join('|'));
+  }
+  return { etiquetas: terminos, consultas, exclusiones };
+}
+
 interface FilaTermino { i: string; ann: string | null; sec: string | null; docs: number }
 
-async function hitsMetadatos(terminos: string[], filtro: FiltroAcceso): Promise<FilaTermino[]> {
+async function hitsMetadatos(consultas: string[], filtro: FiltroAcceso): Promise<FilaTermino[]> {
   return appSequelize.query<FilaTermino>(
     `SELECT t.i::text AS i, d.nu_ann_exp AS ann, d.nu_sec_exp AS sec, count(*)::int AS docs
        FROM unnest($1::text[]) WITH ORDINALITY AS t(termino, i)
-      CROSS JOIN LATERAL phraseto_tsquery('es_unaccent', t.termino) AS q
+      CROSS JOIN LATERAL rag.tsq_alternativas(t.termino) AS q
        JOIN rag.documento d ON d.tsv_meta @@ q
       WHERE d.vigente AND ($2::text IS NULL OR d.co_dep_emi = $2)
       GROUP BY 1, 2, 3`,
-    { bind: [terminos, filtro.coDependencia], type: QueryTypes.SELECT },
+    { bind: [consultas, filtro.coDependencia], type: QueryTypes.SELECT },
   );
 }
 
-async function hitsContenido(terminos: string[], filtro: FiltroAcceso): Promise<FilaTermino[]> {
+async function hitsContenido(consultas: string[], exclusiones: string[], filtro: FiltroAcceso): Promise<FilaTermino[]> {
   // Cuenta FRAGMENTOS, no documentos: un contrato con la cláusula estándar de "solución de
   // controversias" la menciona una vez por documento; un expediente que trata una controversia, en
-  // muchos fragmentos. Con documentos, ambos empataban.
+  // muchos fragmentos. Con documentos, ambos empataban. Desde la Fase 6 los fragmentos con esa
+  // cláusula ni siquiera cuentan para "controversia" (`z.x` = frases estándar del término).
   return appSequelize.query<FilaTermino>(
     `SELECT t.i::text AS i, d.nu_ann_exp AS ann, d.nu_sec_exp AS sec, count(*)::int AS docs
-       FROM unnest($1::text[]) WITH ORDINALITY AS t(termino, i)
-      CROSS JOIN LATERAL phraseto_tsquery('es_unaccent', t.termino) AS q
-       JOIN rag.chunk c ON c.tsv @@ q
+       FROM unnest($1::text[], $3::text[]) WITH ORDINALITY AS t(termino, excl, i)
+      CROSS JOIN LATERAL (SELECT rag.tsq_alternativas(t.termino) AS q,
+                                 rag.tsq_frases(NULLIF(t.excl, '')) AS x) z
+       JOIN rag.chunk c ON c.tsv @@ z.q
        JOIN rag.documento d ON d.contenido_sha256 = c.sha256 AND d.vigente
       WHERE d.nu_ann_exp IS NOT NULL AND ($2::text IS NULL OR d.co_dep_emi = $2)
+        AND NOT coalesce(c.tsv @@ z.x, false)
       GROUP BY 1, 2, 3`,
-    { bind: [terminos, filtro.coDependencia], type: QueryTypes.SELECT },
+    { bind: [consultas, filtro.coDependencia, exclusiones], type: QueryTypes.SELECT },
   );
+}
+
+/** Fragmentos por expediente que contienen TODOS los términos (con 2 o más). Las frases estándar de
+ *  cualquier término excluyen el fragmento, igual que en `hitsContenido`. */
+async function hitsJuntos(consultas: string[], exclusiones: string[], filtro: FiltroAcceso): Promise<Map<string, number>> {
+  const resultado = new Map<string, number>();
+  if (consultas.length < 2) return resultado;
+  const filas = await appSequelize.query<{ ann: string; sec: string; n: number }>(
+    `WITH t AS (SELECT rag.tsq_alternativas(x) AS q FROM unnest($1::text[]) AS x),
+          todos AS (SELECT string_agg('(' || q::text || ')', ' & ')::tsquery AS q, bool_and(q IS NOT NULL) AS ok FROM t)
+     SELECT d.nu_ann_exp AS ann, d.nu_sec_exp AS sec, count(*)::int AS n
+       FROM todos
+      CROSS JOIN LATERAL (SELECT rag.tsq_frases(NULLIF($3, '')) AS x) z
+       JOIN rag.chunk c ON c.tsv @@ todos.q
+       JOIN rag.documento d ON d.contenido_sha256 = c.sha256 AND d.vigente
+      WHERE todos.ok AND d.nu_ann_exp IS NOT NULL AND ($2::text IS NULL OR d.co_dep_emi = $2)
+        AND NOT coalesce(c.tsv @@ z.x, false)
+      GROUP BY 1, 2`,
+    { bind: [consultas, filtro.coDependencia, exclusiones.filter(Boolean).join('|')], type: QueryTypes.SELECT },
+  );
+  for (const f of filas) resultado.set(clave(f.ann, f.sec), Number(f.n));
+  return resultado;
 }
 
 /**
@@ -224,6 +365,7 @@ export function combinarCandidatos(
   p: Pick<ParametrosBusqueda, 'pesoAsunto' | 'pesoContenido' | 'topeDocsPorTermino'>,
   dentroDe: Set<string> | null,
   totalExpedientes = 0,
+  juntos: Map<string, number> = new Map(),
 ): { candidatos: CandidatoExpediente[]; modo: ModoTerminos; sinExpediente: number } {
   // Sin términos: los candidatos son exactamente los que cumplen los filtros.
   if (nTerminos === 0) {
@@ -289,7 +431,7 @@ export function combinarCandidatos(
         puntaje += idf[i] * (p.pesoAsunto * amortiguar(v.meta[i]) + p.pesoContenido * amortiguar(v.cont[i]));
       }
       puntajes.set(k, puntaje);
-      return {
+      const candidato: CandidatoExpediente = {
         a, s,
         n: (enMeta === nTerminos ? 1 : 2) as 1 | 2,
         dm: v.meta.reduce((x, y) => x + tope(y), 0),
@@ -299,11 +441,16 @@ export function combinarCandidatos(
         bm,
         bc,
       };
+      const j = juntos.get(k) ?? 0;
+      if (j > 0) candidato.j = j;
+      return candidato;
     });
 
   const puntaje = (c: CandidatoExpediente) => puntajes.get(clave(c.a, c.s)) ?? 0;
+  // En el nivel 2, los que tienen los términos juntos en un fragmento van antes (sin importar el puntaje).
+  const sinJuntos = (c: CandidatoExpediente) => (c.n === 2 && !c.j ? 1 : 0);
   const orden = (x: CandidatoExpediente, y: CandidatoExpediente) =>
-    x.n - y.n || puntaje(y) - puntaje(x) || (y.a + y.s).localeCompare(x.a + x.s);
+    x.n - y.n || sinJuntos(x) - sinJuntos(y) || puntaje(y) - puntaje(x) || (y.a + y.s).localeCompare(x.a + x.s);
 
   const todos = evaluados.filter((c) => c.t === nTerminos).sort(orden);
   if (todos.length > 0 || nTerminos === 1) return { candidatos: todos, modo: 'todos', sinExpediente };
@@ -320,18 +467,20 @@ export async function buscarExpedientesPorPlan(
   opciones: { dentroDe?: { nuAnnExp: string; nuSecExp: string }[]; soloActuales?: boolean } = {},
 ): Promise<ResultadoBusquedaExpedientes> {
   const terminos = terminosDelPlan(plan);
+  const preparados = prepararTerminos(terminos, plan, parametros);
   const hayFiltros = Boolean(plan.filtros.remitente || plan.filtros.emisor || plan.filtros.dependencia
     || plan.filtros.tipoDoc || plan.filtros.desde || plan.filtros.hasta);
 
   const vacio: ResultadoBusquedaExpedientes = {
     candidatos: [], total: 0, nivel1: 0, nivel2: 0, modoTerminos: 'todos', terminos,
-    sinExpediente: 0, truncado: false,
+    consultas: preparados.consultas, sinExpediente: 0, truncado: false,
   };
   if (terminos.length === 0 && !hayFiltros) return vacio;
 
-  const [meta, contenido, filtros, universo] = await Promise.all([
-    terminos.length > 0 ? hitsMetadatos(terminos, filtro) : Promise.resolve([]),
-    terminos.length > 0 ? hitsContenido(terminos, filtro) : Promise.resolve([]),
+  const [meta, contenido, juntos, filtros, universo] = await Promise.all([
+    terminos.length > 0 ? hitsMetadatos(preparados.consultas, filtro) : Promise.resolve([]),
+    terminos.length > 0 ? hitsContenido(preparados.consultas, preparados.exclusiones, filtro) : Promise.resolve([]),
+    hitsJuntos(preparados.consultas, preparados.exclusiones, filtro),
     aplicarFiltros(plan, filtro),
     appSequelize.query<{ n: number }>('SELECT count(*)::int AS n FROM rag.expediente', { type: QueryTypes.SELECT }),
   ]);
@@ -339,7 +488,7 @@ export async function buscarExpedientesPorPlan(
   const dentroDe = opciones.dentroDe ? new Set(opciones.dentroDe.map((d) => clave(d.nuAnnExp, d.nuSecExp))) : null;
   const combinados = combinarCandidatos(
     terminos.length, meta, contenido, filtros.permitidos, filtros.remitentes, parametros, dentroDe,
-    Number(universo[0]?.n ?? 0),
+    Number(universo[0]?.n ?? 0), juntos,
   );
   let candidatos = combinados.candidatos;
 
@@ -361,6 +510,7 @@ export async function buscarExpedientesPorPlan(
     nivel2: candidatos.length - nivel1,
     modoTerminos: combinados.modo,
     terminos,
+    consultas: preparados.consultas,
     sinExpediente: combinados.sinExpediente,
     truncado: candidatos.length > parametros.maxCandidatos,
   };
@@ -397,14 +547,17 @@ export function etiquetaCoincidencia(c: CandidatoExpediente, terminos: string[])
   if (c.r) partes.push('remitente');
   if (enMeta.length > 0) partes.push(`asunto: ${enMeta.join(', ')}`);
   if (soloContenido.length > 0) partes.push(`contenido: ${soloContenido.join(', ')}`);
+  if (c.j) partes.push(`juntos en ${c.j} ${c.j === 1 ? 'fragmento' : 'fragmentos'}`);
   return partes.join(' · ') || 'filtros';
 }
 
+/** `consultas` = lo que se buscó por término (con alternativas); por defecto, las etiquetas. */
 export async function detallePagina(
   candidatos: CandidatoExpediente[],
   terminos: string[],
   filtro: FiltroAcceso,
   mesesActual: number,
+  consultas: string[] = terminos,
 ): Promise<FilaExpedienteChat[]> {
   if (candidatos.length === 0) return [];
   const pares = candidatos.map((c) => ({ nuAnnExp: c.a, nuSecExp: c.s }));
@@ -416,7 +569,7 @@ export async function detallePagina(
     }>(
       `WITH pares AS (SELECT unnest($1::text[]) AS ann, unnest($2::text[]) AS sec),
             q AS (
-              SELECT NULLIF(string_agg(NULLIF(phraseto_tsquery('es_unaccent', t)::text, ''), ' | '), '')::tsquery AS q
+              SELECT NULLIF(string_agg(NULLIF(rag.tsq_alternativas(t)::text, ''), ' | '), '')::tsquery AS q
                 FROM unnest($3::text[]) AS t
             )
        SELECT d.nu_ann_exp AS ann, d.nu_sec_exp AS sec, e.numero_sgd AS numero,
@@ -434,7 +587,7 @@ export async function detallePagina(
         WHERE d.vigente AND ($4::text IS NULL OR d.co_dep_emi = $4)
         GROUP BY d.nu_ann_exp, d.nu_sec_exp, e.numero_sgd`,
       {
-        bind: [pares.map((p) => p.nuAnnExp), pares.map((p) => p.nuSecExp), terminos, filtro.coDependencia],
+        bind: [pares.map((p) => p.nuAnnExp), pares.map((p) => p.nuSecExp), consultas, filtro.coDependencia],
         type: QueryTypes.SELECT,
       },
     ),

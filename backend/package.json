@@ -9,7 +9,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "eval:planificador": "ts-node --transpile-only src/scripts/evaluarPlanificador.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

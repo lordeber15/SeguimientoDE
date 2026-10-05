@@ -73,6 +73,8 @@ export function textoListado(
   estados?: MetaListado['estados'],
   /** Tamaño del conjunto anterior si se buscó dentro de él ("de esos…"). */
   dentroDe?: number,
+  /** Tamaño del conjunto anterior si se buscó en él SIN resultados y se pasó a toda la base. */
+  anteriorSinResultados?: number,
 ): string {
   const criterio = descripcionCriterio(plan, b.terminos, b.total);
   const actual = plan.filtros.actual ? ` con movimiento en los últimos ${plural(mesesActual, 'mes', 'meses')}` : '';
@@ -83,7 +85,11 @@ export function textoListado(
   }
 
   const verbo = intencion === 'contar' ? 'Hay' : 'Encontré';
-  const ambito = dentroDe ? `Dentro de los ${plural(dentroDe, 'expediente', 'expedientes')} del listado anterior, ` : '';
+  const ambito = dentroDe
+    ? `Dentro de los ${plural(dentroDe, 'expediente', 'expedientes')} del listado anterior, `
+    : anteriorSinResultados
+      ? `Ninguno de los ${plural(anteriorSinResultados, 'expediente', 'expedientes')} del listado anterior cumple esto; en toda la base `
+      : '';
   const cabeza = ambito
     ? `${ambito}${verbo.toLowerCase()} ${plural(b.total, 'expediente', 'expedientes')}${criterio}${actual}.`
     : `${verbo} ${plural(b.total, 'expediente', 'expedientes')}${criterio}${actual}.`;
@@ -117,10 +123,20 @@ export async function ejecutarListado(
   opciones: { dentroDe?: { nuAnnExp: string; nuSecExp: string }[] } = {},
 ): Promise<RespuestaListado | null> {
   const parametros = await leerParametros();
-  const resultado = await buscarExpedientesPorPlan(plan, filtro, parametros, {
-    dentroDe: opciones.dentroDe,
+  let dentroDe = opciones.dentroDe && opciones.dentroDe.length > 0 ? opciones.dentroDe : undefined;
+  let resultado = await buscarExpedientesPorPlan(plan, filtro, parametros, {
+    dentroDe,
     soloActuales: plan.filtros.actual,
   });
+  // Red de seguridad del contexto (Fase 6): el planificador a veces marca como continuación una
+  // pregunta que cambia de obra ("¿y los de Huancavelica?" tras Junín). Si dentro del listado
+  // anterior no hay nada, se busca en toda la base y la frase lo dice.
+  let anteriorSinResultados: number | undefined;
+  if (resultado.total === 0 && dentroDe) {
+    anteriorSinResultados = dentroDe.length;
+    dentroDe = undefined;
+    resultado = await buscarExpedientesPorPlan(plan, filtro, parametros, { soloActuales: plan.filtros.actual });
+  }
   if (resultado.total === 0) return null;
 
   const { candidatos, ...busqueda } = resultado;
@@ -146,7 +162,7 @@ export async function ejecutarListado(
   const meta: MetaListado = { version: 1, plan, busqueda, expedientes: candidatos, estados };
   const tabla = await paginaDesdeMeta(meta, 1, filtro);
   return {
-    texto: textoListado(intencion, plan, busqueda, parametros.mesesActual, estados, opciones.dentroDe?.length),
+    texto: textoListado(intencion, plan, busqueda, parametros.mesesActual, estados, dentroDe?.length, anteriorSinResultados),
     tabla,
     meta,
   };
@@ -157,7 +173,9 @@ export async function paginaDesdeMeta(meta: MetaListado, pagina: number, filtro:
   const parametros = await leerParametros();
   const desde = (pagina - 1) * FILAS_POR_PAGINA;
   const tramo = meta.expedientes.slice(desde, desde + FILAS_POR_PAGINA);
-  const filas = await detallePagina(tramo, meta.busqueda.terminos, filtro, parametros.mesesActual);
+  const filas = await detallePagina(
+    tramo, meta.busqueda.terminos, filtro, parametros.mesesActual, meta.busqueda.consultas ?? meta.busqueda.terminos,
+  );
   return {
     filas,
     pagina,

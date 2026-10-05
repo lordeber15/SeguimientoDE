@@ -1,6 +1,7 @@
 import { QueryTypes } from 'sequelize';
 import { appSequelize } from '../../../compartido/config/appDatabase';
 import { DB_SCHEMA, sequelize } from '../config/database';
+import type { TerminosPreparados } from './busquedaExpedientesService';
 import { clave } from './enriquecimientoSgdService';
 import type { FiltroAcceso } from './retrievalService';
 
@@ -67,12 +68,20 @@ export interface DocumentoEncontrado {
 
 /**
  * Documentos de los expedientes `pares` ordenados por cuántos términos cumplen (en metadatos o en
- * su contenido) y, a igualdad, por fecha de emisión descendente. Sin términos, solo por fecha.
+ * su contenido); a igualdad, primero los que los tienen JUNTOS (todos en sus metadatos o todos en un
+ * mismo fragmento), luego los que tienen más términos en el asunto (un documento CUYO TEMA es la
+ * controversia antes que un informe mensual que la menciona) y por último por fecha de emisión
+ * descendente. Sin términos, solo por fecha.
  * "El último documento de controversia de la obra X" = el más reciente entre los que mejor cumplen.
+ * Sin el criterio "juntos" ganaba la carta mensual de pago de una consultoría que nombra la obra en
+ * una página y "controversia" en otra (Fase 6).
+ * Un término se cumple con cualquiera de sus alternativas; en el contenido no cuentan los fragmentos
+ * con una frase estándar de ese término (la cláusula "solución de controversias" de un contrato no
+ * hace a ese contrato "un documento de controversia").
  */
 export async function documentosRecientes(
   pares: Par[],
-  terminos: string[],
+  terminos: Pick<TerminosPreparados, 'consultas' | 'exclusiones'>,
   filtro: FiltroAcceso,
   limite: number,
 ): Promise<DocumentoEncontrado[]> {
@@ -84,9 +93,15 @@ export async function documentosRecientes(
   }>(
     `WITH pares AS (SELECT unnest($1::text[]) AS ann, unnest($2::text[]) AS sec),
           q AS (
-            SELECT phraseto_tsquery('es_unaccent', t) AS q
-              FROM unnest($3::text[]) AS t
-             WHERE phraseto_tsquery('es_unaccent', t)::text <> ''
+            SELECT z.q, rag.tsq_frases(NULLIF(t.excl, '')) AS x
+              FROM unnest($3::text[], $6::text[]) AS t(consulta, excl)
+             CROSS JOIN LATERAL rag.tsq_alternativas(t.consulta) AS z(q)
+             WHERE z.q IS NOT NULL
+          ),
+          todos AS (
+            SELECT string_agg('(' || q::text || ')', ' & ')::tsquery AS q,
+                   rag.tsq_frases(NULLIF(array_to_string($6::text[], '|'), '')) AS x
+              FROM q
           )
      SELECT d.nu_ann, d.nu_emi, d.nu_ann_exp AS ann, d.nu_sec_exp AS sec, e.numero_sgd AS numero,
             d.titulo, d.asunto, to_char(d.fe_emi, 'YYYY-MM-DD') AS fecha,
@@ -94,16 +109,27 @@ export async function documentosRecientes(
             d.remitente_externo AS remitente,
             (SELECT count(*)::int FROM q
               WHERE d.tsv_meta @@ q.q
-                 OR EXISTS (SELECT 1 FROM rag.chunk c WHERE c.sha256 = d.contenido_sha256 AND c.tsv @@ q.q)
-            ) AS terminos
+                 OR EXISTS (SELECT 1 FROM rag.chunk c
+                             WHERE c.sha256 = d.contenido_sha256 AND c.tsv @@ q.q
+                               AND NOT coalesce(c.tsv @@ q.x, false))
+            ) AS terminos,
+            (SELECT coalesce(d.tsv_meta @@ todos.q
+                       OR EXISTS (SELECT 1 FROM rag.chunk c
+                                   WHERE c.sha256 = d.contenido_sha256 AND c.tsv @@ todos.q
+                                     AND NOT coalesce(c.tsv @@ todos.x, false)), false)::int
+               FROM todos) AS juntos,
+            (SELECT count(*)::int FROM q WHERE d.tsv_meta @@ q.q) AS en_meta
        FROM rag.documento d
        JOIN pares p ON p.ann = d.nu_ann_exp AND p.sec = d.nu_sec_exp
        LEFT JOIN rag.expediente e ON e.nu_ann_exp = d.nu_ann_exp AND e.nu_sec_exp = d.nu_sec_exp
       WHERE d.vigente AND ($4::text IS NULL OR d.co_dep_emi = $4)
-      ORDER BY terminos DESC, d.fe_emi DESC NULLS LAST, d.nu_emi DESC
+      ORDER BY terminos DESC, juntos DESC, en_meta DESC, d.fe_emi DESC NULLS LAST, d.nu_emi DESC
       LIMIT $5`,
     {
-      bind: [pares.map((p) => p.nuAnnExp), pares.map((p) => p.nuSecExp), terminos, filtro.coDependencia, limite],
+      bind: [
+        pares.map((p) => p.nuAnnExp), pares.map((p) => p.nuSecExp), terminos.consultas, filtro.coDependencia, limite,
+        terminos.exclusiones,
+      ],
       type: QueryTypes.SELECT,
     },
   );
@@ -150,6 +176,34 @@ export async function indicacionesDocumento(nuAnn: string, nuEmi: string, filtro
 /** "Contrato N° 341-2025-MCEBS" — el número tolera espacios alrededor de los guiones (OCR). */
 const RE_CONTRATO = String.raw`contrato\s+n[°º.o]*\s*(\d{1,4}\s*-\s*\d{4}\s*-\s*[a-z]+)`;
 
+export type TipoContrato = 'obra' | 'consultoria' | 'servicio' | 'adquisicion' | null;
+
+const sinTildes = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+/**
+ * Qué contrata. Primero el texto entre el número y el nombre entre comillas ("…, para la ejecución de
+ * la obra “…”", "…, Consultoría Individual “…”"); si no dice nada, cómo empieza el nombre ("SERVICIO
+ * DE CONSULTORÍA…", "Adquisición de equipos…", "Mejoramiento de los servicios…" = proyecto de
+ * inversión). Una consultoría no es una obra aunque salga al preguntar "¿qué obras…?" (Fase 5:
+ * "093-2026-MCEBS: Especialista temático en licenciamiento").
+ */
+export function tipoContrato(descriptor: string | null, nombre: string | null = null): TipoContrato {
+  const d = sinTildes(descriptor ?? '');
+  if (/consultor/.test(d)) return 'consultoria';
+  if (/\bobra\b|ejecucion/.test(d)) return 'obra';
+  if (/adquisicion|suministro/.test(d)) return 'adquisicion';
+  if (/servicio|arrendamiento/.test(d)) return 'servicio';
+
+  const n = sinTildes(nombre ?? '');
+  if (/^(servicio de )?consultor/.test(n)) return 'consultoria';
+  if (/^(adquisicion|suministro)/.test(n)) return 'adquisicion';
+  if (/^(servicio|arrendamiento)/.test(n)) return 'servicio';
+  if (/^(construccion|creacion|mejoramiento|ampliacion|rehabilitacion|recuperacion|instalacion|remodelacion)/.test(n)) return 'obra';
+  return null;
+}
+
+export interface NombreContrato { nombre: string; menciones: number; tipo: TipoContrato }
+
 /**
  * Contratos más citados en el contenido de cada expediente. Los asuntos de controversia casi nunca
  * nombran la obra ("Notificación de controversia N 02…"), pero sus documentos citan el contrato una
@@ -158,10 +212,12 @@ const RE_CONTRATO = String.raw`contrato\s+n[°º.o]*\s*(\d{1,4}\s*-\s*\d{4}\s*-\
 export async function contratosPorExpediente(pares: Par[], porExpediente = 3): Promise<Map<string, string[]>> {
   const resultado = new Map<string, string[]>();
   if (pares.length === 0) return resultado;
+  // El número se normaliza sin ceros a la izquierda: "0315-2025-MCEBS" y "315-2025-MCEBS" son el mismo
+  // contrato (en la Fase 5 quedaban como dos grupos).
   const filas = await appSequelize.query<{ ann: string; sec: string; contratos: string[] }>(
     `WITH m AS (
        SELECT d.nu_ann_exp AS ann, d.nu_sec_exp AS sec,
-              upper(regexp_replace(x[1], '\\s+', '', 'g')) AS contrato
+              regexp_replace(upper(regexp_replace(x[1], '\\s+', '', 'g')), '^0+([0-9])', '\\1') AS contrato
          FROM rag.documento d
          JOIN (SELECT unnest($1::text[]) AS ann, unnest($2::text[]) AS sec) p
            ON p.ann = d.nu_ann_exp AND p.sec = d.nu_sec_exp
@@ -186,16 +242,17 @@ export async function contratosPorExpediente(pares: Par[], porExpediente = 3): P
 const MUESTRA_NOMBRE_CONTRATO = 80;
 const TTL_NOMBRES_MS = 60 * 60 * 1000;
 /** El nombre del proyecto de un contrato no cambia: se memoriza por proceso durante una hora. */
-const cacheNombres = new Map<string, { valor: { nombre: string; menciones: number } | null; hasta: number }>();
+const cacheNombres = new Map<string, { valor: NombreContrato | null; hasta: number }>();
 
 /**
  * Nombre del proyecto/obra de cada contrato: el texto entre comillas que sigue al número
  * ("…Contrato N° 352-2025-MCE\\, para la ejecución de la obra “Construcción y Equipamiento del…”"),
  * el más repetido en una muestra de fragmentos. `menciones` = fragmentos que citan el contrato:
  * con decenas es confiable; con menos de 10, dudoso (el nombre puede venir de otro documento).
+ * `contratos` normalizados como en `contratosPorExpediente`; se buscan también con ceros a la izquierda.
  */
-export async function nombresDeContratos(contratos: string[]): Promise<Map<string, { nombre: string; menciones: number }>> {
-  const resultado = new Map<string, { nombre: string; menciones: number }>();
+export async function nombresDeContratos(contratos: string[]): Promise<Map<string, NombreContrato>> {
+  const resultado = new Map<string, NombreContrato>();
   const ahora = Date.now();
   const pendientes: string[] = [];
   for (const c of contratos) {
@@ -208,25 +265,35 @@ export async function nombresDeContratos(contratos: string[]): Promise<Map<strin
   }
   if (pendientes.length === 0) return resultado;
 
-  const filas = await appSequelize.query<{ contrato: string; nombre: string | null; menciones: number }>(
-    `SELECT k.contrato, t.nombre,
-            (SELECT count(*)::int FROM rag.chunk c WHERE c.tsv @@ phraseto_tsquery('es_unaccent', k.contrato)) AS menciones
+  // Variantes del número para el FTS ('093' y '93' son lexemas distintos): tal cual, y rellenado
+  // con ceros a 3 y a 4 dígitos.
+  const filas = await appSequelize.query<{ contrato: string; nombre: string | null; descriptor: string | null; menciones: number }>(
+    `SELECT k.contrato, t.nombre, t.descriptor,
+            (SELECT count(*)::int FROM rag.chunk c WHERE c.tsv @@ v.q) AS menciones
        FROM unnest($1::text[]) AS k(contrato)
+      CROSS JOIN LATERAL (
+        SELECT split_part(k.contrato, '-', 1) AS num, substr(k.contrato, strpos(k.contrato, '-')) AS resto
+      ) n
+      CROSS JOIN LATERAL (
+        SELECT phraseto_tsquery('es_unaccent', k.contrato)
+            || phraseto_tsquery('es_unaccent', lpad(n.num, greatest(length(n.num), 3), '0') || n.resto)
+            || phraseto_tsquery('es_unaccent', lpad(n.num, greatest(length(n.num), 4), '0') || n.resto) AS q
+      ) v
        LEFT JOIN LATERAL (
-         SELECT regexp_replace(x[1], '\\s+', ' ', 'g') AS nombre, count(*) AS veces
-           FROM (SELECT c.texto FROM rag.chunk c
-                  WHERE c.tsv @@ phraseto_tsquery('es_unaccent', k.contrato)
-                  LIMIT $2) AS muestra
+         SELECT regexp_replace(x[2], '\\s+', ' ', 'g') AS nombre, (array_agg(x[1]))[1] AS descriptor, count(*) AS veces
+           FROM (SELECT c.texto FROM rag.chunk c WHERE c.tsv @@ v.q LIMIT $2) AS muestra
           CROSS JOIN LATERAL regexp_matches(
             muestra.texto,
-            'contrato\\s+n[°º.o]*\\s*' || replace(k.contrato, '-', '\\s*-\\s*') || '[^“"”]{0,160}[“"]([^”"]{15,220})[”"]',
+            'contrato\\s+n[°º.o]*\\s*0*' || replace(k.contrato, '-', '\\s*-\\s*') || '([^“"”]{0,160})[“"]([^”"]{15,220})[”"]',
             'gi') AS x
-          GROUP BY 1 ORDER BY 2 DESC LIMIT 1
+          GROUP BY 1 ORDER BY 3 DESC LIMIT 1
        ) t ON true`,
     { bind: [pendientes, MUESTRA_NOMBRE_CONTRATO], type: QueryTypes.SELECT },
   );
   for (const f of filas) {
-    const valor = f.nombre ? { nombre: f.nombre, menciones: Number(f.menciones) } : null;
+    const valor = f.nombre
+      ? { nombre: f.nombre, menciones: Number(f.menciones), tipo: tipoContrato(f.descriptor, f.nombre) }
+      : null;
     cacheNombres.set(f.contrato, { valor, hasta: ahora + TTL_NOMBRES_MS });
     if (valor) resultado.set(f.contrato, valor);
   }

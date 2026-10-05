@@ -40,6 +40,11 @@ describe('textoListado — dentro del listado anterior', () => {
     const t = textoListado('listar', planDeRespaldo('x'), busqueda({ total: 4, terminos: ['penalidades'] }), 3, undefined, 58);
     expect(t).toMatch(/^Dentro de los 58 expedientes del listado anterior, encontré 4 expedientes relacionados con «penalidades»\./);
   });
+
+  it('si en el listado anterior no había nada y se buscó en toda la base, lo avisa', () => {
+    const t = textoListado('listar', planDeRespaldo('x'), busqueda({ total: 26, terminos: ['Huancavelica'] }), 3, undefined, undefined, 96);
+    expect(t).toMatch(/^Ninguno de los 96 expedientes del listado anterior cumple esto; en toda la base encontré 26 expedientes relacionados con «Huancavelica»\./);
+  });
 });
 
 describe('meta del listado', () => {

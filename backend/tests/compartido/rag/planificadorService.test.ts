@@ -50,7 +50,7 @@ describe('interpretarPlan', () => {
     expect(plan).toEqual({
       intencion: 'listar',
       consulta: 'expedientes donde China Civil presentó documentos',
-      terminos: { obligatorios: ['China Civil'], opcionales: [] },
+      terminos: { obligatorios: ['China Civil'], opcionales: [], sinonimos: {} },
       filtros: { remitente: 'China Civil', emisor: null, dependencia: null, tipoDoc: null, desde: null, hasta: null, actual: false },
       continuaAnterior: false,
     });
@@ -60,8 +60,22 @@ describe('interpretarPlan', () => {
     const plan = interpretarPlan('{"intencion":"contar","consulta":"  ","filtros":null}', '¿cuántos de Junín?');
     expect(plan?.intencion).toBe('contar');
     expect(plan?.consulta).toBe('¿cuántos de Junín?');
-    expect(plan?.terminos).toEqual({ obligatorios: [], opcionales: [] });
+    expect(plan?.terminos).toEqual({ obligatorios: [], opcionales: [], sinonimos: {} });
     expect(plan?.filtros.actual).toBe(false);
+  });
+
+  it('sinónimos: conserva las listas de textos y descarta lo mal formado sin invalidar el plan', () => {
+    const plan = interpretarPlan(JSON.stringify({
+      intencion: 'listar',
+      terminos: {
+        obligatorios: ['alquiler'],
+        sinonimos: { alquiler: ['arrendamiento', 3, ' '], computadoras: 'equipos', ' ': ['x'], vacio: [] },
+      },
+    }), 'x');
+    expect(plan?.terminos.sinonimos).toEqual({ alquiler: ['arrendamiento'] });
+
+    const raro = interpretarPlan('{"intencion":"listar","terminos":{"obligatorios":["a"],"sinonimos":"no"}}', 'x');
+    expect(raro?.terminos).toEqual({ obligatorios: ['a'], opcionales: [], sinonimos: {} });
   });
 
   it('rechaza una intención desconocida', () => {
@@ -85,12 +99,14 @@ describe('planificar', () => {
     const r = await planificar(proveedor('Lo siento, no puedo.'), 'monto del contrato', ctx);
     expect(r.respaldo).toBe(true);
     expect(r.plan).toEqual(planDeRespaldo('monto del contrato'));
+    expect(r.diagnostico).toContain('Lo siento, no puedo.');
   });
 
   it('proveedor caído → respaldo, sin lanzar', async () => {
     const r = await planificar(proveedor(new Error('timeout')), 'monto', ctx);
     expect(r.respaldo).toBe(true);
     expect(r.uso).toBeNull();
+    expect(r.diagnostico).toContain('timeout');
   });
 
   it('envía el historial recortado y la nota de modo expediente', async () => {

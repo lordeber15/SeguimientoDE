@@ -2,6 +2,7 @@ jest.mock('../../../../src/compartido/config/appDatabase', () => ({ appSequelize
 jest.mock('../../../../src/modulos/sgd/config/database', () => ({ DB_SCHEMA: 'sgd', sequelize: { query: jest.fn() } }));
 jest.mock('../../../../src/compartido/rag/configService', () => ({ leerNumero: jest.fn() }));
 
+import { tipoContrato } from '../../../../src/modulos/sgd/rag/consultasExpedienteService';
 import {
   agruparPorContrato,
   textoGrupos,
@@ -52,7 +53,46 @@ describe('agruparPorContrato', () => {
   });
 });
 
+describe('agruparPorContrato — tipo de contrato', () => {
+  it('obras primero, luego lo no clasificado, luego consultorías y servicios', () => {
+    const c = new Map([['2026|1', ['93-2026-MCEBS']], ['2026|2', ['1-2020-X']], ['2026|3', ['352-2025-MCEBS']], ['2026|4', ['5-2020-X']]]);
+    const n = new Map([
+      ['93-2026-MCEBS', { nombre: 'Especialista temático', menciones: 21, tipo: 'consultoria' as const }],
+      ['1-2020-X', { nombre: 'Algo', menciones: 30, tipo: null }],
+      ['352-2025-MCEBS', { nombre: 'Medicina Tropical', menciones: 248, tipo: 'obra' as const }],
+    ]);
+    const grupos = agruparPorContrato(['1', '2', '3', '4'].map((s) => fila(s)), c, n);
+    expect(grupos.map((g) => g.contrato)).toEqual(['352-2025-MCEBS', '1-2020-X', '5-2020-X', '93-2026-MCEBS']);
+  });
+});
+
+describe('tipoContrato', () => {
+  it('primero por el texto previo al nombre', () => {
+    expect(tipoContrato(', para la ejecución de la obra ')).toBe('obra');
+    expect(tipoContrato(', Consultoría Individual: ')).toBe('consultoria');
+    expect(tipoContrato(' para la adquisición de ')).toBe('adquisicion');
+  });
+
+  it('si el texto previo no dice nada, por cómo empieza el nombre', () => {
+    expect(tipoContrato(' ', 'SERVICIO DE CONSULTORÍA PARA EL DISEÑO')).toBe('consultoria');
+    expect(tipoContrato(null, 'Adquisición de equipos variados')).toBe('adquisicion');
+    expect(tipoContrato(null, 'Mejoramiento de los servicios de educación superior')).toBe('obra');
+    expect(tipoContrato(null, 'Pronunciamiento')).toBeNull();
+  });
+});
+
 describe('textoGrupos', () => {
+  it('nombra el tipo cuando no es una obra', () => {
+    const t = textoGrupos([
+      { contrato: '93-2026-MCEBS', nombre: 'Especialista temático', tipo: 'consultoria', dudoso: false, expedientes: [{ numero: 'A', archivado: false, ultimoMovimiento: null }] },
+      { contrato: '343-2025-MCEBS', nombre: 'Equipos variados', tipo: 'adquisicion', dudoso: false, expedientes: [{ numero: 'B', archivado: true, ultimoMovimiento: null }] },
+    ]);
+    expect(t.split('\n')).toEqual([
+      '- Consultoría «Especialista temático» (contrato 93-2026-MCEBS): A (en trámite)',
+      '- Adquisición «Equipos variados» (contrato 343-2025-MCEBS): B (archivado)',
+    ]);
+  });
+
   it('una viñeta por grupo con estado de cada expediente', () => {
     const t = textoGrupos([
       { contrato: '341-2025-MCEBS', nombre: 'Laboratorios', dudoso: false, expedientes: [{ numero: 'A', archivado: false, ultimoMovimiento: null }] },
@@ -77,14 +117,14 @@ describe('textos de último documento y participantes', () => {
   };
 
   it('último documento: ámbito, fecha, expediente y aviso de términos parciales', () => {
-    const t = textoUltimoDocumento({ pares: [], total: 58, terminos: ['controversia', 'Huancavelica'], ambito: 'busqueda' }, doc);
+    const t = textoUltimoDocumento({ total: 58, terminos: ['controversia', 'Huancavelica'], ambito: 'busqueda' }, doc);
     expect(t).toContain('El documento más reciente entre los 58 expedientes relacionados con «controversia» + «Huancavelica» es INFORME TECNICO N° 5 del 25/09/2026, en el expediente OPPMC020260000089.');
     expect(t).toContain('este cumple 1 de 2');
     expect(t).toContain('No registra derivaciones.');
   });
 
   it('en modo expediente no repite el número de expediente', () => {
-    const t = textoUltimoDocumento({ pares: [], total: 1, terminos: [], ambito: 'expediente' }, { ...doc, totalTerminos: 0 });
+    const t = textoUltimoDocumento({ total: 1, terminos: [], ambito: 'expediente' }, { ...doc, totalTerminos: 0 });
     expect(t).toMatch(/^El documento más reciente en este expediente es INFORME TECNICO N° 5 del 25\/09\/2026\./);
     expect(t).not.toContain('OPPMC020260000089');
   });
@@ -97,7 +137,7 @@ describe('textos de último documento y participantes', () => {
       destinatarios: [],
       tramites: [{ nuAnnExp: '2026', nuSecExp: '1', numeroExpediente: 'N', movimientos: [] }],
     };
-    const t = textoParticipantes({ pares: [], total: 128, terminos: ['controversia'], ambito: 'busqueda' }, b);
+    const t = textoParticipantes({ total: 128, terminos: ['controversia'], ambito: 'busqueda' }, b);
     expect(t).toContain('25 remitentes externos, 1 emisor interno, 0 destinatarios');
     expect(t).toContain('se muestran los 25 más frecuentes');
     expect(t).toContain('ese expediente');

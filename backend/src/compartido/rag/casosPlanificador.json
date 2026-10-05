@@ -1,0 +1,61 @@
+{
+  "descripcion": "Set de evaluación del planificador del chat (docs/PLAN-CHAT-CONSULTAS.md, Fase 6). Lo usan src/scripts/evaluarPlanificador.ts (contra el modelo real) y los tests de Jest (parte determinista). 'terminos': deben quedar tras terminosDelPlan (sin tildes ni mayúsculas, basta que uno contenga al otro). 'sinTerminos': no deben quedar. 'intencion' acepta un texto o una lista de válidas.",
+  "historiales": {
+    "junin_controversia": [
+      { "rol": "user", "contenido": "dame los expedientes de controversia de la obra junin" },
+      { "rol": "assistant", "contenido": "Encontré 96 expedientes relacionados con «controversia» + «Junín». Ninguno los tiene en sus datos (asunto, remitente o emisor): todos lo mencionan solo dentro del contenido de sus documentos." }
+    ]
+  },
+  "casos": [
+    { "id": "huancavelica_listar", "pregunta": "Busca los expedientes relacionados a la obra de Huancavelica",
+      "esperado": { "intencion": "listar", "terminos": ["huancavelica"], "sinTerminos": ["obra"], "continua": false } },
+    { "id": "obras_controversia_actual", "pregunta": "dime que obra tienen controversias actualmente",
+      "esperado": { "intencion": "agrupar", "terminos": ["controversia"], "actual": true } },
+    { "id": "ultimo_controversia_huancavelica", "pregunta": "dame el ultimo documento de controversia de la obra huancavelica",
+      "esperado": { "intencion": "ultimo_documento", "terminos": ["controversia", "huancavelica"] } },
+    { "id": "controversia_huancavelica", "pregunta": "dale los expedientes que contengan controversia en la obra huancavelica",
+      "esperado": { "intencion": "listar", "terminos": ["controversia", "huancavelica"] } },
+    { "id": "china_civil_remitente", "pregunta": "Listame los expedientes donde la empresa china civil presento documentos",
+      "esperado": { "intencion": "listar", "remitente": "china civil" } },
+    { "id": "in_house", "pregunta": "dame todos los expedientes relacionados con proyectos in house",
+      "esperado": { "intencion": "listar", "terminos": ["in house"], "sinTerminos": ["proyecto"] } },
+    { "id": "alquiler_computadoras", "pregunta": "dame todos los expedientes del alquiler de computadoras para el in house",
+      "esperado": { "intencion": "listar", "terminos": ["alquiler", "computadora", "in house"] } },
+    { "id": "contar_junin", "pregunta": "cuantos expedientes estan relacionados a junin",
+      "esperado": { "intencion": "contar", "terminos": ["junin"] } },
+    { "id": "controversia_junin", "pregunta": "que expedientes hablan sobre la controversia de la obra junin",
+      "esperado": { "intencion": "listar", "terminos": ["controversia", "junin"] } },
+    { "id": "participantes_junin", "pregunta": "quienes participaron en los expedientes de controversias de la obra junin",
+      "esperado": { "intencion": "participantes", "terminos": ["controversia", "junin"] } },
+    { "id": "ultimo_china_civil", "pregunta": "cual es el ultimo documento que presento china civil",
+      "esperado": { "intencion": "ultimo_documento", "remitente": "china civil", "sinTerminos": ["presento", "presentado"] } },
+    { "id": "obras_penalidades", "pregunta": "¿qué obras tienen penalidades?",
+      "esperado": { "intencion": "agrupar", "terminos": ["penalidad"] } },
+    { "id": "dependencia_legal", "pregunta": "dame los informes de la oficina de asesoria legal sobre penalidades",
+      "esperado": { "intencion": "listar", "terminos": ["penalidad"], "dependencia": "asesoria legal" } },
+    { "id": "monto_contrato_junin", "pregunta": "¿cuál es el monto del contrato de la obra de Junín?",
+      "esperado": { "intencion": "contenido", "terminos": ["junin"] } },
+    { "id": "fuera_capital", "pregunta": "¿Cuál es la capital de Francia?",
+      "esperado": { "intencion": "fuera_de_alcance" } },
+    { "id": "fuera_poema", "pregunta": "escríbeme un poema sobre el mar",
+      "esperado": { "intencion": "fuera_de_alcance" } },
+
+    { "id": "seguimiento_participantes", "historial": "junin_controversia", "pregunta": "¿quiénes participaron en esos?",
+      "esperado": { "intencion": "participantes", "continua": true } },
+    { "id": "seguimiento_ultimo", "historial": "junin_controversia", "pregunta": "¿y el último documento?",
+      "esperado": { "intencion": "ultimo_documento", "continua": true } },
+    { "id": "seguimiento_contenido", "historial": "junin_controversia", "pregunta": "¿qué dicen sobre la resolución del contrato?",
+      "esperado": { "intencion": "contenido", "continua": true } },
+    { "id": "seguimiento_china_civil", "historial": "junin_controversia", "pregunta": "¿en cuáles participó China Civil?",
+      "esperado": { "intencion": "listar", "remitente": "china civil", "continua": true } },
+    { "id": "cambio_tema", "historial": "junin_controversia", "pregunta": "¿y los de Huancavelica?",
+      "esperado": { "intencion": "listar", "terminos": ["huancavelica"], "continua": false } },
+    { "id": "seguimiento_fuera", "historial": "junin_controversia", "pregunta": "cuéntame un chiste",
+      "esperado": { "intencion": "fuera_de_alcance" } },
+
+    { "id": "expediente_participantes", "modo": "expediente", "pregunta": "¿quiénes participaron en este expediente?",
+      "esperado": { "intencion": ["participantes", "contenido"] } },
+    { "id": "expediente_estado", "modo": "expediente", "pregunta": "¿en qué estado está y qué falta?",
+      "esperado": { "intencion": "contenido" } }
+  ]
+}

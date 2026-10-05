@@ -142,7 +142,7 @@ export async function buscarHibrido(
       `SELECT c.id AS chunk_id
          FROM rag.chunk c,
               COALESCE(
-                (SELECT NULLIF(string_agg(NULLIF(phraseto_tsquery('es_unaccent', t)::text, ''), ' | '), '')::tsquery
+                (SELECT NULLIF(string_agg(NULLIF(rag.tsq_alternativas(t)::text, ''), ' | '), '')::tsquery
                    FROM unnest($7::text[]) AS t),
                 plainto_tsquery('es_unaccent', $2)
               ) AS consulta

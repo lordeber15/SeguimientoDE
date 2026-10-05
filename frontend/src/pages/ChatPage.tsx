@@ -1,37 +1,20 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import {
-  buscarExpedientesChat,
-  enviarMensajeExpediente,
-  enviarMensajeGeneral,
-  etiquetaExpediente,
-  fetchEstadoIngestaExpediente,
-  fetchHistorialSesion,
-  fetchSesionExpediente,
-  type CitaChat,
-  type EstadoIngestaExpediente,
-  type ExpedienteChat,
-  type RespuestaChat,
-} from '../api/chat';
-import { rutaAnexo, rutaDocumento } from '../api/documentos';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import type { AdaptadorChat, CitaBasica, TipoRespuestaChat } from '../api/chatComun';
 import { useSesion } from '../auth/SesionContext';
 import { idCita, ListaCitas } from '../components/CitaBadge';
-import { ModalIndexacionExpediente } from '../components/ModalIndexacionExpediente';
+import { OrbePensando } from '../components/OrbePensando';
 import { idPanel, idPestana, Pestanas } from '../components/Pestanas';
 import { RespuestaConCitas } from '../components/RespuestaConCitas';
 import { VisorDocumento } from '../components/VisorDocumento';
 
-type Modo = 'general' | 'expediente';
+type Modo = 'general' | 'contexto';
 
-const PESTANAS_CHAT = [
-  { clave: 'general', etiqueta: 'General SGD' },
-  { clave: 'expediente', etiqueta: 'Por expediente' },
-] as const satisfies readonly { clave: Modo; etiqueta: string }[];
-
-interface MensajeUI {
+interface MensajeUI<C extends CitaBasica> {
   id: string;
   rol: 'user' | 'assistant';
+  tipo?: TipoRespuestaChat;
   texto: string;
-  citas?: CitaChat[];
+  citas?: C[];
   marcadoresAlucinados?: number;
 }
 
@@ -41,59 +24,70 @@ interface DocumentoAbierto {
   visualizable: boolean;
 }
 
-interface Props {
-  /** Presente cuando se llega desde el botón "Chat de este expediente" de la tabla de Seguimiento. */
-  expedienteInicial?: { nuAnnExp: string; nuSecExp: string; numeroExpediente?: string | null } | null;
+interface EstadoIngestaGenerico {
+  total: number;
+  listos: number;
+  convertidos: number;
+  pendientes: number;
+  sinTexto: number;
+  error: number;
+  noSoportado: number;
+  completo: boolean;
+}
+
+interface Props<E, C extends CitaBasica> {
+  adaptador: AdaptadorChat<E, C>;
+  /** Presente cuando se llega con una entidad ya elegida desde otra pantalla (ej. "Chat de este
+   *  expediente" en Seguimiento). `null`/ausente arranca en el buscador. */
+  contextoInicial?: E | null;
+  /** Modal de gestión de indexación ("Documentos (n)") — propio de cada sistema (hoy solo el
+   *  SGD tiene uno, ver `ModalIndexacionExpediente`). Sin esto, el botón no se muestra. */
+  renderModalGestion?: (args: { entidad: E; cerrar: () => void; onCambio: () => void }) => ReactNode;
 }
 
 const LARGO_MIN_BUSQUEDA = 3; // mismo umbral que exige el backend
 const ALTO_MAX_ENTRADA = 132; // ~5 líneas: a partir de ahí el campo hace scroll en vez de crecer
+/** El backend no hace streaming: pasado este tiempo se asume que ya terminó la búsqueda y el
+ *  modelo está redactando. Es una aproximación del flujo RAG, no una señal real del servidor. */
+const MS_HASTA_REDACTAR = 3000;
 
 /** Respeta la preferencia del sistema — el mismo criterio que el `@media` de `index.css`. */
 function prefiereMenosMovimiento(): boolean {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 }
 
-/** El expediente que llega desde Seguimiento, con la forma que usa el resto de la página. */
-function desdeSeguimiento(inicial: Props['expedienteInicial']): ExpedienteChat | null {
-  if (!inicial) return null;
-  return {
-    nuAnnExp: inicial.nuAnnExp,
-    nuSecExp: inicial.nuSecExp,
-    numeroExpediente: inicial.numeroExpediente ?? null,
-    // Los contadores solo alimentan la lista de resultados de búsqueda; el aviso de cobertura que
-    // se pinta abajo los pide aparte y en vivo (`fetchEstadoIngestaExpediente`).
-    documentos: 0,
-    ingestados: 0,
-  };
-}
-
 /**
- * Chat sobre el corpus RAG — PLAN-RAG.md §9. Sin resaltado de página/offset todavía: la cita ya
- * muestra el texto literal del fragmento y enlaza al documento real, que es lo que hace la cita
- * "verificable"; saltar al punto exacto dentro del PDF es una mejora de UX aparte.
+ * Chat sobre un corpus RAG — PLAN-RAG.md §9. Genérico sobre el sistema (SGD o STD): todo lo que
+ * cambia entre ellos (cómo se busca el contexto, cómo se etiqueta, cómo se abre el documento
+ * citado) vive en el `adaptador` (ver `api/chatComun.ts`); esta página solo orquesta el flujo de
+ * conversación, que es idéntico en ambos.
+ *
+ * Sin resaltado de página/offset todavía: la cita ya muestra el texto literal del fragmento y
+ * enlaza al documento real, que es lo que hace la cita "verificable"; saltar al punto exacto
+ * dentro del PDF es una mejora de UX aparte.
  *
  * Bloqueado hasta que haya un proveedor de chat configurado — el backend responde con un mensaje
  * explícito en ese caso (igual que "Generar embeddings" en el panel de RAG).
  */
-export function ChatPage({ expedienteInicial }: Props) {
+export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, renderModalGestion }: Props<E, C>) {
   const { puede } = useSesion();
-  const puedeGestionarRag = puede('rag.gestionar');
-  const [modo, setModo] = useState<Modo>(expedienteInicial ? 'expediente' : 'general');
-  const [seleccionado, setSeleccionado] = useState<ExpedienteChat | null>(desdeSeguimiento(expedienteInicial));
+  const puedeGestionar = puede(adaptador.permisoGestionar);
+  const [modo, setModo] = useState<Modo>(contextoInicial ? 'contexto' : 'general');
+  const [seleccionado, setSeleccionado] = useState<E | null>(contextoInicial ?? null);
   const [termino, setTermino] = useState('');
-  const [resultados, setResultados] = useState<ExpedienteChat[] | null>(null);
+  const [resultados, setResultados] = useState<E[] | null>(null);
   const [buscando, setBuscando] = useState(false);
   const [errorBusqueda, setErrorBusqueda] = useState<string | null>(null);
   const [sesionId, setSesionId] = useState<number | undefined>();
-  const [mensajes, setMensajes] = useState<MensajeUI[]>([]);
+  const [mensajes, setMensajes] = useState<MensajeUI<C>[]>([]);
   const [entrada, setEntrada] = useState('');
   const [enviando, setEnviando] = useState(false);
+  const [redactando, setRedactando] = useState(false);
   const [cargandoInicial, setCargandoInicial] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [documentoAbierto, setDocumentoAbierto] = useState<DocumentoAbierto | null>(null);
-  const [estadoIngesta, setEstadoIngesta] = useState<EstadoIngestaExpediente | null>(null);
-  const [modalIndexacionAbierto, setModalIndexacionAbierto] = useState(false);
+  const [estadoIngesta, setEstadoIngesta] = useState<EstadoIngestaGenerico | null>(null);
+  const [modalGestionAbierto, setModalGestionAbierto] = useState(false);
   /** Cita desplegada por mensaje. Vive aquí, y no en cada cita, porque un marcador `[Dn]` del
    *  propio texto también puede abrirla — y solo una a la vez por mensaje. */
   const [citaAbierta, setCitaAbierta] = useState<Record<string, number | null>>({});
@@ -101,15 +95,17 @@ export function ChatPage({ expedienteInicial }: Props) {
   const listaRef = useRef<HTMLOListElement>(null);
   const entradaRef = useRef<HTMLTextAreaElement>(null);
 
+  const claveSeleccionado = seleccionado ? adaptador.claveEntidad(seleccionado) : null;
+
   const puedeEnviar =
     entrada.trim().length > 0 && !enviando && !cargandoInicial && (modo === 'general' || seleccionado !== null);
 
-  // Precarga de sesión + historial de ESTE expediente — corre cada vez que cambia la selección, ya
-  // sea porque se llegó desde el botón de Seguimiento o porque se acaba de buscar y elegir aquí
-  // mismo. El componente se remonta entero cada vez que `App.tsx` navega a la pestaña "Chat" (no
-  // hay router), así que a la llegada este efecto siempre corre limpio una sola vez.
+  // Precarga de sesión + historial de ESTA entidad — corre cada vez que cambia la selección, ya sea
+  // porque se llegó con `contextoInicial` o porque se acaba de buscar y elegir aquí mismo. El
+  // componente se remonta entero cada vez que `App.tsx` navega a esta pestaña (no hay router), así
+  // que a la llegada este efecto siempre corre limpio una sola vez.
   useEffect(() => {
-    if (modo !== 'expediente' || !seleccionado) return;
+    if (modo !== 'contexto' || !seleccionado) return;
     let vigente = true;
     setSesionId(undefined);
     setMensajes([]);
@@ -119,14 +115,14 @@ export function ChatPage({ expedienteInicial }: Props) {
 
     (async () => {
       try {
-        const sesion = await fetchSesionExpediente(seleccionado.nuAnnExp, seleccionado.nuSecExp);
+        const sesion = await adaptador.fetchSesion(seleccionado);
         if (!vigente) return;
         if (sesion) {
           setSesionId(sesion.id);
-          const historial = await fetchHistorialSesion(sesion.id);
+          const historial = await adaptador.fetchHistorial(sesion.id);
           if (!vigente) return;
           setMensajes(
-            historial.map((m) => ({ id: String(m.id), rol: m.rol, texto: m.texto, citas: m.citas })),
+            historial.map((m) => ({ id: String(m.id), rol: m.rol, tipo: m.tipo, texto: m.texto, citas: m.citas })),
           );
         }
       } catch (err) {
@@ -140,27 +136,26 @@ export function ChatPage({ expedienteInicial }: Props) {
       vigente = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modo, seleccionado?.nuAnnExp, seleccionado?.nuSecExp]);
+  }, [modo, claveSeleccionado]);
 
-  // Aviso de cobertura: corre sin importar cómo se llegó al expediente (botón, o buscado y elegido
-  // aquí mismo). Falla en silencio a propósito — es un aviso informativo, no debe ensuciar el flujo
-  // de chat si esta consulta puntual falla. Se expone como función aparte para poder refrescarlo a
-  // demanda cuando el modal de indexación cambia algo, sin duplicar la llamada.
+  // Aviso de cobertura: corre sin importar cómo se llegó a la entidad (contexto inicial, o buscada y
+  // elegida aquí mismo). Falla en silencio a propósito — es un aviso informativo, no debe ensuciar
+  // el flujo de chat si esta consulta puntual falla. Se expone como función aparte para poder
+  // refrescarlo a demanda cuando el modal de gestión cambia algo, sin duplicar la llamada.
   const refrescarEstadoIngesta = useCallback(() => {
-    if (modo !== 'expediente' || !seleccionado) return;
-    fetchEstadoIngestaExpediente(seleccionado.nuAnnExp, seleccionado.nuSecExp)
-      .then(setEstadoIngesta)
-      .catch(() => {});
-  }, [modo, seleccionado?.nuAnnExp, seleccionado?.nuSecExp]);
+    if (modo !== 'contexto' || !seleccionado) return;
+    adaptador.fetchEstadoIngesta(seleccionado).then(setEstadoIngesta).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modo, claveSeleccionado]);
 
   useEffect(() => {
-    if (modo !== 'expediente' || !seleccionado) {
+    if (modo !== 'contexto' || !seleccionado) {
       setEstadoIngesta(null);
       return;
     }
     refrescarEstadoIngesta();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modo, seleccionado?.nuAnnExp, seleccionado?.nuSecExp]);
+  }, [modo, claveSeleccionado]);
 
   // Al llegar un mensaje nuevo la conversación baja sola: sin esto la respuesta aparecía fuera de
   // la vista y había que buscarla a mano en el scroll. También sigue al indicador de "escribiendo".
@@ -172,6 +167,14 @@ export function ChatPage({ expedienteInicial }: Props) {
       behavior: prefiereMenosMovimiento() ? 'auto' : 'smooth',
     });
   }, [mensajes.length, enviando, cargandoInicial]);
+
+  // Fase del indicador: "Buscando…" al enviar y "Redactando…" pasados unos segundos.
+  useEffect(() => {
+    setRedactando(false);
+    if (!enviando) return;
+    const temporizador = window.setTimeout(() => setRedactando(true), MS_HASTA_REDACTAR);
+    return () => window.clearTimeout(temporizador);
+  }, [enviando]);
 
   // El campo crece con el texto hasta 5 líneas. `useLayoutEffect` para que el alto se ajuste en el
   // mismo cuadro en que se escribe y no haya un parpadeo de una línea.
@@ -202,8 +205,8 @@ export function ChatPage({ expedienteInicial }: Props) {
   }, []);
 
   function cambiarModo(nuevo: Modo) {
-    // Cambiar de modo empieza una conversación nueva: el expediente en curso forma parte del
-    // contexto del chat, así que mezclar sesiones de dos modos distintos no tendría sentido.
+    // Cambiar de modo empieza una conversación nueva: la entidad en curso forma parte del contexto
+    // del chat, así que mezclar sesiones de dos modos distintos no tendría sentido.
     setModo(nuevo);
     setSesionId(undefined);
     setMensajes([]);
@@ -211,7 +214,7 @@ export function ChatPage({ expedienteInicial }: Props) {
     setError(null);
   }
 
-  async function buscarExpediente(e: React.FormEvent) {
+  async function buscarEntidad(e: React.FormEvent) {
     e.preventDefault();
     const consulta = termino.trim();
     if (consulta.length < LARGO_MIN_BUSQUEDA || buscando) return;
@@ -221,27 +224,27 @@ export function ChatPage({ expedienteInicial }: Props) {
     setResultados(null);
 
     try {
-      const encontrados = await buscarExpedientesChat(consulta);
+      const encontrados = await adaptador.buscar(consulta);
       if (encontrados.length === 1) {
-        elegirExpediente(encontrados[0]);
+        elegirEntidad(encontrados[0]);
       } else {
         setResultados(encontrados);
       }
     } catch (err) {
-      setErrorBusqueda(err instanceof Error ? err.message : 'No se pudo buscar el expediente');
+      setErrorBusqueda(err instanceof Error ? err.message : 'No se pudo buscar');
     } finally {
       setBuscando(false);
     }
   }
 
-  function elegirExpediente(exp: ExpedienteChat) {
-    setSeleccionado(exp);
+  function elegirEntidad(e: E) {
+    setSeleccionado(e);
     setResultados(null);
     setTermino('');
     setErrorBusqueda(null);
   }
 
-  function cambiarExpediente() {
+  function cambiarEntidad() {
     setSeleccionado(null);
     setSesionId(undefined);
     setMensajes([]);
@@ -269,9 +272,9 @@ export function ChatPage({ expedienteInicial }: Props) {
     setEnviando(true);
 
     try {
-      const respuesta: RespuestaChat = modo === 'general'
-        ? await enviarMensajeGeneral(texto, sesionId)
-        : await enviarMensajeExpediente(seleccionado!.nuAnnExp, seleccionado!.nuSecExp, texto, sesionId);
+      const respuesta = modo === 'general'
+        ? await adaptador.enviarGeneral(texto, sesionId)
+        : await adaptador.enviarContexto(seleccionado as E, texto, sesionId);
 
       setSesionId(respuesta.sesionId);
       setMensajes((m) => [
@@ -279,6 +282,7 @@ export function ChatPage({ expedienteInicial }: Props) {
         {
           id: String(respuesta.mensajeId),
           rol: 'assistant',
+          tipo: respuesta.tipo,
           texto: respuesta.texto,
           citas: respuesta.citas,
           marcadoresAlucinados: respuesta.marcadoresAlucinados,
@@ -291,45 +295,34 @@ export function ChatPage({ expedienteInicial }: Props) {
     }
   }
 
-  function abrirCita(cita: CitaChat) {
-    const url = cita.nuAne > 0
-      ? rutaAnexo(cita.nuAnn, cita.nuEmi, cita.nuAne)
-      : rutaDocumento(cita.nuAnn, cita.nuEmi);
-    setDocumentoAbierto({
-      url,
-      titulo: `[D${cita.numero}] ${cita.rutaTitulos ?? 'Documento citado'}`,
-      // La mayoría del corpus es PDF; si no lo es, el visor igual ofrece "Descargar" en la cabecera.
-      visualizable: true,
-    });
+  function abrirCita(cita: C) {
+    const { url, titulo, visualizable } = adaptador.abrirCita(cita);
+    setDocumentoAbierto({ url, titulo, visualizable });
   }
+
+  const pestanas = [
+    { clave: 'general' as const, etiqueta: adaptador.etiquetaPestanaGeneral },
+    { clave: 'contexto' as const, etiqueta: adaptador.etiquetaPestanaContexto },
+  ];
 
   return (
     <main className="app-main app-main--ancho">
       <section className="rag-tarjeta rag-tarjeta--ancha chat-tarjeta">
-        <Pestanas
-          pestanas={PESTANAS_CHAT}
-          activa={modo}
-          onCambiar={cambiarModo}
-          etiqueta="Alcance del chat"
-        />
+        <Pestanas pestanas={pestanas} activa={modo} onCambiar={cambiarModo} etiqueta="Alcance del chat" />
 
         <div role="tabpanel" id={idPanel(modo)} aria-labelledby={idPestana(modo)}>
-          {modo === 'general' && (
-            <p className="exp-nota">
-              Pregunta sobre todos los documentos del SGD accesibles para su cuenta.
-            </p>
-          )}
+          {modo === 'general' && <p className="exp-nota">{adaptador.notaGeneral}</p>}
 
-          {modo === 'expediente' && !seleccionado && (
-            <form className="busqueda-expediente" onSubmit={buscarExpediente}>
-              <label htmlFor="chat-buscar-expediente">N° de expediente</label>
+          {modo === 'contexto' && !seleccionado && (
+            <form className="busqueda-expediente" onSubmit={buscarEntidad}>
+              <label htmlFor="chat-buscar-entidad">{adaptador.labelBusqueda}</label>
               <div className="busqueda-expediente-campo">
                 <input
-                  id="chat-buscar-expediente"
+                  id="chat-buscar-entidad"
                   type="search"
                   value={termino}
                   onChange={(e) => setTermino(e.target.value)}
-                  placeholder="Ej. DE000020260000062 o 2026-0000325"
+                  placeholder={adaptador.placeholderBusqueda}
                 />
                 <button
                   type="submit"
@@ -349,37 +342,33 @@ export function ChatPage({ expedienteInicial }: Props) {
           )}
 
           {resultados !== null && resultados.length === 0 && (
-            <div className="state-message">No se encontró ningún expediente con ese número.</div>
+            <div className="state-message">{adaptador.notaSinResultados}</div>
           )}
 
           {resultados !== null && resultados.length > 0 && (
             <ul className="resultados-expediente">
               {resultados.map((r) => (
-                <li key={`${r.nuAnnExp}-${r.nuSecExp}`}>
-                  <button type="button" className="boton-enlace" onClick={() => elegirExpediente(r)}>
-                    {etiquetaExpediente(r)}
+                <li key={adaptador.claveEntidad(r)}>
+                  <button type="button" className="boton-enlace" onClick={() => elegirEntidad(r)}>
+                    {adaptador.etiquetaEntidad(r)}
                   </button>
-                  <span className="exp-nota">
-                    {r.ingestados} de {r.documentos} documentos indexados
-                  </span>
+                  <span className="exp-nota">{adaptador.descripcionResultado(r)}</span>
                 </li>
               ))}
             </ul>
           )}
 
-          {modo === 'expediente' && seleccionado && (
+          {modo === 'contexto' && seleccionado && (
             <div className="chat-expediente-elegido">
-              <span>
-                Expediente <strong>{etiquetaExpediente(seleccionado)}</strong>
-              </span>
-              <button type="button" className="boton-enlace" onClick={cambiarExpediente}>
+              <span>{adaptador.etiquetaEntidad(seleccionado)}</span>
+              <button type="button" className="boton-enlace" onClick={cambiarEntidad}>
                 Cambiar
               </button>
-              {puedeGestionarRag && (
+              {renderModalGestion && puedeGestionar && (
                 <button
                   type="button"
                   className="boton-enlace"
-                  onClick={() => setModalIndexacionAbierto(true)}
+                  onClick={() => setModalGestionAbierto(true)}
                 >
                   Documentos{estadoIngesta ? ` (${estadoIngesta.total})` : ''}
                 </button>
@@ -387,27 +376,33 @@ export function ChatPage({ expedienteInicial }: Props) {
             </div>
           )}
 
-          {modo === 'expediente' && seleccionado && estadoIngesta && (
+          {modo === 'contexto' && seleccionado && estadoIngesta && (
             <AvisoIngesta
               estado={estadoIngesta}
-              puedeGestionarRag={puedeGestionarRag}
-              onCorregir={() => setModalIndexacionAbierto(true)}
+              sustantivoContexto={adaptador.sustantivoContexto}
+              puedeGestionar={puedeGestionar && !!renderModalGestion}
+              onCorregir={() => setModalGestionAbierto(true)}
             />
           )}
 
           <ol className="chat-lista" aria-live="polite" ref={listaRef}>
-            {cargandoInicial && <li className="exp-nota">Cargando conversación anterior…</li>}
+            {cargandoInicial && (
+              <li className="exp-nota chat-escribiendo">
+                <OrbePensando estado="breathing" />
+                Cargando conversación anterior…
+              </li>
+            )}
             {!cargandoInicial && mensajes.length === 0 && (
               <li className="exp-nota chat-vacio">
                 {modo === 'general'
-                  ? 'Escriba una pregunta sobre los documentos del SGD a los que tiene acceso.'
+                  ? adaptador.notaVacioGeneral
                   : seleccionado
-                    ? 'Escriba una pregunta sobre este expediente.'
-                    : 'Busque el expediente por su número para empezar.'}
+                    ? adaptador.notaVacioConSeleccion
+                    : adaptador.notaVacioSinSeleccion}
               </li>
             )}
             {mensajes.map((m) => (
-              <li key={m.id} className={`chat-mensaje chat-mensaje--${m.rol}`}>
+              <li key={m.id} className={`chat-mensaje chat-mensaje--${m.rol}${m.tipo === 'fijo' ? ' chat-mensaje--fijo' : ''}`}>
                 {m.rol === 'assistant' && m.citas && m.citas.length > 0 ? (
                   <RespuestaConCitas
                     texto={m.texto}
@@ -426,6 +421,7 @@ export function ChatPage({ expedienteInicial }: Props) {
                     abierta={citaAbierta[m.id] ?? null}
                     onToggle={(numero) => alternarCita(m.id, numero)}
                     onAbrirDocumento={abrirCita}
+                    fetchTexto={adaptador.fetchTexto}
                   />
                 )}
 
@@ -439,10 +435,10 @@ export function ChatPage({ expedienteInicial }: Props) {
             ))}
             {enviando && (
               <li className="chat-mensaje chat-mensaje--assistant chat-escribiendo">
-                <span className="chat-punto" />
-                <span className="chat-punto" />
-                <span className="chat-punto" />
-                <span className="chat-escribiendo-texto">Buscando en los documentos…</span>
+                <OrbePensando estado={redactando ? 'composing' : 'searching'} />
+                <span className="chat-escribiendo-texto">
+                  {redactando ? 'Redactando la respuesta…' : 'Buscando en los documentos…'}
+                </span>
               </li>
             )}
           </ol>
@@ -479,25 +475,22 @@ export function ChatPage({ expedienteInicial }: Props) {
         />
       )}
 
-      {modalIndexacionAbierto && seleccionado && (
-        <ModalIndexacionExpediente
-          nuAnnExp={seleccionado.nuAnnExp}
-          nuSecExp={seleccionado.nuSecExp}
-          numeroExpediente={etiquetaExpediente(seleccionado)}
-          onCerrar={() => setModalIndexacionAbierto(false)}
-          onCambio={refrescarEstadoIngesta}
-        />
-      )}
+      {modalGestionAbierto && seleccionado && renderModalGestion && renderModalGestion({
+        entidad: seleccionado,
+        cerrar: () => setModalGestionAbierto(false),
+        onCambio: refrescarEstadoIngesta,
+      })}
     </main>
   );
 }
 
 /** Aviso no bloqueante: el usuario puede seguir preguntando con cobertura parcial. */
 function AvisoIngesta({
-  estado, puedeGestionarRag, onCorregir,
+  estado, sustantivoContexto, puedeGestionar, onCorregir,
 }: {
-  estado: EstadoIngestaExpediente;
-  puedeGestionarRag: boolean;
+  estado: EstadoIngestaGenerico;
+  sustantivoContexto: string;
+  puedeGestionar: boolean;
   onCorregir: () => void;
 }) {
   if (estado.completo) return null;
@@ -505,8 +498,8 @@ function AvisoIngesta({
   if (estado.total === 0) {
     return (
       <div className="chat-aviso">
-        Este expediente todavía no tiene documentos indexados en la base de conocimientos — las
-        respuestas del chat no van a encontrar nada de este expediente.
+        Este {sustantivoContexto} todavía no tiene documentos indexados en la base de
+        conocimientos — las respuestas del chat no van a encontrar nada de este {sustantivoContexto}.
       </div>
     );
   }
@@ -521,11 +514,12 @@ function AvisoIngesta({
   return (
     <div className="chat-aviso">
       <p>
-        {estado.listos} de {estado.total} documentos de este expediente están totalmente indexados
+        {estado.listos} de {estado.total} documentos de este {sustantivoContexto} están
+        totalmente indexados
         {detalles.length > 0 && ` (${detalles.join(', ')})`} — las respuestas pueden estar
         incompletas.
       </p>
-      {puedeGestionarRag && (
+      {puedeGestionar && (
         <button type="button" className="boton-secundario chat-aviso-boton" onClick={onCorregir}>
           Ver y corregir indexación
         </button>

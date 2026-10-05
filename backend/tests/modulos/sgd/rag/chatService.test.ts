@@ -11,6 +11,8 @@ const buscarHibrido = jest.fn();
 const elegirDocumentoParaCita = jest.fn();
 const estadoExpediente = jest.fn();
 const query = jest.fn();
+const planificar = jest.fn();
+const leerBooleano = jest.fn();
 const ordenLlamadas: string[] = [];
 
 jest.mock('../../../../src/compartido/ai/providerFactory', () => ({
@@ -23,6 +25,18 @@ jest.mock('../../../../src/modulos/sgd/rag/retrievalService', () => ({
   elegirDocumentoParaCita: (...a: unknown[]) => elegirDocumentoParaCita(...a),
   estadoExpediente: (...a: unknown[]) => estadoExpediente(...a),
   recortarPorPresupuesto: (chunks: unknown[]) => chunks, // sin recorte: se prueba aparte, es pura
+}));
+
+// El planificador se prueba aparte (planificadorService.test.ts); aquí solo importa qué hace el
+// chat con cada plan. `planDeRespaldo` es el real: es pura.
+jest.mock('../../../../src/compartido/rag/planificadorService', () => ({
+  ...jest.requireActual('../../../../src/compartido/rag/planificadorService'),
+  planificar: (...a: unknown[]) => planificar(...a),
+}));
+
+jest.mock('../../../../src/compartido/rag/configService', () => ({
+  leerBooleano: (...a: unknown[]) => leerBooleano(...a),
+  leerConfig: () => Promise.resolve(null), // mensajes fijos: siempre el texto por defecto
 }));
 
 jest.mock('../../../../src/compartido/config/appDatabase', () => ({
@@ -53,6 +67,10 @@ function instalarQueryPorDefecto() {
     if (sql.includes("rol, texto FROM rag.chat_mensaje")) {
       return Promise.resolve([]); // sin historial previo
     }
+    if (sql.includes("'assistant', $2, 'fijo'")) {
+      ordenLlamadas.push('guardar-fijo');
+      return Promise.resolve([{ id: 77 }]);
+    }
     if (sql.includes("VALUES ($1, 'assistant'")) {
       ordenLlamadas.push('crear-mensaje-pendiente');
       return Promise.resolve([{ id: 99 }]);
@@ -76,7 +94,20 @@ beforeEach(() => {
   elegirDocumentoParaCita.mockResolvedValue(null);
   estadoExpediente.mockResolvedValue([]);
   responder.mockReset().mockResolvedValue({ texto: 'respuesta', uso: { tokensIn: 10, tokensOut: 5, estimado: false } });
+  leerBooleano.mockReset().mockResolvedValue(true);
+  planificar.mockReset().mockImplementation((_prov: unknown, mensaje: string) => Promise.resolve({
+    plan: planDeRespaldoReal(mensaje), uso: null, respaldo: false, ms: 1,
+  }));
 });
+
+const { planDeRespaldo: planDeRespaldoReal } = jest.requireActual(
+  '../../../../src/compartido/rag/planificadorService',
+) as typeof import('../../../../src/compartido/rag/planificadorService');
+
+const UN_CHUNK = {
+  chunks: [{ chunkId: 1, texto: 'texto A', rutaTitulos: null, ord: 0, sha256: 'sha-a', score: 1 }],
+  candidatosVec: 0, candidatosFts: 1, escaneoExacto: true,
+};
 
 function peticionBase(over: Partial<Parameters<ChatSvc['responderChat']>[0]> = {}) {
   return {
@@ -158,10 +189,72 @@ describe('responderChat', () => {
   });
 
   it('si el proveedor de chat falla, borra el mensaje pendiente en vez de dejarlo huérfano', async () => {
+    buscarHibrido.mockResolvedValue(UN_CHUNK);
+    elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
     responder.mockRejectedValue(new Error('el proveedor no respondió'));
 
     await expect(chat.responderChat(peticionBase())).rejects.toThrow('el proveedor no respondió');
-    expect(ordenLlamadas).toEqual(['crear-mensaje-pendiente', 'borrar-mensaje-pendiente']);
+    expect(ordenLlamadas).toEqual(['crear-mensaje-pendiente', 'insert-cita', 'borrar-mensaje-pendiente']);
+  });
+});
+
+describe('responderChat — cierre con mensajes fijos', () => {
+  it('un saludo se contesta con el mensaje de ayuda sin planificador, búsqueda ni modelo', async () => {
+    const r = await chat.responderChat(peticionBase({ mensaje: '¡Hola!' }));
+
+    expect(r.tipo).toBe('fijo');
+    expect(r.texto).toMatch(/base de conocimiento/);
+    expect(r.citas).toEqual([]);
+    expect(planificar).not.toHaveBeenCalled();
+    expect(buscarHibrido).not.toHaveBeenCalled();
+    expect(responder).not.toHaveBeenCalled();
+    expect(ordenLlamadas).toEqual(['guardar-fijo']);
+  });
+
+  it('fuera de alcance según el planificador → mensaje fijo, sin búsqueda ni respuesta del modelo', async () => {
+    planificar.mockResolvedValue({
+      plan: { ...planDeRespaldoReal('capital de Francia'), intencion: 'fuera_de_alcance' },
+      uso: { tokensIn: 300, tokensOut: 40, estimado: false }, respaldo: false, ms: 5,
+    });
+
+    const r = await chat.responderChat(peticionBase({ mensaje: '¿Cuál es la capital de Francia?' }));
+
+    expect(r.tipo).toBe('fijo');
+    expect(r.texto).toMatch(/no es sobre la información/);
+    expect(buscarHibrido).not.toHaveBeenCalled();
+    expect(responder).not.toHaveBeenCalled(); // el mock de planificar no usa el proveedor
+  });
+
+  it('sin fragmentos ni línea de tiempo → "no encontré", sin llamar al modelo', async () => {
+    const r = await chat.responderChat(peticionBase({ mensaje: 'monto del contrato de la obra Junín' }));
+
+    expect(r.tipo).toBe('fijo');
+    expect(r.texto).toMatch(/No encontré/);
+    expect(responder).not.toHaveBeenCalled();
+    expect(ordenLlamadas).toEqual(['guardar-fijo']);
+  });
+
+  it('en modo expediente, la línea de tiempo basta para responder aunque no haya fragmentos', async () => {
+    estadoExpediente.mockResolvedValue([{ fecha: '01/01/2026', tipoDocumento: 'OFICIO', numeroDocumento: '1',
+      asunto: 'x', dependenciaEmisora: 'A', dependenciaDestino: 'B', estado: 'RECIBIDO' }]);
+
+    const r = await chat.responderChat(peticionBase({
+      modo: 'expediente', expediente: { nuAnnExp: '2026', nuSecExp: '0000000001' },
+    }));
+
+    expect(r.tipo).toBe('texto');
+    expect(responder).toHaveBeenCalledTimes(1);
+  });
+
+  it('con el planificador apagado no se llama y la pregunta va a la búsqueda de contenido', async () => {
+    leerBooleano.mockResolvedValue(false);
+    buscarHibrido.mockResolvedValue(UN_CHUNK);
+    elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
+
+    const r = await chat.responderChat(peticionBase());
+
+    expect(planificar).not.toHaveBeenCalled();
+    expect(r.tipo).toBe('texto');
   });
 });
 

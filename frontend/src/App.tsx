@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { adaptadorChatSgd, etiquetaExpediente, type ExpedienteChat } from './api/chat';
+import { adaptadorChatStd } from './api/std';
 import { useSesion } from './auth/SesionContext';
 import { AdminUsuariosPage } from './pages/AdminUsuariosPage';
 import { CalidadProcesosPage } from './pages/CalidadProcesosPage';
@@ -6,10 +8,14 @@ import { ChatPage } from './pages/ChatPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DependenciasPage } from './pages/DependenciasPage';
 import { LoginPage } from './pages/LoginPage';
+import { ModalIndexacionExpediente } from './components/ModalIndexacionExpediente';
 import { RagPanelPage } from './pages/RagPanelPage';
+import { RagPanelStdPage } from './pages/RagPanelStdPage';
 import { SeguimientoPage } from './pages/SeguimientoPage';
 
-type Vista = 'seguimiento' | 'dependencias' | 'usuarios' | 'rag' | 'chat' | 'dashboard' | 'calidad';
+type Vista =
+  | 'seguimiento' | 'dependencias' | 'usuarios' | 'rag' | 'chat' | 'dashboard' | 'calidad'
+  | 'chatStd' | 'ragStd';
 
 const VISTAS: Record<Vista, { titulo: string; subtitulo: string; etiqueta: string; permiso: string }> = {
   seguimiento: {
@@ -51,20 +57,32 @@ const VISTAS: Record<Vista, { titulo: string; subtitulo: string; etiqueta: strin
   chat: {
     titulo: 'Chat sobre el SGD',
     subtitulo: 'Preguntas sobre expedientes y documentos, con citas verificables',
-    etiqueta: 'Chat',
+    etiqueta: 'Chat SGD',
     permiso: 'rag.consultar',
+  },
+  ragStd: {
+    titulo: 'Base de conocimientos del STD',
+    subtitulo: 'Barrido, conversión y embeddings de los documentos del STD (Sistema de Trámite Documentario)',
+    etiqueta: 'RAG STD',
+    permiso: 'std.gestionar',
+  },
+  chatStd: {
+    titulo: 'Chat sobre el STD',
+    subtitulo: 'Preguntas sobre documentos del STD, con citas verificables',
+    etiqueta: 'Chat STD',
+    permiso: 'std.consultar',
   },
 };
 
 export function App() {
   const { usuario, comprobando, salir, puede } = useSesion();
   const [vista, setVista] = useState<Vista>('seguimiento');
-  const [chatExpediente, setChatExpediente] = useState<
-    { nuAnnExp: string; nuSecExp: string; numeroExpediente: string } | null
-  >(null);
+  const [chatExpediente, setChatExpediente] = useState<ExpedienteChat | null>(null);
 
   function abrirChatExpediente(nuAnnExp: string, nuSecExp: string, numeroExpediente: string) {
-    setChatExpediente({ nuAnnExp, nuSecExp, numeroExpediente });
+    // Los contadores solo alimentan la lista de resultados de búsqueda; el aviso de cobertura que
+    // pinta `ChatPage` los pide aparte y en vivo (`fetchEstadoIngestaExpediente`).
+    setChatExpediente({ nuAnnExp, nuSecExp, numeroExpediente, documentos: 0, ingestados: 0 });
     setVista('chat');
   }
 
@@ -134,7 +152,23 @@ export function App() {
         {actualClave === 'dependencias' && <DependenciasPage />}
         {actualClave === 'usuarios' && <AdminUsuariosPage />}
         {actualClave === 'rag' && <RagPanelPage />}
-        {actualClave === 'chat' && <ChatPage expedienteInicial={chatExpediente} />}
+        {actualClave === 'chat' && (
+          <ChatPage
+            adaptador={adaptadorChatSgd}
+            contextoInicial={chatExpediente}
+            renderModalGestion={({ entidad, cerrar, onCambio }) => (
+              <ModalIndexacionExpediente
+                nuAnnExp={entidad.nuAnnExp}
+                nuSecExp={entidad.nuSecExp}
+                numeroExpediente={etiquetaExpediente(entidad)}
+                onCerrar={cerrar}
+                onCambio={onCambio}
+              />
+            )}
+          />
+        )}
+        {actualClave === 'ragStd' && <RagPanelStdPage />}
+        {actualClave === 'chatStd' && <ChatPage adaptador={adaptadorChatStd} />}
         {actualClave === 'dashboard' && <DashboardPage />}
         {actualClave === 'calidad' && <CalidadProcesosPage />}
         {!actualClave && (

@@ -102,6 +102,11 @@ interface FilaDocumentoSgd {
   fe_emi: string | null;
   co_dep_emi: string | null;
   de_dep_emi: string | null;
+  ti_emi: string | null;
+  emisor_empleado: string | null;
+  remitente_externo: string | null;
+  remitente_doc: string | null;
+  registrado_por: string | null;
   es_eli: string | null;
   es_doc_emi: string | null;
 }
@@ -121,12 +126,32 @@ async function leerDocumentosSgd(claves: { ann: string; sec: string }[]): Promis
             r.fe_emi::text,
             r.co_dep_emi,
             COALESCE(d.de_sigla, r.co_dep_emi) AS de_dep_emi,
+            NULLIF(TRIM(r.ti_emi),'') AS ti_emi,
+            -- En externos ('02' empresa, '03' persona) co_emp_emi es quien lo REGISTRÓ en mesa de
+            -- partes, no el autor: va a registrado_por, nunca a emisor_empleado.
+            CASE WHEN TRIM(COALESCE(r.ti_emi,'')) NOT IN ('02','03')
+                 THEN NULLIF(TRIM(CONCAT_WS(' ', emp.cemp_apepat, emp.cemp_apemat, emp.cemp_denom)),'')
+            END AS emisor_empleado,
+            CASE TRIM(COALESCE(r.ti_emi,''))
+                 WHEN '02' THEN COALESCE(NULLIF(TRIM(pro.cpro_razsoc),''), NULLIF(UPPER(TRIM(r.de_ori_emi)),''))
+                 WHEN '03' THEN NULLIF(UPPER(TRIM(r.de_ori_emi)),'')
+            END AS remitente_externo,
+            CASE TRIM(COALESCE(r.ti_emi,''))
+                 WHEN '02' THEN NULLIF(TRIM(r.nu_ruc_emi),'')
+                 WHEN '03' THEN NULLIF(TRIM(r.nu_dni_emi),'')
+            END AS remitente_doc,
+            CASE WHEN TRIM(COALESCE(r.ti_emi,'')) IN ('02','03')
+                 THEN NULLIF(TRIM(CONCAT_WS(' ', emp.cemp_apepat, emp.cemp_apemat, emp.cemp_denom)),'')
+            END AS registrado_por,
             COALESCE(r.es_eli,'0') AS es_eli,
             TRIM(COALESCE(r.es_doc_emi,'')) AS es_doc_emi
        FROM ${S}.tdtv_remitos r
        LEFT JOIN ${S}.tdtx_remitos_resumen res ON res.nu_ann = r.nu_ann AND res.nu_emi = r.nu_emi
        LEFT JOIN ${S}.si_mae_tipo_doc td ON td.cdoc_tipdoc = r.co_tip_doc_adm
        LEFT JOIN ${S}.rhtm_dependencia d ON d.co_dependencia = r.co_dep_emi
+       -- Ambas claves son únicas en el SGD (validado): estos JOIN no multiplican filas.
+       LEFT JOIN ${S}.rhtm_per_empleados emp ON emp.cemp_codemp = r.co_emp_emi
+       LEFT JOIN ${S}.lg_pro_proveedor pro ON pro.cpro_ruc = r.nu_ruc_emi
       WHERE (r.nu_ann_exp, r.nu_sec_exp) IN (
               SELECT unnest($1::text[]), unnest($2::text[])
             )`,
@@ -264,14 +289,19 @@ async function sincronizarDocumentos(
     const filas = await appSequelize.query<{ inserted: boolean }>(
       `INSERT INTO rag.documento
          (nu_ann, nu_emi, nu_ane, nu_ann_exp, nu_sec_exp, titulo, tipo_doc, co_tip_doc,
-          asunto, fe_emi, co_dep_emi, de_dep_emi)
+          asunto, fe_emi, co_dep_emi, de_dep_emi,
+          ti_emi, emisor_empleado, remitente_externo, remitente_doc, registrado_por)
        SELECT * FROM unnest(
          $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[],
-         $8::text[], $9::text[], $10::timestamptz[], $11::text[], $12::text[])
+         $8::text[], $9::text[], $10::timestamptz[], $11::text[], $12::text[],
+         $13::text[], $14::text[], $15::text[], $16::text[], $17::text[])
        ON CONFLICT (nu_ann, nu_emi, nu_ane) DO UPDATE SET
          titulo = EXCLUDED.titulo, tipo_doc = EXCLUDED.tipo_doc, asunto = EXCLUDED.asunto,
          co_tip_doc = EXCLUDED.co_tip_doc,
          fe_emi = EXCLUDED.fe_emi, de_dep_emi = EXCLUDED.de_dep_emi,
+         ti_emi = EXCLUDED.ti_emi, emisor_empleado = EXCLUDED.emisor_empleado,
+         remitente_externo = EXCLUDED.remitente_externo, remitente_doc = EXCLUDED.remitente_doc,
+         registrado_por = EXCLUDED.registrado_por,
          nu_ann_exp = EXCLUDED.nu_ann_exp, nu_sec_exp = EXCLUDED.nu_sec_exp,
          vigente = true
        RETURNING (xmax = 0) AS inserted`,
@@ -292,6 +322,11 @@ async function sincronizarDocumentos(
           vivos.map((d) => d.fe_emi),
           vivos.map((d) => d.co_dep_emi),
           vivos.map((d) => d.de_dep_emi),
+          vivos.map((d) => d.ti_emi),
+          vivos.map((d) => d.emisor_empleado),
+          vivos.map((d) => d.remitente_externo),
+          vivos.map((d) => d.remitente_doc),
+          vivos.map((d) => d.registrado_por),
         ],
         type: QueryTypes.SELECT,
       },

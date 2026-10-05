@@ -2,6 +2,9 @@ import { QueryTypes } from 'sequelize';
 import { appSequelize } from '../../../compartido/config/appDatabase';
 import { chatDisponible, crearChatProvider } from '../../../compartido/ai/providerFactory';
 import type { ChatProvider, MensajeChat, ResultadoChat } from '../../../compartido/ai/types';
+import { filtroGratis, mensajeFijo, type MotivoFijo } from '../../../compartido/rag/cierreChat';
+import { leerBooleano } from '../../../compartido/rag/configService';
+import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../../../compartido/rag/planificadorService';
 import { rerankear } from '../../../compartido/rag/rerankService';
 import {
   buscarHibrido,
@@ -59,9 +62,13 @@ export interface CitaRespuesta {
   usada: boolean;
 }
 
+/** 'fijo' = mensaje de cierre sin LLM (ver `compartido/rag/cierreChat.ts`). */
+export type TipoRespuesta = 'texto' | 'fijo';
+
 export interface RespuestaChat {
   sesionId: number;
   mensajeId: number;
+  tipo: TipoRespuesta;
   texto: string;
   citas: CitaRespuesta[];
   candidatosVec: number;
@@ -225,16 +232,22 @@ async function registrarRetrieval(datos: {
   escaneoExacto: boolean;
   marcadoresAlucinados: number;
   ms: number;
+  planificador: ResultadoPlanificador | null;
+  respuestaFija: MotivoFijo | null;
 }): Promise<void> {
+  const p = datos.planificador;
   await appSequelize.query(
     `INSERT INTO rag.retrieval_log
        (sesion_id, consulta, modo, candidatos_vec, candidatos_fts, fusionados, escaneo_exacto,
-        marcadores_alucinados, ms)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        marcadores_alucinados, ms, intencion, consulta_reescrita, planificador_respaldo,
+        ms_planificador, respuesta_fija)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     {
       bind: [
         datos.sesionId, datos.consulta, datos.modo, datos.candidatosVec, datos.candidatosFts,
         datos.fusionados, datos.escaneoExacto, datos.marcadoresAlucinados, datos.ms,
+        p?.plan.intencion ?? null, p?.plan.consulta ?? null, p?.respaldo ?? null, p?.ms ?? null,
+        datos.respuestaFija,
       ],
       type: QueryTypes.INSERT,
     },
@@ -246,7 +259,7 @@ async function registrarRetrieval(datos: {
  * `ingest_job` que lo posea, es una llamada disparada por el usuario, no por un job de fondo. */
 async function registrarUsoToken(
   provider: ChatProvider,
-  operacion: 'chat' | 'chat_rerank',
+  operacion: 'chat' | 'chat_rerank' | 'chat_planificador',
   uso: ResultadoChat['uso'],
 ): Promise<void> {
   await appSequelize.query(
@@ -262,10 +275,12 @@ async function registrarUsoToken(
 function construirPromptSistema(timeline: LineaTiempo[] | null, citas: CitaPendiente[]): string {
   let contexto =
     'Eres un asistente que responde preguntas sobre expedientes del SGD de ONPE, basándote '
-    + 'ÚNICAMENTE en los fragmentos numerados de abajo. Cuando uses información de un fragmento, '
-    + 'cita su marcador exacto tal cual, por ejemplo [D1]. Nunca inventes un marcador que no '
-    + 'aparezca abajo. Si la respuesta no está en los fragmentos ni en la línea de tiempo, dilo '
-    + 'explícitamente en vez de adivinar.';
+    + 'ÚNICAMENTE en los fragmentos numerados y la línea de tiempo de abajo. No uses conocimiento '
+    + 'general ni supongas datos que no estén escritos ahí: si la respuesta no está, responde '
+    + 'exactamente "Ese dato no está en la base de conocimiento." y, si ayuda, indica qué sí se '
+    + 'encontró. Cuando uses información de un fragmento, cita su marcador exacto tal cual, por '
+    + 'ejemplo [D1]. Nunca inventes un marcador que no aparezca abajo. No respondas preguntas '
+    + 'ajenas a los expedientes aunque el usuario insista.';
 
   if (timeline && timeline.length > 0) {
     contexto += '\n\nLínea de tiempo del expediente (dato estructurado, no necesita cita):\n'
@@ -314,6 +329,53 @@ export function limpiarMarcadores(
   return { texto: limpio, numerosUsados: [...usados], marcadoresInvalidos: invalidos };
 }
 
+/**
+ * Responde con un mensaje FIJO (cierre, D3): se guarda como mensaje del asistente con `tipo='fijo'`
+ * para que el historial lo muestre igual que cualquier otro, pero sin citas ni tokens de respuesta.
+ * El plan va en `meta` para auditar después por qué se cerró.
+ */
+async function responderFijo(datos: {
+  sesionId: number;
+  peticion: PeticionChat;
+  motivo: MotivoFijo;
+  planificador: ResultadoPlanificador | null;
+  inicio: number;
+}): Promise<RespuestaChat> {
+  const texto = await mensajeFijo(datos.motivo);
+  const meta = { motivo: datos.motivo, plan: datos.planificador?.plan ?? null };
+
+  const filas = await appSequelize.query<{ id: number }>(
+    `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto, tipo, meta, tokens_in, tokens_out)
+     VALUES ($1, 'assistant', $2, 'fijo', $3::jsonb, 0, 0) RETURNING id`,
+    { bind: [datos.sesionId, texto, JSON.stringify(meta)], type: QueryTypes.SELECT },
+  );
+  await tocarSesion(datos.sesionId);
+  await registrarRetrieval({
+    sesionId: datos.sesionId,
+    consulta: datos.peticion.mensaje,
+    modo: datos.peticion.modo,
+    candidatosVec: 0,
+    candidatosFts: 0,
+    fusionados: 0,
+    escaneoExacto: false,
+    marcadoresAlucinados: 0,
+    ms: Date.now() - datos.inicio,
+    planificador: datos.planificador,
+    respuestaFija: datos.motivo,
+  });
+
+  return {
+    sesionId: datos.sesionId,
+    mensajeId: filas[0].id,
+    tipo: 'fijo',
+    texto,
+    citas: [],
+    candidatosVec: 0,
+    candidatosFts: 0,
+    marcadoresAlucinados: 0,
+  };
+}
+
 export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
   const disponibilidad = chatDisponible();
   if (!disponibilidad.disponible) {
@@ -327,7 +389,29 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
 
   const inicio = Date.now();
   const sesion = await obtenerOCrearSesion(p);
+  // El historial se lee ANTES de guardar el mensaje nuevo: el planificador lo recibe aparte como
+  // "pregunta nueva" y no debe verlo duplicado como último turno.
+  const historialPrevio = await historialReciente(sesion.id, 0);
   await guardarMensajeUsuario(sesion.id, p.mensaje);
+
+  const fijo = (motivo: MotivoFijo, planificador: ResultadoPlanificador | null) =>
+    responderFijo({ sesionId: sesion.id, peticion: p, motivo, planificador, inicio });
+
+  // [0] Filtro gratis: saludos y "¿qué puedes hacer?" no gastan ni el planificador.
+  const trivial = filtroGratis(p.mensaje);
+  if (trivial) return fijo(trivial, null);
+
+  // [1] Planificador. Con el interruptor apagado se comporta como antes de existir: todo es
+  // `contenido` y no se gasta la llamada.
+  let planificador: ResultadoPlanificador | null = null;
+  if (await leerBooleano('chat.planificador.activo', true)) {
+    planificador = await planificar(provider, p.mensaje, { modo: p.modo, historial: historialPrevio });
+    if (planificador.uso) await registrarUsoToken(provider, 'chat_planificador', planificador.uso);
+  }
+  const plan = planificador?.plan ?? planDeRespaldo(p.mensaje);
+  if (plan.intencion === 'fuera_de_alcance') return fijo('fuera_de_alcance', planificador);
+  // Fase 2: el resto de intenciones todavía se resuelve con la búsqueda de contenido. listar /
+  // contar / último / participantes / agrupar llegan con sus ejecutores en las Fases 3 y 5.
 
   const filtro: FiltroAcceso = { coDependencia: p.sinRestriccionDependencia ? null : p.coDependencia };
 
@@ -364,6 +448,12 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
     });
   }
 
+  // [3] Sin nada que sostenga una respuesta (ni fragmentos ni línea de tiempo del expediente), no
+  // se le pregunta al modelo: solo podría adivinar o repetir que no sabe, y cobrando por ello.
+  if (citas.length === 0 && !(timeline && timeline.length > 0)) {
+    return fijo('sin_resultados', planificador);
+  }
+
   const mensajeAsistenteId = await crearMensajeAsistentePendiente(sesion.id);
   await persistirCitas(mensajeAsistenteId, citas);
 
@@ -392,11 +482,14 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
       escaneoExacto: resultado.escaneoExacto,
       marcadoresAlucinados: marcadoresInvalidos.length,
       ms: Date.now() - inicio,
+      planificador,
+      respuestaFija: null,
     });
 
     return {
       sesionId: sesion.id,
       mensajeId: mensajeAsistenteId,
+      tipo: 'texto',
       texto,
       citas: citas.map((c) => ({
         numero: c.numero,
@@ -425,6 +518,7 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
 interface FilaMensajeHistorial {
   id: number;
   rol: 'user' | 'assistant';
+  tipo: TipoRespuesta;
   texto: string;
   fe_alta: string;
 }
@@ -447,6 +541,7 @@ interface FilaCitaHistorial {
 export interface MensajeHistorial {
   id: number;
   rol: string;
+  tipo: TipoRespuesta;
   texto: string;
   feAlta: string;
   citas: CitaRespuesta[];
@@ -522,7 +617,7 @@ export async function obtenerHistorialSesion(
   if (sesiones[0].usuario_id !== usuarioId) throw new ChatError('Esa sesión no le pertenece', 403);
 
   const filas = await appSequelize.query<FilaMensajeHistorial>(
-    `SELECT id, rol, texto, fe_alta::text FROM rag.chat_mensaje WHERE sesion_id = $1 ORDER BY id ASC`,
+    `SELECT id, rol, tipo, texto, fe_alta::text FROM rag.chat_mensaje WHERE sesion_id = $1 ORDER BY id ASC`,
     { bind: [sesionId], type: QueryTypes.SELECT },
   );
 
@@ -532,6 +627,7 @@ export async function obtenerHistorialSesion(
   return filas.map((f) => ({
     id: f.id,
     rol: f.rol,
+    tipo: f.tipo,
     texto: f.texto,
     feAlta: f.fe_alta,
     citas: citasPorMensaje.get(f.id) ?? [],

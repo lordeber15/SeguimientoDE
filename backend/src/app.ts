@@ -11,6 +11,10 @@ import documentoRoutes from './modulos/sgd/routes/documentoRoutes';
 import ragRoutes from './modulos/sgd/routes/ragRoutes';
 import seguimientoRoutes from './modulos/sgd/routes/seguimientoRoutes';
 import unirPdfRoutes from './modulos/sgd/routes/unirPdfRoutes';
+import archivoRoutesStd from './modulos/std/routes/archivoRoutesStd';
+import chatRoutesStd from './modulos/std/routes/chatRoutesStd';
+import documentoRoutesStd from './modulos/std/routes/documentoRoutesStd';
+import ragRoutesStd from './modulos/std/routes/ragRoutesStd';
 import { requiereAuth, requierePermiso } from './compartido/middlewares/authMiddleware';
 
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
@@ -47,5 +51,12 @@ app.use('/api/dependencias', requiereAuth, requierePermiso('seguimiento.ver'), d
 app.use('/api/seguimiento', requiereAuth, requierePermiso('seguimiento.ver'), seguimientoRoutes);
 app.use('/api/documentos', requiereAuth, requierePermiso('documentos.ver'), documentoRoutes);
 app.use('/api/unir-pdf', requiereAuth, requierePermiso('pdf.unificar'), unirPdfRoutes);
+
+// Módulo STD: el permiso se exige DENTRO de cada router (`std.consultar` para chat/documentos/
+// adjuntos, `std.gestionar` para el panel RAG) — mismo patrón que `ragRoutes`/`chatRoutes` del SGD.
+app.use('/api/std/chat', chatRoutesStd);
+app.use('/api/std/documentos', documentoRoutesStd);
+app.use('/api/std/adjuntos', archivoRoutesStd);
+app.use('/api/std/rag', ragRoutesStd);
 
 export default app;

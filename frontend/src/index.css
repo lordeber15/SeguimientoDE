@@ -2126,6 +2126,15 @@ tbody tr.fila-destacada > td {
   max-width: 94%;
 }
 
+/* Mensaje de cierre sin LLM (fuera de alcance, ayuda, sin resultados): se distingue de una
+   respuesta basada en documentos para que nadie lo lea como un hallazgo. */
+.chat-mensaje--fijo {
+  background: transparent;
+  border-style: dashed;
+  color: var(--color-muted-foreground, var(--color-foreground));
+  font-style: italic;
+}
+
 /* ── Marcador [Dn] dentro del texto de la respuesta ── */
 
 .chat-marcador {
@@ -2389,27 +2398,15 @@ tbody tr.fila-destacada > td {
 .chat-escribiendo {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
 }
 
-.chat-punto {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-muted-foreground);
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-.chat-punto:nth-child(2) {
-  animation-delay: 160ms;
-}
-
-.chat-punto:nth-child(3) {
-  animation-delay: 320ms;
+.chat-escribiendo-orbe {
+  display: inline-flex;
+  flex-shrink: 0;
 }
 
 .chat-escribiendo-texto {
-  margin-left: 6px;
   font-size: 13px;
   color: var(--color-muted-foreground);
 }
@@ -2457,8 +2454,7 @@ tbody tr.fila-destacada > td {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chat-mensaje,
-  .chat-punto {
+  .chat-mensaje {
     animation: none;
   }
 

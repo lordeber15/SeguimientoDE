@@ -8,6 +8,7 @@ import { STD_HABILITADO, stdDisponible, stdSequelize } from './modulos/std/confi
 import { asegurarBaseStdRag, aplicarMigracionesStd } from './modulos/std/config/stdRagDatabase';
 import { iniciarPlanificadorBarridoStd } from './modulos/std/rag/barridoStdService';
 import { iniciarSupervisorIngestaStd, reanudarJobsInterrumpidosStd } from './modulos/std/rag/ingestaStdService';
+import { iniciarMantenimientoPeriodicoStd } from './modulos/std/rag/mantenimientoStdService';
 import { iniciarPlanificadorResumen } from './modulos/sgd/services/dashboardResumenService';
 import { iniciarPlanificadorBarrido } from './modulos/sgd/rag/barridoService';
 import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './modulos/sgd/rag/ingestaService';
@@ -70,6 +71,7 @@ async function start() {
       iniciarPlanificadorBarridoStd();
       await reanudarJobsInterrumpidosStd();
       iniciarSupervisorIngestaStd();
+      iniciarMantenimientoPeriodicoStd();
     } else {
       console.log('STD_HABILITADO no está activado; el backend arranca sin el módulo STD.');
     }

@@ -124,15 +124,26 @@ export async function barrerStd(disparo: DisparoBarridoStd = 'manual'): Promise<
 }
 
 /**
- * Upsert de `rag.documento` por `id_adjunto` (su identidad real — ver la migración). A diferencia
+ * Upsert de `rag.documento` por ENLACE: (id_adjunto, id_documento, origen, id_documento_mov) — un
+ * mismo `tbl_adjunto` puede estar enlazado en varios sitios del STD y cada enlace es una fila (ver
+ * la migración std/002; el contenido se sigue deduplicando por sha256). A diferencia
  * del SGD, aquí no hay "bajas" que detectar en este paso: el STD no marca sus adjuntos como
  * eliminados de una forma que el barrido deba vigilar — si algún día hiciera falta, iría aquí
  * mismo, igual que `reconciliarEstados()` en el SGD.
  */
 async function sincronizarDocumentos(
   lote: { id_documento: number; documento: string | null }[],
-  adjuntos: FilaAdjuntoPdfStd[],
+  adjuntosCrudos: FilaAdjuntoPdfStd[],
 ): Promise<{ nuevos: number; cambiados: number }> {
+  // Colapsa solo filas repetidas EN LA MISMA CLAVE de enlace (filas duplicadas dentro de una misma
+  // tabla del STD, sin información distinta): Postgres no deja que un único INSERT ... ON CONFLICT
+  // DO UPDATE toque dos veces la misma fila.
+  const porEnlace = new Map<string, FilaAdjuntoPdfStd>();
+  for (const a of adjuntosCrudos) {
+    const clave = `${a.id_adjunto}|${a.id_documento}|${a.origen}|${a.id_documento_mov ?? 0}`;
+    if (!porEnlace.has(clave)) porEnlace.set(clave, a);
+  }
+  const adjuntos = [...porEnlace.values()];
   if (adjuntos.length === 0) return { nuevos: 0, cambiados: 0 };
 
   // Da de alta primero los `rag.documento_std` que falten: `rag.documento.id_documento` tiene FK
@@ -155,8 +166,7 @@ async function sincronizarDocumentos(
        $1::bigint[], $2::bigint[], $3::text[], $4::bigint[], $5::text[], $6::text[], $7::text[],
        $8::text[], $9::text[], $10::date[], $11::text[], $12::text[], $13::boolean[], $14::text[],
        $15::text[], $16::text[])
-     ON CONFLICT (id_adjunto) DO UPDATE SET
-       origen = EXCLUDED.origen, id_documento_mov = EXCLUDED.id_documento_mov,
+     ON CONFLICT (id_adjunto, id_documento, origen, (COALESCE(id_documento_mov, 0))) DO UPDATE SET
        documento = EXCLUDED.documento, tipo_doc = EXCLUDED.tipo_doc, origen_doc = EXCLUDED.origen_doc,
        asunto = EXCLUDED.asunto, fecha = EXCLUDED.fecha, remitente = EXCLUDED.remitente,
        area_origen = EXCLUDED.area_origen, flg_confidencial = EXCLUDED.flg_confidencial,

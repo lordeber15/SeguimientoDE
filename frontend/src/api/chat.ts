@@ -1,4 +1,6 @@
+import type { AdaptadorChat, TipoRespuestaChat } from './chatComun';
 import { apiJson } from './cliente';
+import { rutaAnexo, rutaDocumento } from './documentos';
 
 /**
  * La cita NO trae el texto completo del fragmento: solo un extracto de una línea para el preview.
@@ -23,6 +25,7 @@ export interface CitaChat {
 export interface RespuestaChat {
   sesionId: number;
   mensajeId: number;
+  tipo?: TipoRespuestaChat;
   texto: string;
   citas: CitaChat[];
   candidatosVec: number;
@@ -41,6 +44,7 @@ export interface SesionChat {
 export interface MensajeHistorial {
   id: number;
   rol: 'user' | 'assistant';
+  tipo?: TipoRespuestaChat;
   texto: string;
   feAlta: string;
   citas: CitaChat[];
@@ -172,3 +176,42 @@ export async function fetchEstadosIndexacion(
   }
   return mapa;
 }
+
+/**
+ * Descriptor del chat del SGD para `ChatPage.tsx` genérico — ver `api/chatComun.ts`. El par
+ * (`CitaChat`, `ExpedienteChat`) definidos arriba ya traen todo lo que `AdaptadorChat` exige; este
+ * objeto solo conecta esos tipos con las funciones de esta misma página.
+ */
+export const adaptadorChatSgd: AdaptadorChat<ExpedienteChat, CitaChat> = {
+  sistema: 'sgd',
+  etiquetaPestanaGeneral: 'General SGD',
+  etiquetaPestanaContexto: 'Por expediente',
+  notaGeneral: 'Pregunta sobre todos los documentos del SGD accesibles para su cuenta.',
+  labelBusqueda: 'N° de expediente',
+  placeholderBusqueda: 'Ej. DE000020260000062 o 2026-0000325',
+  notaVacioGeneral: 'Escriba una pregunta sobre los documentos del SGD a los que tiene acceso.',
+  notaVacioSinSeleccion: 'Busque el expediente por su número para empezar.',
+  notaVacioConSeleccion: 'Escriba una pregunta sobre este expediente.',
+  notaSinResultados: 'No se encontró ningún expediente con ese número.',
+  sustantivoContexto: 'expediente',
+
+  claveEntidad: (e) => claveExpediente(e.nuAnnExp, e.nuSecExp),
+  etiquetaEntidad: etiquetaExpediente,
+  descripcionResultado: (e) => `${e.ingestados} de ${e.documentos} documentos indexados`,
+
+  buscar: buscarExpedientesChat,
+  fetchSesion: (e) => fetchSesionExpediente(e.nuAnnExp, e.nuSecExp),
+  fetchEstadoIngesta: (e) => fetchEstadoIngestaExpediente(e.nuAnnExp, e.nuSecExp),
+  fetchHistorial: fetchHistorialSesion,
+  enviarGeneral: enviarMensajeGeneral,
+  enviarContexto: (e, mensaje, sesionId) => enviarMensajeExpediente(e.nuAnnExp, e.nuSecExp, mensaje, sesionId),
+  fetchTexto: fetchTextoChunk,
+  abrirCita: (cita) => ({
+    url: cita.nuAne > 0 ? rutaAnexo(cita.nuAnn, cita.nuEmi, cita.nuAne) : rutaDocumento(cita.nuAnn, cita.nuEmi),
+    titulo: `[D${cita.numero}] ${cita.rutaTitulos ?? 'Documento citado'}`,
+    // La mayoría del corpus es PDF; si no lo es, el visor igual ofrece "Descargar" en la cabecera.
+    visualizable: true,
+  }),
+
+  permisoGestionar: 'rag.gestionar',
+};

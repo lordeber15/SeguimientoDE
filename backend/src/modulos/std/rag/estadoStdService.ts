@@ -1,6 +1,12 @@
 import { QueryTypes } from 'sequelize';
-import { appSequelize } from '../../../compartido/config/appDatabase';
-import { embeddingsDisponibles, proveedorChatConfigurado, proveedorEmbeddingConfigurado, revisarConfiguracionIA, visionDisponible } from '../../../compartido/ai/providerFactory';
+import { stdRagSequelize } from '../config/stdRagDatabase';
+import {
+  embeddingsDisponibles,
+  proveedorChatConfigurado,
+  proveedorEmbeddingConfigurado,
+  revisarConfiguracionIA,
+  visionDisponible,
+} from '../../../compartido/ai/providerFactory';
 import {
   proveedorConversionActivo,
   proveedorRespaldo,
@@ -10,9 +16,15 @@ import { estadoCircuito, markitdownDisponible } from '../../../compartido/rag/md
 import { estadoCircuitoMinerU, mineruDisponible } from '../../../compartido/rag/mineruConvertService';
 import { leerBooleano, leerNumero } from '../../../compartido/rag/configService';
 
-/** Todo lo que necesita el panel de ingesta, en una sola consulta por bloque. */
+/**
+ * Todo lo que necesita el panel admin del STD (`std.gestionar`), en el mismo espíritu que
+ * `modulos/sgd/rag/estadoService.ts`, reescrito contra `std_rag`. Los proveedores de conversión
+ * (markitdown/MinerU) son infraestructura de proceso COMPARTIDA con el SGD (`compartido/rag/*`:
+ * el circuito y la caché de disponibilidad viven en memoria del propio proceso Node, no por base
+ * de datos), así que se consultan tal cual, sin duplicar estado.
+ */
 
-export interface EstadoCorpus {
+export interface EstadoCorpusStd {
   documentos: {
     total: number;
     ok: number;
@@ -21,21 +33,17 @@ export interface EstadoCorpus {
     sinTexto: number;
     error: number;
     noSoportado: number;
-    /** Candidatos al job "documentos largos" (conversionLargaService): atascados en un estado
-     *  terminal ANTES de existir el troceo por bloques, o que agotaron los reintentos después. */
-    largos: number;
   };
-  expedientes: { total: number; completos: number };
+  documentosStd: { total: number; completos: number };
   contenido: { unicos: number; convertidos: number; chunks: number; caracteres: number };
   embeddings: { vectores: number; chunksSinEmbedding: number };
   cobertura: { conversionPct: number; embeddingPct: number };
 }
 
-export async function estadoCorpus(): Promise<EstadoCorpus> {
-  const umbralLargos = Number(process.env.RAG_PAGINAS_UMBRAL_TROCEO ?? 25);
-  const [docs] = await appSequelize.query<{
+export async function estadoCorpusStd(): Promise<EstadoCorpusStd> {
+  const [docs] = await stdRagSequelize.query<{
     total: string; ok: string; convertidos: string; pendientes: string;
-    sin_texto: string; error: string; no_soportado: string; largos: string;
+    sin_texto: string; error: string; no_soportado: string;
   }>(
     `SELECT count(*)::text AS total,
             count(*) FILTER (WHERE estado='ok')::text AS ok,
@@ -43,22 +51,19 @@ export async function estadoCorpus(): Promise<EstadoCorpus> {
             count(*) FILTER (WHERE estado IN ('pendiente','en_proceso'))::text AS pendientes,
             count(*) FILTER (WHERE estado='sin_texto')::text AS sin_texto,
             count(*) FILTER (WHERE estado='error')::text AS error,
-            count(*) FILTER (WHERE estado='no_soportado')::text AS no_soportado,
-            count(*) FILTER (
-              WHERE estado IN ('pendiente','error','sin_texto') AND paginas > $1
-            )::text AS largos
+            count(*) FILTER (WHERE estado='no_soportado')::text AS no_soportado
        FROM rag.documento WHERE vigente`,
-    { bind: [umbralLargos], type: QueryTypes.SELECT },
-  );
-
-  const [exp] = await appSequelize.query<{ total: string; completos: string }>(
-    `SELECT count(*)::text AS total,
-            count(*) FILTER (WHERE docs_pendientes = 0 AND docs_ingestados > 0)::text AS completos
-       FROM rag.expediente`,
     { type: QueryTypes.SELECT },
   );
 
-  const [cont] = await appSequelize.query<{
+  const [docStd] = await stdRagSequelize.query<{ total: string; completos: string }>(
+    `SELECT count(*)::text AS total,
+            count(*) FILTER (WHERE docs_pendientes = 0 AND docs_ingestados > 0)::text AS completos
+       FROM rag.documento_std`,
+    { type: QueryTypes.SELECT },
+  );
+
+  const [cont] = await stdRagSequelize.query<{
     unicos: string; convertidos: string; chunks: string; caracteres: string;
   }>(
     `SELECT count(*)::text AS unicos,
@@ -69,9 +74,9 @@ export async function estadoCorpus(): Promise<EstadoCorpus> {
     { type: QueryTypes.SELECT },
   );
 
-  // Los vectores viven en tres tablas según la dimensión del modelo. Solo cuentan los del modelo
-  // ACTIVO: los de modelos anteriores siguen guardados y, sumados, daban más del 100%.
-  const [emb] = await appSequelize.query<{ vectores: string; sin_embedding: string }>(
+  // Solo los vectores del modelo ACTIVO: los de modelos anteriores siguen guardados y, sumados,
+  // daban más del 100%.
+  const [emb] = await stdRagSequelize.query<{ vectores: string; sin_embedding: string }>(
     `SELECT (
        (SELECT count(*) FROM rag.embedding_1024 WHERE modelo_id = m.id)
        + (SELECT count(*) FROM rag.embedding_1536 WHERE modelo_id = m.id)
@@ -96,9 +101,8 @@ export async function estadoCorpus(): Promise<EstadoCorpus> {
       sinTexto: Number(docs.sin_texto),
       error: Number(docs.error),
       noSoportado: Number(docs.no_soportado),
-      largos: Number(docs.largos),
     },
-    expedientes: { total: Number(exp.total), completos: Number(exp.completos) },
+    documentosStd: { total: Number(docStd.total), completos: Number(docStd.completos) },
     contenido: {
       unicos: Number(cont.unicos),
       convertidos: Number(cont.convertidos),
@@ -116,72 +120,63 @@ export async function estadoCorpus(): Promise<EstadoCorpus> {
   };
 }
 
-export interface DocumentoRag {
+export interface DocumentoRagStd {
   id: number;
-  nuAnn: string;
-  nuEmi: string;
-  nuAne: number;
-  titulo: string | null;
+  idAdjunto: number;
+  idDocumento: number;
+  nroStd: string | null;
+  origen: 'principal' | 'anexo' | 'derivacion';
+  documento: string | null;
   tipoDoc: string | null;
   asunto: string | null;
-  nuAnnExp: string | null;
-  nuSecExp: string | null;
-  numeroExpediente: string | null;
   estado: string;
   motivoError: string | null;
   intentos: number;
   chars: number | null;
   chunksGenerados: number | null;
   metodo: string | null;
-  /** Solo cuando se filtra por `jobId`: qué pasó con este documento EN ESE trabajo puntual —
-   *  puede diferir del `estado` actual si el documento se reprocesó después en otro trabajo. */
   estadoItem: string | null;
   motivoErrorItem: string | null;
 }
 
-export interface FiltroDocumentos {
+export interface FiltroDocumentosStd {
   estado?: string;
   q?: string;
-  nuAnnExp?: string;
-  nuSecExp?: string;
-  /** Acota la lista a los documentos que formaron parte de este trabajo de ingesta puntual. */
+  idDocumento?: number;
   jobId?: number;
   pagina?: number;
   porPagina?: number;
 }
 
-export interface ListaDocumentos {
+export interface ListaDocumentosStd {
   total: number;
   pagina: number;
   porPagina: number;
-  items: DocumentoRag[];
+  items: DocumentoRagStd[];
 }
 
 const ESTADOS_VALIDOS = new Set([
   'pendiente', 'en_proceso', 'convertido', 'ok', 'sin_texto', 'error', 'omitido', 'no_soportado',
 ]);
 
-interface FilaDocumentoRag {
-  id: string; nu_ann: string; nu_emi: string; nu_ane: number; titulo: string | null;
-  tipo_doc: string | null; asunto: string | null; nu_ann_exp: string | null; nu_sec_exp: string | null;
-  numero_sgd: string | null; estado: string; motivo_error: string | null; intentos: number;
+interface FilaDocumentoRagStd {
+  id: string; id_adjunto: string; id_documento: string; nro_std: string | null;
+  origen: 'principal' | 'anexo' | 'derivacion'; documento: string | null; tipo_doc: string | null;
+  asunto: string | null; estado: string; motivo_error: string | null; intentos: number;
   chars: number | null; chunks_generados: number | null; metodo: string | null;
   estado_item: string | null; motivo_error_item: string | null;
 }
 
-/** Comparte el mapeo con `documentoPorId` para que la lista y una fila suelta nunca diverjan de forma. */
-function filaADocumentoRag(f: FilaDocumentoRag): DocumentoRag {
+function filaADocumentoRagStd(f: FilaDocumentoRagStd): DocumentoRagStd {
   return {
     id: Number(f.id),
-    nuAnn: f.nu_ann,
-    nuEmi: f.nu_emi,
-    nuAne: f.nu_ane,
-    titulo: f.titulo,
+    idAdjunto: Number(f.id_adjunto),
+    idDocumento: Number(f.id_documento),
+    nroStd: f.nro_std,
+    origen: f.origen,
+    documento: f.documento,
     tipoDoc: f.tipo_doc,
     asunto: f.asunto,
-    nuAnnExp: f.nu_ann_exp,
-    nuSecExp: f.nu_sec_exp,
-    numeroExpediente: f.numero_sgd,
     estado: f.estado,
     motivoError: f.motivo_error,
     intentos: f.intentos,
@@ -193,30 +188,18 @@ function filaADocumentoRag(f: FilaDocumentoRag): DocumentoRag {
   };
 }
 
-/**
- * Lista documentos individuales de `rag.documento` — hasta hoy solo existían contadores
- * agregados (`estadoCorpus`). Sirve para revisar manualmente cuáles quedaron vacíos o con error,
- * no solo saber cuántos.
- */
-export async function listarDocumentos(filtro: FiltroDocumentos): Promise<ListaDocumentos> {
+export async function listarDocumentosStd(filtro: FiltroDocumentosStd): Promise<ListaDocumentosStd> {
   const condiciones = ['d.vigente'];
   const binds: unknown[] = [];
-  const joins = [
-    'LEFT JOIN rag.contenido c ON c.sha256 = d.contenido_sha256',
-    'LEFT JOIN rag.expediente e ON e.nu_ann_exp = d.nu_ann_exp AND e.nu_sec_exp = d.nu_sec_exp',
-  ];
-  // Sin `jobId`, no hay ítem de ingesta al que referirse — se devuelve NULL con el mismo alias
-  // para que la forma de la fila no dependa del filtro.
+  const joins = ['LEFT JOIN rag.contenido c ON c.sha256 = d.contenido_sha256'];
   let selectItem = 'NULL::text AS estado_item, NULL::text AS motivo_error_item';
   let orden = 'd.id DESC';
 
   if (filtro.jobId) {
-    // INNER JOIN a propósito: acota la lista a solo los documentos que ESE trabajo tocó, que es
-    // justo lo que responde "a qué archivos se refiere el contador 373/500 del panel".
     binds.push(filtro.jobId);
     joins.push(`JOIN rag.ingest_item i ON i.documento_id = d.id AND i.job_id = $${binds.length}`);
     selectItem = 'i.estado AS estado_item, i.motivo_error AS motivo_error_item';
-    orden = 'i.id ASC'; // orden de cola: coincide con el avance real del trabajo
+    orden = 'i.id ASC';
   }
 
   if (filtro.estado) {
@@ -229,12 +212,12 @@ export async function listarDocumentos(filtro: FiltroDocumentos): Promise<ListaD
 
   if (filtro.q?.trim()) {
     binds.push(`%${filtro.q.trim().replace(/[%_]/g, (c) => `\\${c}`)}%`);
-    condiciones.push(`(d.titulo ILIKE $${binds.length} ESCAPE '\\' OR d.asunto ILIKE $${binds.length} ESCAPE '\\')`);
+    condiciones.push(`(d.documento ILIKE $${binds.length} ESCAPE '\\' OR d.asunto ILIKE $${binds.length} ESCAPE '\\')`);
   }
 
-  if (filtro.nuAnnExp && filtro.nuSecExp) {
-    binds.push(filtro.nuAnnExp, filtro.nuSecExp);
-    condiciones.push(`d.nu_ann_exp = $${binds.length - 1} AND d.nu_sec_exp = $${binds.length}`);
+  if (filtro.idDocumento) {
+    binds.push(filtro.idDocumento);
+    condiciones.push(`d.id_documento = $${binds.length}`);
   }
 
   const pagina = Math.max(1, filtro.pagina ?? 1);
@@ -242,15 +225,14 @@ export async function listarDocumentos(filtro: FiltroDocumentos): Promise<ListaD
   const where = condiciones.join(' AND ');
   const joinSql = joins.join('\n       ');
 
-  const [{ total }] = await appSequelize.query<{ total: string }>(
+  const [{ total }] = await stdRagSequelize.query<{ total: string }>(
     `SELECT count(*)::text AS total FROM rag.documento d ${joinSql} WHERE ${where}`,
     { bind: binds, type: QueryTypes.SELECT },
   );
 
   binds.push(porPagina, (pagina - 1) * porPagina);
-  const items = await appSequelize.query<FilaDocumentoRag>(
-    `SELECT d.id, d.nu_ann, d.nu_emi, d.nu_ane, d.titulo, d.tipo_doc, d.asunto,
-            d.nu_ann_exp, d.nu_sec_exp, e.numero_sgd,
+  const items = await stdRagSequelize.query<FilaDocumentoRagStd>(
+    `SELECT d.id, d.id_adjunto, d.id_documento, d.nro_std, d.origen, d.documento, d.tipo_doc, d.asunto,
             d.estado, d.motivo_error, d.intentos,
             c.chars, c.chunks_generados, c.metodo,
             ${selectItem}
@@ -266,32 +248,29 @@ export async function listarDocumentos(filtro: FiltroDocumentos): Promise<ListaD
     total: Number(total),
     pagina,
     porPagina,
-    items: items.map(filaADocumentoRag),
+    items: items.map(filaADocumentoRagStd),
   };
 }
 
 /** Una fila suelta de `rag.documento` — para refrescar una fila de la lista tras una acción manual. */
-export async function documentoPorId(id: number): Promise<DocumentoRag | null> {
-  const [fila] = await appSequelize.query<FilaDocumentoRag>(
-    `SELECT d.id, d.nu_ann, d.nu_emi, d.nu_ane, d.titulo, d.tipo_doc, d.asunto,
-            d.nu_ann_exp, d.nu_sec_exp, e.numero_sgd,
+export async function documentoPorIdStd(id: number): Promise<DocumentoRagStd | null> {
+  const [fila] = await stdRagSequelize.query<FilaDocumentoRagStd>(
+    `SELECT d.id, d.id_adjunto, d.id_documento, d.nro_std, d.origen, d.documento, d.tipo_doc, d.asunto,
             d.estado, d.motivo_error, d.intentos,
             c.chars, c.chunks_generados, c.metodo,
             NULL::text AS estado_item, NULL::text AS motivo_error_item
        FROM rag.documento d
        LEFT JOIN rag.contenido c ON c.sha256 = d.contenido_sha256
-       LEFT JOIN rag.expediente e ON e.nu_ann_exp = d.nu_ann_exp AND e.nu_sec_exp = d.nu_sec_exp
       WHERE d.id = $1 AND d.vigente`,
     { bind: [id], type: QueryTypes.SELECT },
   );
-  return fila ? filaADocumentoRag(fila) : null;
+  return fila ? filaADocumentoRagStd(fila) : null;
 }
 
-/** El markdown convertido de un documento — para ver POR QUÉ quedó vacío o con error. */
-export async function markdownDocumento(
+export async function markdownDocumentoStd(
   documentoId: number,
 ): Promise<{ markdown: string; chars: number; metodo: string | null; truncado: boolean } | null> {
-  const [fila] = await appSequelize.query<{ markdown: string | null; chars: number; metodo: string | null }>(
+  const [fila] = await stdRagSequelize.query<{ markdown: string | null; chars: number; metodo: string | null }>(
     `SELECT c.markdown, c.chars, c.metodo
        FROM rag.documento d
        JOIN rag.contenido c ON c.sha256 = d.contenido_sha256
@@ -300,9 +279,6 @@ export async function markdownDocumento(
   );
   if (!fila || fila.markdown === null) return null;
 
-  // Hay markdown de cientos de KB (documentos unificados grandes) — de vuelta solo un prefijo
-  // generoso; el objetivo es diagnosticar por qué quedó vacío o con error, no leer el documento
-  // entero desde aquí.
   const LIMITE = 20_000;
   const truncado = fila.markdown.length > LIMITE;
   return {
@@ -313,47 +289,39 @@ export async function markdownDocumento(
   };
 }
 
-export interface EstadoBarrido {
+export interface EstadoBarridoStd {
   activo: boolean;
   cadenciaMin: number;
-  cadenciaHashMin: number;
   ultimo: {
     id: number;
     tipo: string;
     disparo: string;
     feInicio: string;
     feFin: string | null;
-    expedientesRevisados: number;
+    documentosRevisados: number;
     documentosNuevos: number;
     documentosCambiados: number;
-    documentosBaja: number;
     error: string | null;
   } | null;
-  /**
-   * Horas desde el último barrido. El panel lo necesita para avisar de que las cifras son
-   * historia y no estado: con el barrido apagado —que es el modo por defecto— un `% cargado` de
-   * hace tres semanas se ve exactamente igual que uno de hace tres minutos.
-   */
   horasDesdeUltimo: number | null;
 }
 
-export async function estadoBarrido(): Promise<EstadoBarrido> {
-  const [ultimo] = await appSequelize.query<{
+export async function estadoBarridoStd(): Promise<EstadoBarridoStd> {
+  const [ultimo] = await stdRagSequelize.query<{
     id: number; tipo: string; disparo: string; fe_inicio: string; fe_fin: string | null;
     expedientes_revisados: number; documentos_nuevos: number; documentos_cambiados: number;
-    documentos_baja: number; error: string | null; horas: number | null;
+    error: string | null; horas: number | null;
   }>(
     `SELECT id, tipo, disparo, fe_inicio::text, fe_fin::text,
-            expedientes_revisados, documentos_nuevos, documentos_cambiados, documentos_baja, error,
+            expedientes_revisados, documentos_nuevos, documentos_cambiados, error,
             EXTRACT(EPOCH FROM (now() - fe_inicio))/3600 AS horas
        FROM rag.barrido ORDER BY fe_inicio DESC LIMIT 1`,
     { type: QueryTypes.SELECT },
   );
 
   return {
-    activo: await leerBooleano('rag.barrido.activo'),
-    cadenciaMin: await leerNumero('rag.barrido.cadencia_min', 15),
-    cadenciaHashMin: await leerNumero('rag.barrido.cadencia_hash_min', 10080),
+    activo: await leerBooleano('rag.barrido.activo', false, stdRagSequelize),
+    cadenciaMin: await leerNumero('rag.barrido.cadencia_min', 1440, stdRagSequelize),
     ultimo: ultimo
       ? {
           id: ultimo.id,
@@ -361,10 +329,11 @@ export async function estadoBarrido(): Promise<EstadoBarrido> {
           disparo: ultimo.disparo,
           feInicio: ultimo.fe_inicio,
           feFin: ultimo.fe_fin,
-          expedientesRevisados: ultimo.expedientes_revisados,
+          // La columna se llama igual que en el SGD (`expedientes_revisados`): aquí cuenta
+          // "documentos del STD revisados" — ver el comentario de la migración `001_std_rag.sql`.
+          documentosRevisados: ultimo.expedientes_revisados,
           documentosNuevos: ultimo.documentos_nuevos,
           documentosCambiados: ultimo.documentos_cambiados,
-          documentosBaja: ultimo.documentos_baja,
           error: ultimo.error,
         }
       : null,
@@ -372,19 +341,17 @@ export async function estadoBarrido(): Promise<EstadoBarrido> {
   };
 }
 
-export interface EstadoProveedores {
+export interface EstadoProveedoresStd {
   embedding: { proveedor: string; disponible: boolean; motivo: string | null };
   chat: { proveedor: string };
   vision: { proveedor: string; disponible: boolean; motivo: string | null };
   problemas: { variable: string; mensaje: string }[];
   markitdown: { disponible: boolean; circuitoAbierto: boolean };
   mineru: { disponible: boolean; circuitoAbierto: boolean };
-  /** `proveedorRespaldo` es el conversor que se intenta si el activo falla — `null` si el
-   *  fallback está desactivado (`RAG_CONVERTER_FALLBACK=ninguno`). */
   conversion: { proveedorActivo: ProveedorConversion; proveedorRespaldo: ProveedorConversion | null };
 }
 
-export async function estadoProveedores(): Promise<EstadoProveedores> {
+export async function estadoProveedoresStd(): Promise<EstadoProveedoresStd> {
   const embed = embeddingsDisponibles();
   const vision = visionDisponible();
   const circuito = estadoCircuito();
@@ -414,11 +381,11 @@ export async function estadoProveedores(): Promise<EstadoProveedores> {
   };
 }
 
-export async function consumoTokens(): Promise<{
+export async function consumoTokensStd(): Promise<{
   hoy: { proveedor: string; modelo: string; operacion: string; tokensIn: number; tokensOut: number; costeUsd: number }[];
   acumulado: { tokensIn: number; tokensOut: number; costeUsd: number };
 }> {
-  const hoy = await appSequelize.query<{
+  const hoy = await stdRagSequelize.query<{
     proveedor: string; modelo: string; operacion: string;
     tokens_in: string; tokens_out: string; coste: string;
   }>(
@@ -430,7 +397,7 @@ export async function consumoTokens(): Promise<{
     { type: QueryTypes.SELECT },
   );
 
-  const [total] = await appSequelize.query<{ tokens_in: string; tokens_out: string; coste: string }>(
+  const [total] = await stdRagSequelize.query<{ tokens_in: string; tokens_out: string; coste: string }>(
     `SELECT COALESCE(sum(tokens_in),0)::text AS tokens_in,
             COALESCE(sum(tokens_out),0)::text AS tokens_out,
             COALESCE(sum(coste_usd),0)::text AS coste
@@ -455,7 +422,7 @@ export async function consumoTokens(): Promise<{
   };
 }
 
-export interface EstadoMantenimiento {
+export interface EstadoMantenimientoStd {
   retencion: {
     activa: boolean;
     dias: number;
@@ -465,39 +432,37 @@ export interface EstadoMantenimiento {
     activo: boolean;
     graciaDias: number;
     ultimo: { feInicio: string; filasAfectadas: number } | null;
-    /** Contenidos ya marcados huérfanos, dentro o fuera del margen de gracia todavía. */
     huerfanosPendientes: number;
   };
 }
 
-/** Estado del mantenimiento periódico (Fase 6, PLAN-RAG.md §6.6 y riesgo #12). */
-export async function estadoMantenimiento(): Promise<EstadoMantenimiento> {
-  const [ultimoRetencion] = await appSequelize.query<{ fe_inicio: string; filas_afectadas: number }>(
+export async function estadoMantenimientoStd(): Promise<EstadoMantenimientoStd> {
+  const [ultimoRetencion] = await stdRagSequelize.query<{ fe_inicio: string; filas_afectadas: number }>(
     `SELECT fe_inicio::text, filas_afectadas FROM rag.mantenimiento
       WHERE tipo = 'retencion' AND error IS NULL ORDER BY fe_inicio DESC LIMIT 1`,
     { type: QueryTypes.SELECT },
   );
-  const [ultimoGc] = await appSequelize.query<{ fe_inicio: string; filas_afectadas: number }>(
+  const [ultimoGc] = await stdRagSequelize.query<{ fe_inicio: string; filas_afectadas: number }>(
     `SELECT fe_inicio::text, filas_afectadas FROM rag.mantenimiento
       WHERE tipo = 'gc' AND error IS NULL ORDER BY fe_inicio DESC LIMIT 1`,
     { type: QueryTypes.SELECT },
   );
-  const [{ huerfanos }] = await appSequelize.query<{ huerfanos: string }>(
+  const [{ huerfanos }] = await stdRagSequelize.query<{ huerfanos: string }>(
     `SELECT count(*)::text AS huerfanos FROM rag.contenido WHERE fe_huerfano IS NOT NULL`,
     { type: QueryTypes.SELECT },
   );
 
   return {
     retencion: {
-      activa: await leerBooleano('rag.retencion.activa', true),
-      dias: await leerNumero('rag.retencion.dias', 180),
+      activa: await leerBooleano('rag.retencion.activa', true, stdRagSequelize),
+      dias: await leerNumero('rag.retencion.dias', 180, stdRagSequelize),
       ultimo: ultimoRetencion
         ? { feInicio: ultimoRetencion.fe_inicio, filasAfectadas: ultimoRetencion.filas_afectadas }
         : null,
     },
     gc: {
-      activo: await leerBooleano('rag.gc.activo', false),
-      graciaDias: await leerNumero('rag.gc.gracia_dias', 30),
+      activo: await leerBooleano('rag.gc.activo', false, stdRagSequelize),
+      graciaDias: await leerNumero('rag.gc.gracia_dias', 30, stdRagSequelize),
       ultimo: ultimoGc
         ? { feInicio: ultimoGc.fe_inicio, filasAfectadas: ultimoGc.filas_afectadas }
         : null,
@@ -506,7 +471,7 @@ export async function estadoMantenimiento(): Promise<EstadoMantenimiento> {
   };
 }
 
-export interface EvaluacionRetrieval {
+export interface EvaluacionRetrievalStd {
   ventanaDias: number;
   totalConsultas: number;
   sinResultados: number;
@@ -515,13 +480,8 @@ export interface EvaluacionRetrieval {
   msPromedio: number;
 }
 
-/**
- * Agregados sobre `rag.retrieval_log` para detectar recall roto en silencio (riesgo #6): consultas
- * que no devolvieron nada, respuestas con marcadores inventados, y cuánto se está forzando el
- * escaneo exacto (guardarraíl de HNSW, Fase 5) sobre el total.
- */
-export async function evaluacionRetrieval(dias = 7): Promise<EvaluacionRetrieval> {
-  const [fila] = await appSequelize.query<{
+export async function evaluacionRetrievalStd(dias = 7): Promise<EvaluacionRetrievalStd> {
+  const [fila] = await stdRagSequelize.query<{
     total: string; sin_resultados: string; con_alucinaciones: string;
     escaneo_exacto_pct: string | null; ms_promedio: string | null;
   }>(
@@ -544,19 +504,19 @@ export async function evaluacionRetrieval(dias = 7): Promise<EvaluacionRetrieval
   };
 }
 
-/** Expedientes con su porcentaje de carga, para el listado del panel. */
-export async function coberturaPorExpediente(limite = 50) {
-  return appSequelize.query(
-    `SELECT nu_ann_exp AS "nuAnnExp", nu_sec_exp AS "nuSecExp", numero_sgd AS "numeroSgd",
-            doc_count_sgd AS "documentos", docs_ingestados AS "ingestados",
+/** Documentos del STD con su porcentaje de carga, para el listado del panel. */
+export async function coberturaPorDocumentoStd(limite = 50) {
+  return stdRagSequelize.query(
+    `SELECT id_documento AS "idDocumento", documento,
+            adjuntos_pdf_std AS "adjuntosPdf", docs_ingestados AS "ingestados",
             docs_pendientes AS "pendientes", docs_sin_texto AS "sinTexto",
             fe_ultimo_barrido::text AS "feUltimoBarrido",
             fe_ultimo_embedding::text AS "feUltimoEmbedding",
-            CASE WHEN doc_count_sgd > 0
-                 THEN round(100.0 * docs_ingestados / doc_count_sgd, 1)
+            CASE WHEN adjuntos_pdf_std > 0
+                 THEN round(100.0 * docs_ingestados / adjuntos_pdf_std, 1)
                  ELSE 0 END AS "porcentaje"
-       FROM rag.expediente
-      ORDER BY docs_pendientes DESC, doc_count_sgd DESC
+       FROM rag.documento_std
+      ORDER BY docs_pendientes DESC, adjuntos_pdf_std DESC
       LIMIT $1`,
     { bind: [Math.min(limite, 500)], type: QueryTypes.SELECT },
   );

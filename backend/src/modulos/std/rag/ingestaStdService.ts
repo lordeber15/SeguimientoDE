@@ -1,8 +1,14 @@
 import crypto from 'crypto';
 import { QueryTypes } from 'sequelize';
 import { stdRagSequelize } from '../config/stdRagDatabase';
+import { documentoPorIdStd, type DocumentoRagStd } from './estadoStdService';
 import { leerClaveAdjuntoStd, type OrigenAdjuntoStd } from '../services/stdDocumentoService';
-import { ArchivoStdError, leerArchivoStd, limpiarMime } from '../services/stdStorageService';
+import {
+  almacenamientoStdDisponible,
+  ArchivoStdError,
+  leerArchivoStd,
+  limpiarMime,
+} from '../services/stdStorageService';
 import { crearEmbeddingProvider, embeddingsDisponibles } from '../../../compartido/ai/providerFactory';
 import type { EmbeddingProvider } from '../../../compartido/ai/types';
 import { ErrorIA } from '../../../compartido/ai/types';
@@ -31,11 +37,12 @@ import { ConversionError } from '../../../compartido/rag/mdConvertService';
  * Simplificaciones deliberadas frente al SGD, por ahora:
  *   - No hay "documento generado" (PROVEÍDO/HOJA DE ENVÍO): en el STD todo documento tiene un
  *     archivo subido de verdad; sin archivo es `no_soportado` sin más, no hay nada que reconstruir.
- *   - No hay extracción con IA de visión todavía (ver `modulos/sgd/rag/visionService.ts` — se
- *     añadirá igual si hace falta, es independiente del resto del pipeline).
- *   - No hay jobs de "reparación masiva" / "documentos largos sueltos" / "reintento sin archivo":
- *     son herramientas de recuperación para un corpus que ya pasó por una primera ingesta; se
- *     añadirán cuando haga falta, siguiendo el mismo patrón que sus equivalentes del SGD.
+ *   - La extracción con IA de visión vive aparte, en `visionStdService.ts`, y este archivo no la
+ *     importa a propósito: ningún job puede gastar tokens sin que alguien pulse el botón.
+ *   - No hay jobs de "reparación masiva" ni de "documentos largos sueltos": son herramientas de
+ *     recuperación para un corpus que ya pasó por una primera ingesta; se añadirán cuando haga
+ *     falta, siguiendo el mismo patrón que sus equivalentes del SGD. El "reintento sin archivo" sí
+ *     existe (`iniciarJobReintentoSinArchivoStd`).
  */
 
 export class IngestaStdError extends Error {
@@ -109,6 +116,10 @@ const MAX_INTENTOS_SIN_ARCHIVO = 10;
 const MAX_INTENTOS_CONVERSION = Number(process.env.RAG_MAX_INTENTOS_CONVERSION ?? 5);
 const PAGINAS_UMBRAL_TROCEO = Number(process.env.RAG_PAGINAS_UMBRAL_TROCEO ?? 25);
 
+/** Tipos de job que corren el loop de conversión: comparten semáforo, pausa y supervisor. */
+const TIPOS_CONVERSION = ['conversion', 'reparacion'] as const;
+const SQL_TIPOS_CONVERSION = TIPOS_CONVERSION.map((t) => `'${t}'`).join(', ');
+
 function condicionesFiltro(filtro: FiltroIngestaStd, binds: unknown[]): string[] {
   const condiciones: string[] = [];
   if (filtro.idDocumento) {
@@ -151,7 +162,7 @@ async function documentosPendientes(filtro: FiltroIngestaStd): Promise<{ id: num
 async function exigirSinJobEnCurso(): Promise<void> {
   const [enCurso] = await stdRagSequelize.query<{ id: number; tipo: string }>(
     `SELECT id, tipo FROM rag.ingest_job
-      WHERE estado = 'en_curso' AND tipo = 'conversion'
+      WHERE estado = 'en_curso' AND tipo IN (${SQL_TIPOS_CONVERSION})
       ORDER BY fe_inicio DESC LIMIT 1`,
     { type: QueryTypes.SELECT },
   );
@@ -188,6 +199,56 @@ export async function iniciarJobConversionStd(filtro: FiltroIngestaStd, actor: s
   });
 
   return { jobId };
+}
+
+/**
+ * Reintenta TODOS los documentos "sin archivo", incluidos los que agotaron
+ * `MAX_INTENTOS_SIN_ARCHIVO` y que `documentosPendientes` ya no selecciona — mismo caso que su
+ * equivalente del SGD: documentos marcados `no_soportado` mientras `uploads/` estaba desmontado.
+ * Por eso se exige que el almacenamiento esté disponible: lanzarlo con el disco caído volvería a
+ * marcarlos todos igual.
+ *
+ * Reinicia `intentos` a 0 y es un job de tipo `reparacion`: mismo loop, misma pausa/cancelación.
+ */
+export async function iniciarJobReintentoSinArchivoStd(actor: string): Promise<{ jobId: number; total: number }> {
+  await exigirSinJobEnCurso();
+
+  if (!almacenamientoStdDisponible()) {
+    throw new IngestaStdError(
+      'El repositorio de archivos del STD (uploads/) no está montado: reintentar ahora volvería a '
+        + 'marcarlos como "sin archivo". Monte el almacenamiento y vuelva a intentarlo.',
+      409,
+    );
+  }
+
+  const documentos = await stdRagSequelize.query<{ id: number }>(
+    `UPDATE rag.documento SET intentos = 0
+      WHERE vigente AND estado = 'no_soportado'
+      RETURNING id`,
+    { type: QueryTypes.SELECT },
+  );
+  if (documentos.length === 0) {
+    throw new IngestaStdError('No hay documentos del STD "sin archivo" para reintentar', 404);
+  }
+
+  const ids = documentos.map((d) => d.id).sort((a, b) => Number(a) - Number(b));
+  const [{ id: jobId }] = await stdRagSequelize.query<{ id: number }>(
+    `INSERT INTO rag.ingest_job (tipo, estado, filtro, total, creado_por)
+     VALUES ('reparacion', 'en_curso', $1::jsonb, $2, $3) RETURNING id`,
+    { bind: [JSON.stringify({ sinArchivo: true }), ids.length, actor], type: QueryTypes.SELECT },
+  );
+
+  await stdRagSequelize.query(
+    `INSERT INTO rag.ingest_item (job_id, documento_id)
+     SELECT $1, unnest($2::bigint[])`,
+    { bind: [jobId, ids], type: QueryTypes.INSERT },
+  );
+
+  void ejecutarJobConversion(jobId).catch((error) => {
+    console.error(`ingesta STD: job de reintento sin archivo ${jobId} falló:`, error);
+  });
+
+  return { jobId, total: ids.length };
 }
 
 const loopsVivos = new Set<number>();
@@ -290,7 +351,7 @@ async function ejecutarJobConversionLoop(jobId: number): Promise<void> {
 export async function pausarJobStd(jobId: number): Promise<void> {
   const [fila] = await stdRagSequelize.query<{ id: number }>(
     `UPDATE rag.ingest_job SET estado = 'pausado'
-      WHERE id = $1 AND estado = 'en_curso' AND tipo = 'conversion'
+      WHERE id = $1 AND estado = 'en_curso' AND tipo IN (${SQL_TIPOS_CONVERSION})
       RETURNING id`,
     { bind: [jobId], type: QueryTypes.SELECT },
   );
@@ -300,7 +361,7 @@ export async function pausarJobStd(jobId: number): Promise<void> {
 export async function reanudarJobStd(jobId: number): Promise<void> {
   const [fila] = await stdRagSequelize.query<{ id: number }>(
     `UPDATE rag.ingest_job SET estado = 'en_curso'
-      WHERE id = $1 AND estado = 'pausado' AND tipo = 'conversion'
+      WHERE id = $1 AND estado = 'pausado' AND tipo IN (${SQL_TIPOS_CONVERSION})
       RETURNING id`,
     { bind: [jobId], type: QueryTypes.SELECT },
   );
@@ -314,7 +375,7 @@ export async function reanudarJobStd(jobId: number): Promise<void> {
 export async function cancelarJobStd(jobId: number): Promise<void> {
   const [fila] = await stdRagSequelize.query<{ id: number }>(
     `UPDATE rag.ingest_job SET estado = 'cancelado', fe_fin = now()
-      WHERE id = $1 AND estado IN ('en_curso', 'pausado') AND tipo IN ('conversion', 'embedding')
+      WHERE id = $1 AND estado IN ('en_curso', 'pausado') AND tipo IN (${SQL_TIPOS_CONVERSION}, 'embedding')
       RETURNING id`,
     { bind: [jobId], type: QueryTypes.SELECT },
   );
@@ -380,7 +441,23 @@ export async function obtenerBytesDocumentoStd(
     throw new ArchivoStdError('El adjunto ya no existe en tbl_adjunto del STD', 404);
   }
   const resultado = leerArchivoStd(clave_.adjunto, clave_.hash);
-  return { buffer: resultado.buffer, filename: doc.nombre_archivo ?? `adjunto_${doc.id_adjunto}.pdf` };
+  return {
+    buffer: resultado.buffer,
+    filename: nombreSegunContenido(resultado.buffer, doc.nombre_archivo ?? `adjunto_${doc.id_adjunto}.pdf`),
+  };
+}
+
+/**
+ * markitdown elige el conversor por la EXTENSIÓN del nombre, no por el contenido. En el STD hay
+ * ~90 PDF válidos con nombres que no terminan en `.pdf` — restos de la subida por chunks
+ * (`contrato-083….pdf.tmp`), `.ai`, sin extensión… — y markitdown los rechazaba con "Tipo de
+ * archivo no soportado" aunque fueran PDF perfectamente legibles. Si los bytes dicen PDF, el
+ * nombre que viaja al conversor también lo dice.
+ */
+function nombreSegunContenido(buffer: Buffer, nombre: string): string {
+  const esPdf = buffer.subarray(0, 5).toString('latin1') === '%PDF-';
+  if (!esPdf || /\.pdf$/i.test(nombre)) return nombre;
+  return `${nombre.replace(/\.tmp$/i, '').replace(/\.pdf$/i, '')}.pdf`;
 }
 
 export async function convertirDocumento(
@@ -401,11 +478,19 @@ export async function convertirDocumento(
     buffer = resuelto.buffer;
     nombreArchivo = resuelto.filename;
   } catch (error) {
-    // A diferencia del SGD, aquí no hay nada que "generar": todo documento del STD es un archivo
-    // subido de verdad. Sin archivo en disco (o sin fila en tbl_adjunto) es no_soportado, directo.
-    await marcarEstado(doc.id, 'no_soportado', motivoDe(error));
     onFase?.({ fase: 'listo' });
-    return;
+    // A diferencia del SGD, aquí no hay nada que "generar": todo documento del STD es un archivo
+    // subido de verdad. Solo "no existe" (sin archivo en disco o sin fila en tbl_adjunto, 404) es
+    // `no_soportado`. Antes cualquier fallo de lectura caía ahí, y un PDF real de 313 MB aparecía
+    // como "sin archivo" — el archivo existe; lo que falla es otra cosa, y eso es un `error`.
+    if (error instanceof ArchivoStdError) {
+      await marcarEstado(doc.id, error.status === 404 ? 'no_soportado' : 'error', motivoDe(error));
+      return;
+    }
+    // Cualquier otra cosa (MariaDB del STD caída, E/S del montaje) es transitoria: vuelve a la
+    // cola en vez de etiquetar el documento por un problema que no es suyo.
+    await marcarEstadoPendiente(doc.id, motivoDe(error));
+    throw error;
   }
 
   onFase?.({ fase: 'deduplicando' });
@@ -583,6 +668,98 @@ async function guardarChunksYMarcarConvertido(
       { bind: [documentoId, sha256, advertencia ?? null], type: QueryTypes.UPDATE, transaction: tx },
     );
   });
+}
+
+const LOCK_NAMESPACE_DOCUMENTO_STD = 'rag.documento.std';
+const REPARACION_TIMEOUT_MS = Number(process.env.RAG_REPARACION_TIMEOUT_MS ?? 90_000);
+
+export interface ResultadoReparacionStd {
+  documento: DocumentoRagStd;
+  /** Fallo transitorio: el documento ya volvió a 'pendiente' y se reintentará solo. */
+  mensaje?: string;
+  /** Superó el tiempo de espera; la conversión sigue corriendo en segundo plano. */
+  enCurso?: boolean;
+}
+
+/**
+ * Reintento síncrono de UN documento del STD — mismo diseño que `repararDocumento` del SGD
+ * (advisory lock propio para no pisar al job en segundo plano, rechazo inmediato si el circuito de
+ * conversión está abierto, timeout de `REPARACION_TIMEOUT_MS` que responde "en curso" en vez de
+ * dejar la petición colgada).
+ */
+export async function repararDocumentoStd(documentoId: number): Promise<ResultadoReparacionStd> {
+  const actual = await documentoPorIdStd(documentoId);
+  if (!actual) throw new IngestaStdError('El documento ya no existe', 404);
+
+  const [bloqueo] = await stdRagSequelize.query<{ ok: boolean }>(
+    'SELECT pg_try_advisory_lock(hashtext($1), $2::int) AS ok',
+    { bind: [LOCK_NAMESPACE_DOCUMENTO_STD, documentoId], type: QueryTypes.SELECT },
+  );
+  if (!bloqueo?.ok) {
+    throw new IngestaStdError('Este documento se está procesando ahora mismo', 409);
+  }
+
+  try {
+    const [enCola] = await stdRagSequelize.query<{ job_id: number }>(
+      `SELECT i.job_id FROM rag.ingest_item i
+         JOIN rag.ingest_job j ON j.id = i.job_id
+        WHERE i.documento_id = $1 AND i.estado IN ('pendiente', 'en_proceso') AND j.estado = 'en_curso'
+        LIMIT 1`,
+      { bind: [documentoId], type: QueryTypes.SELECT },
+    );
+    if (enCola) {
+      throw new IngestaStdError(
+        `Este documento está en la cola del trabajo #${enCola.job_id}; espere a que termine`,
+        409,
+      );
+    }
+
+    const circuito = conversionBloqueada();
+    if (circuito.bloqueada) {
+      throw new IngestaStdError(
+        `El servicio de conversión no responde ahora mismo; reinténtelo en ${circuito.segundosRestantes} s`,
+        409,
+      );
+    }
+
+    const conversion = convertirDocumento(documentoId);
+    conversion.catch(() => {});
+
+    let temporizador: ReturnType<typeof setTimeout>;
+    const resultado = await Promise.race<
+      { tipo: 'ok' } | { tipo: 'error'; error: unknown } | { tipo: 'timeout' }
+    >([
+      conversion.then(() => ({ tipo: 'ok' as const })).catch((error) => ({ tipo: 'error' as const, error })),
+      new Promise((resolve) => {
+        temporizador = setTimeout(() => resolve({ tipo: 'timeout' as const }), REPARACION_TIMEOUT_MS);
+      }),
+    ]);
+    clearTimeout(temporizador!);
+
+    if (resultado.tipo === 'timeout') {
+      const documento = await documentoPorIdStd(documentoId);
+      return { documento: documento ?? actual, enCurso: true };
+    }
+
+    if (resultado.tipo === 'error') {
+      if (resultado.error instanceof ConversionError && resultado.error.reintentable) {
+        const documento = await documentoPorIdStd(documentoId);
+        return {
+          documento: documento ?? actual,
+          mensaje: 'Fallo transitorio de conversión; el documento volvió a la cola y se reintentará solo.',
+        };
+      }
+      throw resultado.error;
+    }
+
+    const documento = await documentoPorIdStd(documentoId);
+    return { documento: documento ?? actual };
+  } finally {
+    await stdRagSequelize.query('SELECT pg_advisory_unlock(hashtext($1), $2::int)', {
+      bind: [LOCK_NAMESPACE_DOCUMENTO_STD, documentoId],
+      type: QueryTypes.SELECT,
+    });
+  }
 }
 
 async function marcarEstado(documentoId: number, estado: string, motivo?: string): Promise<void> {
@@ -903,7 +1080,7 @@ async function reclamarLeasesVencidos(): Promise<number> {
 async function revisarJobsHuerfanos(): Promise<void> {
   const jobs = await stdRagSequelize.query<{ id: number; tipo: string }>(
     `SELECT j.id, j.tipo FROM rag.ingest_job j
-      WHERE j.estado = 'en_curso' AND j.tipo = 'conversion'
+      WHERE j.estado = 'en_curso' AND j.tipo IN (${SQL_TIPOS_CONVERSION})
         AND EXISTS (SELECT 1 FROM rag.ingest_item i WHERE i.job_id = j.id AND i.estado = 'pendiente')
       ORDER BY j.id`,
     { type: QueryTypes.SELECT },

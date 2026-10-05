@@ -39,6 +39,17 @@ export async function iniciarSesionSimulada(page: Page, permisos: string[] = PER
     }),
   );
 
+  // `SeguimientoPage` (la vista inicial) re-engancha al job de ingesta activo con `rag.gestionar`
+  // ANTES de que cualquier prueba navegue a otra pestaña (ver su efecto de "re-enganche, una sola
+  // vez al montar"). Sin este mock, esa llamada cae al backend real, que rechaza el token de
+  // prueba con 401 — y un 401 en CUALQUIER petición cierra la sesión simulada entera (ver
+  // `apiFetch` en `api/cliente.ts`), devolviendo la app al login aunque la prueba nunca haya
+  // tocado el panel de RAG. Las pruebas que sí les interesa ese job (`ragPanel.spec.ts`) registran
+  // su propio `page.route` después de llamar aquí, que gana por ser el más reciente.
+  await page.route('**/api/rag/ingesta', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
+  );
+
   await page.addInitScript(() => {
     sessionStorage.setItem('seguimiento.token', 'token-de-prueba');
   });

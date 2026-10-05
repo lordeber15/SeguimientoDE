@@ -38,7 +38,8 @@ export interface FilaWatermarkStd {
 export async function leerWatermarksStd(): Promise<FilaWatermarkStd[]> {
   return consultarStd<FilaWatermarkStd>(`
     SELECT cand.id_documento, d.documento,
-           COUNT(DISTINCT cand.id_adjunto) AS adjuntos_pdf,
+           -- Enlaces, no archivos distintos: es lo que guarda rag.documento (ver migración std/002).
+           COUNT(*)                        AS adjuntos_pdf,
            MAX(cand.modificado)            AS watermark
     FROM (
       SELECT d.id_documento, d.id_adjunto, GREATEST(d.modificado, a.modificado) AS modificado

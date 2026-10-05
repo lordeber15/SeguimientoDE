@@ -3,6 +3,7 @@ import { QueryTypes } from 'sequelize';
 import { appSequelize } from '../../../compartido/config/appDatabase';
 import { crearVisionProvider, visionDisponible } from '../../../compartido/ai/providerFactory';
 import { ErrorIA, type VisionProvider } from '../../../compartido/ai/types';
+import { PROMPT_TRANSCRIPCION } from '../../../compartido/rag/promptTranscripcion';
 import { esGenerable } from '../services/documentoGeneradoService';
 import { getDatosDocumentoGenerado } from '../services/documentoService';
 import { ArchivoError, mimePorNombre } from '../services/storageService';
@@ -30,22 +31,7 @@ const TAMANO_MAXIMO_BYTES = Number(process.env.RAG_VISION_MAX_BYTES ?? 20 * 1024
 /** Techo de gasto diario: la diferencia entre que un error de uso cueste un dólar o cien. */
 const TOKENS_MAXIMOS_DIA = Number(process.env.RAG_VISION_TOKENS_DIA ?? 500_000);
 
-export const PROMPT_TRANSCRIPCION =
-  'Eres un transcriptor de documentos oficiales. Tu única tarea es transcribir el TEXTO de este '
-  + 'documento en markdown, de forma literal y completa, en el orden de lectura normal.\n\n'
-  + 'Reglas estrictas:\n'
-  + '- Transcribe TODO el texto visible, sin omitir nada.\n'
-  + '- NUNCA resumas, interpretes, traduzcas ni corrijas la ortografía o redacción original.\n'
-  + '- Conserva EXACTOS los números, fechas, números de documento y de expediente, nombres de '
-  + 'personas y dependencias, y el contenido de firmas y sellos, tal como aparecen.\n'
-  + '- Las tablas van como tablas markdown; los títulos y encabezados, como encabezados markdown '
-  + '(#, ##, ###).\n'
-  + '- Un fragmento ilegible se marca como [ilegible]: nunca se adivina ni se omite en silencio.\n'
-  + '- Si una página no tiene texto (está en blanco o es solo una imagen sin texto), no escribas '
-  + 'nada sobre ella — NUNCA la describas ("esta página muestra...", "parece un sello...").\n'
-  + '- NUNCA describas el documento ni expliques de qué trata: solo transcribe su texto.\n'
-  + '- No agregues ningún preámbulo, comentario ni conclusión: la salida es únicamente el markdown '
-  + 'transcrito.';
+export { PROMPT_TRANSCRIPCION };
 
 async function tokensVisionHoy(): Promise<number> {
   const [{ total }] = await appSequelize.query<{ total: string }>(

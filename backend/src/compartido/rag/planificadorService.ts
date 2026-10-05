@@ -113,7 +113,8 @@ export interface ResultadoPlanificador {
 }
 
 export interface ContextoPlanificador {
-  /** 'expediente' = el usuario ya está dentro de UN expediente: todo se interpreta sobre él. */
+  /** 'expediente' = el usuario ya está dentro de UN expediente (SGD) o documento (STD): todo se
+   *  interpreta sobre él. */
   modo: 'general' | 'expediente';
   /** Turnos previos de la misma sesión, del más viejo al más nuevo. Se recortan aquí. */
   historial: MensajeChat[];
@@ -213,8 +214,8 @@ Formato exacto:
 "filtros":{"remitente":null,"emisor":null,"dependencia":null,"tipo_doc":null,"desde":null,"hasta":null,"actual":false},\
 "continua_anterior":false}`;
 
-const NOTA_MODO_EXPEDIENTE = `\n\nEl usuario está conversando dentro de UN expediente concreto: \
-toda pregunta sobre documentos, estado o contenido se refiere a ese expediente. Usa "contenido" \
+const NOTA_MODO_EXPEDIENTE = `\n\nEl usuario está conversando dentro de UN expediente o documento \
+concreto: toda pregunta sobre documentos, estado o contenido se refiere a él. Usa "contenido" \
 para casi todo y "fuera_de_alcance" solo si no tiene relación con trámites o documentos.`;
 
 function construirEntrada(mensaje: string, historial: MensajeChat[]): string {

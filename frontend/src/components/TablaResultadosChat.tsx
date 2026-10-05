@@ -8,6 +8,8 @@ interface Props {
   etiquetaFila: (fila: FilaResultadoChat) => string;
   /** "Chatear": abre el chat por contexto con esa fila. Sin él, la columna no se muestra. */
   onChatear?: (fila: FilaResultadoChat) => void;
+  /** Encabezado de la primera columna ("Expediente" en el SGD, "Documento" en el STD). */
+  encabezadoNumero?: string;
 }
 
 /** "2026-10-02" → "02/10/2026" (formato del resto de la app). */
@@ -25,7 +27,9 @@ function fecha(iso: string | null): string {
  * Viniendo del historial, la tabla llega sin filas (`pagina: 0`) y la primera página se pide al
  * montarse — abrir una conversación no re-consulta el SGD por cada listado antiguo.
  */
-export function TablaResultadosChat({ tabla, mensajeId, cargarPagina, etiquetaFila, onChatear }: Props) {
+export function TablaResultadosChat({
+  tabla, mensajeId, cargarPagina, etiquetaFila, onChatear, encabezadoNumero = 'Expediente',
+}: Props) {
   const [filas, setFilas] = useState<FilaResultadoChat[]>(tabla.filas);
   const [pagina, setPagina] = useState(tabla.pagina);
   const [hayMas, setHayMas] = useState(tabla.hayMas);
@@ -61,7 +65,7 @@ export function TablaResultadosChat({ tabla, mensajeId, cargarPagina, etiquetaFi
         <table className="chat-tabla-resultados">
           <thead>
             <tr>
-              <th className="col-numero">Expediente</th>
+              <th className="col-numero">{encabezadoNumero}</th>
               <th>Asunto</th>
               <th className="col-origen">Origen</th>
               <th className="col-movimiento">Último movimiento</th>
@@ -78,7 +82,7 @@ export function TablaResultadosChat({ tabla, mensajeId, cargarPagina, etiquetaFi
                 abreNivel2 ? (
                   <tr key={`sep-${etiqueta}`} className="chat-tabla-separador">
                     <td colSpan={onChatear ? 7 : 6}>
-                      Mencionados solo dentro del contenido de sus documentos ({tabla.nivel2})
+                      Mencionados solo dentro del contenido de sus archivos ({tabla.nivel2})
                     </td>
                   </tr>
                 ) : null,

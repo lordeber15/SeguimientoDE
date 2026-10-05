@@ -1,6 +1,10 @@
 {
   "descripcion": "Set de evaluación del planificador del chat (docs/PLAN-CHAT-CONSULTAS.md, Fase 6). Lo usan src/scripts/evaluarPlanificador.ts (contra el modelo real) y los tests de Jest (parte determinista). 'terminos': deben quedar tras terminosDelPlan (sin tildes ni mayúsculas, basta que uno contenga al otro). 'sinTerminos': no deben quedar. 'intencion' acepta un texto o una lista de válidas.",
   "historiales": {
+    "contrato_227": [
+      { "rol": "user", "contenido": "dame los documentos del contrato 227-2022-MCEBS" },
+      { "rol": "assistant", "contenido": "Encontré 962 documentos relacionados con «227-2022-MCEBS». 960 coinciden con todos los términos en sus datos (asunto, remitente, tipo o contrato) y 2 lo mencionan solo dentro del contenido de sus archivos." }
+    ],
     "junin_controversia": [
       { "rol": "user", "contenido": "dame los expedientes de controversia de la obra junin" },
       { "rol": "assistant", "contenido": "Encontré 96 expedientes relacionados con «controversia» + «Junín». Ninguno los tiene en sus datos (asunto, remitente o emisor): todos lo mencionan solo dentro del contenido de sus documentos." }
@@ -52,6 +56,13 @@
       "esperado": { "intencion": "listar", "terminos": ["huancavelica"], "continua": false } },
     { "id": "seguimiento_fuera", "historial": "junin_controversia", "pregunta": "cuéntame un chiste",
       "esperado": { "intencion": "fuera_de_alcance" } },
+
+    { "id": "std_contrato", "pregunta": "dame los documentos del contrato 227-2022-MCEBS",
+      "esperado": { "intencion": "listar", "terminos": ["227-2022-mcebs"], "sinTerminos": ["contrato"] } },
+    { "id": "std_seguimiento_ultimo", "historial": "contrato_227", "pregunta": "¿y cuál es el último documento?",
+      "esperado": { "intencion": "ultimo_documento", "continua": true } },
+    { "id": "std_penalidades_de_esos", "historial": "contrato_227", "pregunta": "¿cuáles de esos hablan de penalidades?",
+      "esperado": { "intencion": "listar", "terminos": ["penalidad"], "continua": true } },
 
     { "id": "expediente_participantes", "modo": "expediente", "pregunta": "¿quiénes participaron en este expediente?",
       "esperado": { "intencion": ["participantes", "contenido"] } },

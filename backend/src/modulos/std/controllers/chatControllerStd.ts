@@ -3,6 +3,7 @@ import {
   ChatStdError,
   listarSesionesStd,
   obtenerHistorialSesionStd,
+  paginaResultadosStd,
   responderChatStd,
   sesionParaDocumentoStd,
   textoChunkCitadoStd,
@@ -12,6 +13,8 @@ import { estadoIngestaDocumentoStd, estadoIngestaDocumentosStd } from '../rag/re
 /** `tbl_documento.id_documento` es `int unsigned`: hasta 10 dígitos, nunca negativo. */
 const RE_ID_DOCUMENTO = /^\d{1,10}$/;
 const MAX_IDS_ESTADO = 100;
+/** 1 000 páginas de 10 = el tope de candidatos guardados por listado (`chat.max_candidatos`). */
+const MAX_PAGINA = 1000;
 
 function manejar(res: Response, error: unknown, contexto: string) {
   if (error instanceof ChatStdError) {
@@ -142,5 +145,21 @@ export async function getChunkCitado(req: Request, res: Response) {
     res.json({ texto: await textoChunkCitadoStd(id, req.usuario!.codUser) });
   } catch (error) {
     manejar(res, error, `Error al obtener el fragmento citado ${id}`);
+  }
+}
+
+/** "Ver más" de una respuesta tabla: `GET /api/std/chat/mensajes/:id/resultados?pagina=n`. */
+export async function getResultadosMensaje(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  const pagina = Number(req.query.pagina ?? 1);
+  if (!Number.isInteger(id)) return res.status(400).json({ message: 'id inválido' });
+  if (!Number.isInteger(pagina) || pagina < 1 || pagina > MAX_PAGINA) {
+    return res.status(400).json({ message: 'pagina inválida' });
+  }
+
+  try {
+    res.json(await paginaResultadosStd(id, pagina, req.usuario!.codUser));
+  } catch (error) {
+    manejar(res, error, `Error al obtener los resultados del mensaje ${id} del STD`);
   }
 }

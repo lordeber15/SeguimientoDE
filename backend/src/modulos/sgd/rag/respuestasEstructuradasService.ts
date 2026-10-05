@@ -4,7 +4,9 @@ import {
   detallePagina,
   leerParametros,
   prepararTerminos,
+  planConFiltros,
   terminosDelPlan,
+  terminosExplicitos,
   type FilaExpedienteChat,
   type TerminosPreparados,
 } from './busquedaExpedientesService';
@@ -73,6 +75,18 @@ async function expedientesObjetivo(plan: PlanConsulta, filtro: FiltroAcceso, op:
   const parametros = await leerParametros();
   const preparados = prepararTerminos(terminos, plan, parametros);
   if (op.expediente) return { pares: [op.expediente], total: 1, terminos, preparados, ambito: 'expediente' };
+
+  // "¿Y el último (de esos)?" sin términos ni filtros propios: el listado anterior tal cual, no las
+  // palabras sueltas de la consulta reescrita (ver `terminosExplicitos`).
+  if (op.conjunto && op.conjunto.length > 0 && terminosExplicitos(plan).length === 0 && !planConFiltros(plan)) {
+    return {
+      pares: op.conjunto.slice(0, MAX_EXPEDIENTES),
+      total: op.conjunto.length,
+      terminos: [],
+      preparados: { etiquetas: [], consultas: [], exclusiones: [] },
+      ambito: 'conjunto',
+    };
+  }
 
   const r = await buscarExpedientesPorPlan(plan, filtro, parametros, {
     dentroDe: op.conjunto ?? undefined,

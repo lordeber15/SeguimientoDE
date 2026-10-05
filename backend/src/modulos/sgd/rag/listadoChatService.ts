@@ -1,3 +1,4 @@
+import { textoListado } from '../../../compartido/rag/textosListado';
 import type { PlanConsulta } from '../../../compartido/rag/planificadorService';
 import {
   buscarExpedientesPorPlan,
@@ -44,77 +45,8 @@ export interface RespuestaListado {
   meta: MetaListado;
 }
 
-const comillas = (terminos: string[]) => terminos.map((t) => `«${t}»`).join(' + ');
-
-const plural = (n: number, uno: string, varios: string) => `${n} ${n === 1 ? uno : varios}`;
-
-/** " relacionados con «a» + «b», con documentos remitidos por «X»" (o vacío si no hay criterio). */
-function descripcionCriterio(plan: PlanConsulta, terminos: string[], total: number): string {
-  const f = plan.filtros;
-  const filtros: string[] = [];
-  if (f.remitente) filtros.push(`con documentos remitidos por «${f.remitente}»`);
-  if (f.emisor) filtros.push(`con documentos emitidos por «${f.emisor}»`);
-  if (f.dependencia) filtros.push(`con documentos de «${f.dependencia}»`);
-  if (f.tipoDoc) filtros.push(`con documentos tipo ${f.tipoDoc.toUpperCase()}`);
-  if (f.desde || f.hasta) filtros.push(`con documentos entre ${f.desde ?? '…'} y ${f.hasta ?? 'hoy'}`);
-
-  const partes: string[] = [];
-  if (terminos.length > 0) partes.push(`${total === 1 ? 'relacionado' : 'relacionados'} con ${comillas(terminos)}`);
-  partes.push(...filtros);
-  return partes.length > 0 ? ` ${partes.join(', ')}` : '';
-}
-
-/** Frase de plantilla de la respuesta. Pura: se prueba sin BD. */
-export function textoListado(
-  intencion: 'listar' | 'contar',
-  plan: PlanConsulta,
-  b: Omit<ResultadoBusquedaExpedientes, 'candidatos'>,
-  mesesActual: number,
-  estados?: MetaListado['estados'],
-  /** Tamaño del conjunto anterior si se buscó dentro de él ("de esos…"). */
-  dentroDe?: number,
-  /** Tamaño del conjunto anterior si se buscó en él SIN resultados y se pasó a toda la base. */
-  anteriorSinResultados?: number,
-): string {
-  const criterio = descripcionCriterio(plan, b.terminos, b.total);
-  const actual = plan.filtros.actual ? ` con movimiento en los últimos ${plural(mesesActual, 'mes', 'meses')}` : '';
-  const lineas: string[] = [];
-
-  if (b.modoTerminos === 'alguno') {
-    lineas.push(`Ningún expediente cumple todos los términos (${comillas(b.terminos)}); muestro los que cumplen al menos uno.`);
-  }
-
-  const verbo = intencion === 'contar' ? 'Hay' : 'Encontré';
-  const ambito = dentroDe
-    ? `Dentro de los ${plural(dentroDe, 'expediente', 'expedientes')} del listado anterior, `
-    : anteriorSinResultados
-      ? `Ninguno de los ${plural(anteriorSinResultados, 'expediente', 'expedientes')} del listado anterior cumple esto; en toda la base `
-      : '';
-  const cabeza = ambito
-    ? `${ambito}${verbo.toLowerCase()} ${plural(b.total, 'expediente', 'expedientes')}${criterio}${actual}.`
-    : `${verbo} ${plural(b.total, 'expediente', 'expedientes')}${criterio}${actual}.`;
-  lineas.push(cabeza);
-
-  if (b.terminos.length > 0 && b.total > 0) {
-    lineas.push(
-      `${plural(b.nivel1, 'coincide', 'coinciden')} con todos los términos en sus datos (asunto, remitente o emisor) y `
-      + `${plural(b.nivel2, 'lo menciona', 'lo mencionan')} solo dentro del contenido de sus documentos.`,
-    );
-  }
-
-  if (estados) {
-    const base = b.truncado ? ' (sobre los resultados más relevantes)' : '';
-    lineas.push(
-      `${plural(estados.enTramite, 'sigue', 'siguen')} en trámite y ${plural(estados.archivados, 'está archivado', 'están archivados')}${base}.`,
-    );
-  }
-
-  if (b.truncado) lineas.push('El resultado es muy amplio: precise la búsqueda para ver todo.');
-  if (b.sinExpediente > 0) {
-    lineas.push(`Además, ${plural(b.sinExpediente, 'documento sin expediente menciona', 'documentos sin expediente mencionan')} estos términos (no se listan).`);
-  }
-  return lineas.join(' ');
-}
+/** Frase de plantilla (compartida con el STD desde la Fase 7). */
+export { textoListado };
 
 export async function ejecutarListado(
   intencion: 'listar' | 'contar',

@@ -1,4 +1,12 @@
-import type { AdaptadorChat } from './chatComun';
+import type {
+  AdaptadorChat,
+  BloqueParticipantesChat,
+  FilaResultadoChat,
+  ReferenciaExpediente,
+  TablaResultadosChat,
+  TarjetaDocumentoChat,
+  TipoRespuestaChat,
+} from './chatComun';
 import { apiJson } from './cliente';
 
 /**
@@ -21,11 +29,25 @@ export interface CitaChatStd {
   usada: boolean;
 }
 
+/** Fila de una respuesta tabla del STD (listado de documentos). */
+export interface FilaDocumentoStdChat extends FilaResultadoChat {
+  idDocumento: number;
+  documento: string | null;
+  tipoDoc: string | null;
+  fecha: string | null;
+  etiquetas: string | null;
+  idAdjunto: number | null;
+}
+
 export interface RespuestaChatStd {
   sesionId: number;
   mensajeId: number;
+  tipo?: TipoRespuestaChat;
   texto: string;
   citas: CitaChatStd[];
+  tabla?: TablaResultadosChat<FilaDocumentoStdChat>;
+  documento?: TarjetaDocumentoChat;
+  participantes?: BloqueParticipantesChat;
   candidatosVec: number;
   candidatosFts: number;
   marcadoresAlucinados: number;
@@ -41,9 +63,13 @@ export interface SesionChatStd {
 export interface MensajeHistorialStd {
   id: number;
   rol: 'user' | 'assistant';
+  tipo?: TipoRespuestaChat;
   texto: string;
   feAlta: string;
   citas: CitaChatStd[];
+  tabla?: TablaResultadosChat<FilaDocumentoStdChat>;
+  documento?: TarjetaDocumentoChat;
+  participantes?: BloqueParticipantesChat;
 }
 
 export interface EstadoIngestaDocumentoStd {
@@ -113,6 +139,14 @@ export function fetchEstadoIngestaDocumentoStd(idDocumento: number): Promise<Est
   );
 }
 
+/** "Ver más" de una respuesta tabla: la página `pagina` del listado guardado en el mensaje. */
+export function fetchResultadosMensajeStd(
+  mensajeId: number,
+  pagina: number,
+): Promise<TablaResultadosChat<FilaDocumentoStdChat>> {
+  return apiJson(`/api/std/chat/mensajes/${mensajeId}/resultados?pagina=${pagina}`, 'cargar los resultados');
+}
+
 /** Busca por N° STD o por el número formal del documento ("001-2020-MINEDU/..."). */
 export function buscarDocumentosStd(termino: string): Promise<DocumentoChatStd[]> {
   const params = new URLSearchParams({ q: termino });
@@ -160,6 +194,28 @@ export const adaptadorChatStd: AdaptadorChat<DocumentoChatStd, CitaChatStd> = {
     url: rutaAdjuntoStd(cita.idAdjunto),
     titulo: `[D${cita.numero}] ${cita.rutaTitulos ?? 'Documento citado'}`,
     visualizable: true,
+  }),
+
+  fetchResultados: fetchResultadosMensajeStd,
+  etiquetaFila: (fila) => {
+    const f = fila as FilaDocumentoStdChat;
+    return [`STD ${f.idDocumento}`, f.tipoDoc, f.documento].filter(Boolean).join(' · ');
+  },
+  // Cobertura real: se pide al elegirlo (`fetchEstadoIngesta`), igual que el SGD.
+  entidadDesdeFila: (fila) => {
+    const f = fila as FilaDocumentoStdChat;
+    return { idDocumento: f.idDocumento, documento: f.documento, adjuntosPdfStd: f.documentos, docsIngestados: 0, docsPendientes: 0 };
+  },
+  // En el STD la referencia trae el N° STD en `nuAnnExp` (ver `ReferenciaExpediente`).
+  entidadDesdeExpediente: (ref: ReferenciaExpediente) =>
+    ref.nuAnnExp && /^\d+$/.test(ref.nuAnnExp)
+      ? { idDocumento: Number(ref.nuAnnExp), documento: null, adjuntosPdfStd: 0, docsIngestados: 0, docsPendientes: 0 }
+      : null,
+  // `nuEmi` = id del adjunto principal (vacío si el documento no tiene un PDF principal).
+  abrirDocumento: (doc) => ({
+    url: doc.nuEmi ? rutaAdjuntoStd(Number(doc.nuEmi)) : '',
+    titulo: doc.titulo ?? 'Documento',
+    visualizable: Boolean(doc.nuEmi),
   }),
 
   permisoGestionar: 'std.gestionar',

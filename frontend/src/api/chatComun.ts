@@ -28,8 +28,7 @@ export interface EstadoIngestaBase {
   completo: boolean;
 }
 
-/** 'fijo' = mensaje de cierre sin LLM (fuera de alcance, ayuda, sin resultados). Opcional: el
- *  chat STD todavía no lo envía. */
+/** 'fijo' = mensaje de cierre sin LLM (fuera de alcance, ayuda, sin resultados). */
 export type TipoRespuestaChat = 'texto' | 'tabla' | 'fijo' | 'documento' | 'participantes';
 
 /**
@@ -54,7 +53,10 @@ export interface FilaResultadoChat {
   coincidencia: string;
 }
 
-/** Referencia a un expediente, para "Chatear" desde una tarjeta o un trámite. */
+/**
+ * Referencia a la unidad del sistema, para "Chatear" desde una tarjeta o un trámite. SGD: año y
+ * secuencia del expediente. STD: `nuAnnExp` = N° STD y `nuSecExp` = null (la interpreta su adaptador).
+ */
 export interface ReferenciaExpediente {
   nuAnnExp: string | null;
   nuSecExp: string | null;
@@ -71,6 +73,7 @@ export interface IndicacionDestinoChat {
   fecha: string | null;
 }
 
+/** En el STD, `nuAnn` = 'STD' y `nuEmi` = id del adjunto principal (lo abre su adaptador). */
 export interface DocumentoChat extends ReferenciaExpediente {
   nuAnn: string;
   nuEmi: string;
@@ -179,7 +182,7 @@ export interface AdaptadorChat<E, C extends CitaBasica> {
   fetchTexto(chunkId: number): Promise<{ texto: string }>;
   abrirCita(cita: C): { url: string; titulo: string; visualizable: boolean };
 
-  /** Respuestas tabla — opcionales: un sistema sin listados (hoy el STD) no las define. */
+  /** Respuestas tabla — opcionales: un sistema sin listados no las define. */
   fetchResultados?(mensajeId: number, pagina: number): Promise<TablaResultadosChat>;
   /** Etiqueta de la primera columna (N° de expediente / N° STD). */
   etiquetaFila?(fila: FilaResultadoChat): string;

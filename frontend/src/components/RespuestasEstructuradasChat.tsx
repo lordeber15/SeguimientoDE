@@ -13,6 +13,8 @@ import type {
  * en vivo al responder), no de una redacción del modelo.
  */
 
+const capital = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+
 /** "2026-10-02" → "02/10/2026". */
 function fecha(iso: string | null): string {
   if (!iso) return 's/f';
@@ -46,9 +48,14 @@ interface PropsTarjeta {
   onChatear?: (ref: ReferenciaExpediente) => void;
   /** En el modo por expediente no tiene sentido repetir el expediente ni ofrecer "Chatear". */
   mostrarExpediente: boolean;
+  /** "expediente" (SGD) o "documento" (STD): la unidad a la que se refiere la tarjeta. */
+  sustantivo?: string;
 }
 
-export function TarjetaUltimoDocumento({ documento: d, onAbrir, onChatear, mostrarExpediente }: PropsTarjeta) {
+export function TarjetaUltimoDocumento({
+  documento: d, onAbrir, onChatear, mostrarExpediente, sustantivo = 'expediente',
+}: PropsTarjeta) {
+  const esStd = sustantivo === 'documento';
   return (
     <div className="chat-estructura">
       <div className="chat-tarjeta-cabecera">
@@ -58,7 +65,7 @@ export function TarjetaUltimoDocumento({ documento: d, onAbrir, onChatear, mostr
       <dl className="chat-tarjeta-datos">
         {mostrarExpediente && d.numeroExpediente && (
           <>
-            <dt>Expediente</dt>
+            <dt>{capital(sustantivo)}</dt>
             <dd>{d.numeroExpediente}</dd>
           </>
         )}
@@ -72,7 +79,7 @@ export function TarjetaUltimoDocumento({ documento: d, onAbrir, onChatear, mostr
         )}
       </dl>
 
-      <h4 className="chat-estructura-titulo">Derivaciones e indicaciones</h4>
+      <h4 className="chat-estructura-titulo">{esStd ? 'Derivaciones y observaciones' : 'Derivaciones e indicaciones'}</h4>
       <ListaIndicaciones indicaciones={d.indicaciones} />
 
       {d.anteriores.length > 0 && (
@@ -97,7 +104,7 @@ export function TarjetaUltimoDocumento({ documento: d, onAbrir, onChatear, mostr
           <button type="button" className="boton-secundario" onClick={() => onAbrir(d)}>Abrir documento</button>
         )}
         {onChatear && mostrarExpediente && d.nuAnnExp && (
-          <button type="button" className="boton-enlace" onClick={() => onChatear(d)}>Chatear con este expediente</button>
+          <button type="button" className="boton-enlace" onClick={() => onChatear(d)}>Chatear con este {sustantivo}</button>
         )}
       </div>
     </div>
@@ -122,21 +129,24 @@ function Movimiento({ m }: { m: MovimientoChat }) {
 interface PropsParticipantes {
   participantes: BloqueParticipantesChat;
   onChatear?: (ref: ReferenciaExpediente) => void;
+  /** "documento" (STD): cada unidad es un documento y los "emisores" son quienes derivaron. */
+  sustantivo?: string;
 }
 
-export function ParticipantesChat({ participantes: b, onChatear }: PropsParticipantes) {
+export function ParticipantesChat({ participantes: b, onChatear, sustantivo = 'expediente' }: PropsParticipantes) {
+  const esStd = sustantivo === 'documento';
   return (
     <div className="chat-estructura">
       <div className="chat-participantes-grupos">
         <section>
-          <h4 className="chat-estructura-titulo">Remitentes externos ({b.remitentes.length})</h4>
+          <h4 className="chat-estructura-titulo">{esStd ? 'Remitentes' : 'Remitentes externos'} ({b.remitentes.length})</h4>
           {b.remitentes.length === 0 ? <p className="chat-estructura-vacio">Ninguno.</p> : (
             <ul className="chat-participantes-lista">
               {b.remitentes.map((r) => (
                 <li key={r.nombre}>
                   <span>{r.nombre}</span>
                   <span className="chat-tabla-sub">
-                    {r.documento ? `${r.documento} · ` : ''}{r.documentos} doc. · {r.expedientes} exp.
+                    {r.documento ? `${r.documento} · ` : ''}{r.documentos} doc.{esStd ? '' : ` · ${r.expedientes} exp.`}
                   </span>
                 </li>
               ))}
@@ -144,13 +154,16 @@ export function ParticipantesChat({ participantes: b, onChatear }: PropsParticip
           )}
         </section>
         <section>
-          <h4 className="chat-estructura-titulo">Emisores internos ({b.emisores.length})</h4>
+          <h4 className="chat-estructura-titulo">{esStd ? 'Derivaron' : 'Emisores internos'} ({b.emisores.length})</h4>
           {b.emisores.length === 0 ? <p className="chat-estructura-vacio">Ninguno.</p> : (
             <ul className="chat-participantes-lista">
               {b.emisores.map((e) => (
                 <li key={`${e.dependencia}-${e.empleado}`}>
                   <span>{e.empleado ?? '—'}</span>
-                  <span className="chat-tabla-sub">{e.dependencia ?? ''} · {e.documentos} doc. · {e.expedientes} exp.</span>
+                  <span className="chat-tabla-sub">
+                    {e.dependencia ? `${e.dependencia} · ` : ''}
+                    {esStd ? `${e.documentos} deriv. · ${e.expedientes} doc.` : `${e.documentos} doc. · ${e.expedientes} exp.`}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -164,7 +177,7 @@ export function ParticipantesChat({ participantes: b, onChatear }: PropsParticip
                 <li key={`${d.dependencia}-${d.persona}`}>
                   <span>{d.persona ?? d.dependencia ?? '—'}</span>
                   <span className="chat-tabla-sub">
-                    {d.persona && d.dependencia ? `${d.dependencia} · ` : ''}{d.veces} deriv. · {d.expedientes} exp.
+                    {d.persona && d.dependencia ? `${d.dependencia} · ` : ''}{d.veces} deriv. · {d.expedientes} {esStd ? 'doc.' : 'exp.'}
                   </span>
                 </li>
               ))}
@@ -175,7 +188,7 @@ export function ParticipantesChat({ participantes: b, onChatear }: PropsParticip
 
       {b.tramites.length > 0 && (
         <>
-          <h4 className="chat-estructura-titulo">Trámite e indicaciones</h4>
+          <h4 className="chat-estructura-titulo">{esStd ? 'Trámite y observaciones' : 'Trámite e indicaciones'}</h4>
           {b.tramites.map((t, i) => (
             <details key={`${t.nuAnnExp}-${t.nuSecExp}`} className="chat-tramite" open={b.tramites.length === 1 && i === 0}>
               <summary>

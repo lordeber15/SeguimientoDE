@@ -279,7 +279,9 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
 
   function abrirDocumentoTarjeta(doc: DocumentoChat) {
     if (!adaptador.abrirDocumento) return;
-    setDocumentoAbierto(adaptador.abrirDocumento(doc));
+    const abierto = adaptador.abrirDocumento(doc);
+    // Un documento del STD sin PDF principal no tiene nada que abrir.
+    if (abierto.url) setDocumentoAbierto(abierto);
   }
 
   function cambiarEntidad() {
@@ -465,6 +467,7 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
                     cargarPagina={adaptador.fetchResultados}
                     etiquetaFila={adaptador.etiquetaFila}
                     onChatear={adaptador.entidadDesdeFila ? chatearConFila : undefined}
+                    encabezadoNumero={adaptador.sustantivoContexto.charAt(0).toUpperCase() + adaptador.sustantivoContexto.slice(1)}
                   />
                 )}
 
@@ -472,6 +475,7 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
                   <TarjetaUltimoDocumento
                     documento={m.documento}
                     mostrarExpediente={modo === 'general'}
+                    sustantivo={adaptador.sustantivoContexto}
                     onAbrir={adaptador.abrirDocumento ? abrirDocumentoTarjeta : undefined}
                     onChatear={adaptador.entidadDesdeExpediente ? chatearConExpediente : undefined}
                   />
@@ -480,6 +484,7 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
                 {m.participantes && (
                   <ParticipantesChat
                     participantes={m.participantes}
+                    sustantivo={adaptador.sustantivoContexto}
                     onChatear={modo === 'general' && adaptador.entidadDesdeExpediente ? chatearConExpediente : undefined}
                   />
                 )}

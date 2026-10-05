@@ -3,6 +3,7 @@ import {
   getChunkCitado,
   getEstadoIngestaDocumento,
   getEstadoIngestaDocumentos,
+  getResultadosMensaje,
   getSesion,
   getSesionDocumento,
   getSesiones,
@@ -24,5 +25,7 @@ router.get('/sesiones', getSesiones);
 router.get('/sesiones/:id', getSesion);
 // Texto completo de un fragmento citado: lo pide el frontend al desplegar la cita, no antes.
 router.get('/chunks/:id', getChunkCitado);
+// "Ver más" de una respuesta tabla (listado de documentos guardado en el mensaje).
+router.get('/mensajes/:id/resultados', getResultadosMensaje);
 
 export default router;

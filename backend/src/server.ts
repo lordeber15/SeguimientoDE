@@ -7,6 +7,7 @@ import { sequelize } from './modulos/sgd/models';
 import { STD_HABILITADO, stdDisponible, stdSequelize } from './modulos/std/config/stdDatabase';
 import { asegurarBaseStdRag, aplicarMigracionesStd } from './modulos/std/config/stdRagDatabase';
 import { iniciarPlanificadorBarridoStd } from './modulos/std/rag/barridoStdService';
+import { sincronizarMetadatosPendientesStd } from './modulos/std/rag/metadatosStdService';
 import { iniciarSupervisorIngestaStd, reanudarJobsInterrumpidosStd } from './modulos/std/rag/ingestaStdService';
 import { iniciarMantenimientoPeriodicoStd } from './modulos/std/rag/mantenimientoStdService';
 import { iniciarPlanificadorResumen } from './modulos/sgd/services/dashboardResumenService';
@@ -57,6 +58,11 @@ async function start() {
         try {
           await stdSequelize.authenticate();
           console.log('Conexión de solo lectura al STD (MariaDB) establecida correctamente.');
+          // Metadatos por documento para el chat (migración std/003): solo los que faltan, en
+          // segundo plano — la primera vez son ~60 mil documentos, después casi nunca hay alguno.
+          void sincronizarMetadatosPendientesStd().then((n) => {
+            if (n > 0) console.log(`Metadatos del STD sincronizados: ${n} documentos.`);
+          });
         } catch (error) {
           console.error('STD configurado pero no se pudo conectar:', error);
         }

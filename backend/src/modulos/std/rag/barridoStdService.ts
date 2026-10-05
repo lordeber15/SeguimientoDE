@@ -7,6 +7,7 @@ import {
   type FilaWatermarkStd,
 } from '../services/stdDocumentoService';
 import { leerBooleano, leerNumero } from '../../../compartido/rag/configService';
+import { sincronizarMetadatosStd } from './metadatosStdService';
 
 /**
  * Barrido de detección incremental del STD — mismo diseño que `barridoService.ts` del SGD
@@ -92,6 +93,9 @@ export async function barrerStd(disparo: DisparoBarridoStd = 'manual'): Promise<
       conteo.cambiados += resumen.cambiados;
 
       await actualizarDocumentosStd(lote);
+      // Metadatos por documento del chat (asunto, remitente, contrato…): un cambio en
+      // `tbl_documento` mueve el watermark, así que basta con refrescar los que cambiaron.
+      await sincronizarMetadatosStd({ ids: lote.map((w) => Number(w.id_documento)) });
       await new Promise((r) => setImmediate(r));
     }
 

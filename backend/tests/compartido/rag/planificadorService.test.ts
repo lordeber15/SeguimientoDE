@@ -118,7 +118,7 @@ describe('planificar', () => {
     });
 
     const [mensajes] = prov.responder.mock.calls[0];
-    expect(mensajes[0].contenido).toMatch(/UN expediente concreto/);
+    expect(mensajes[0].contenido).toMatch(/UN expediente o documento/);
     expect(mensajes[1].contenido).toContain('Usuario: expedientes de Huancavelica');
     expect(mensajes[1].contenido).toContain('Pregunta nueva: ¿y el último?');
     expect(mensajes[1].contenido.length).toBeLessThan(600); // el turno largo se recorta

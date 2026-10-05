@@ -56,6 +56,11 @@ export async function buscarHibridoStd(
   consultaTexto: string,
   /** Chat "Por documento": solo chunks de ESTE N° STD. Sin él, se busca en todo el corpus. */
   idDocumento?: number,
+  /** Conjunto activo de la conversación (docs/PLAN-CHAT-CONSULTAS.md, Fase 7): solo esos N° STD. */
+  conjunto?: number[],
+  /** Términos del planificador con sus alternativas ("a|b"): la rama FTS los busca en OR, porque la
+   *  consulta reescrita completa es demasiado estricta para plainto_tsquery. */
+  terminosFts?: string[],
 ): Promise<ResultadoBusquedaStd> {
   const modelo = await modeloActivo(stdRagSequelize);
   let vecLiteral: string | null = null;
@@ -77,8 +82,10 @@ export async function buscarHibridoStd(
   }
 
   return stdRagSequelize.transaction(async (tx) => {
-    const filtroDocSql = (i: number) => `AND ($${i}::bigint IS NULL OR d.id_documento = $${i})`;
+    const filtroDocSql = (i: number) =>
+      `AND ($${i}::bigint IS NULL OR d.id_documento = $${i}) AND ($${i + 1}::bigint[] IS NULL OR d.id_documento = ANY($${i + 1}::bigint[]))`;
     const idDoc = idDocumento ?? null;
+    const ids = conjunto && conjunto.length > 0 ? conjunto : null;
 
     let filasVec: FilaVec[] = [];
     if (vecLiteral && tabla) {
@@ -93,13 +100,18 @@ export async function buscarHibridoStd(
             )
           ORDER BY e.vec <=> $2::vector
           LIMIT ${LIMITE_RAMA}`,
-        { bind: [modeloId, vecLiteral, idDoc], type: QueryTypes.SELECT, transaction: tx },
+        { bind: [modeloId, vecLiteral, idDoc, ids], type: QueryTypes.SELECT, transaction: tx },
       );
     }
 
     const filasFts = await stdRagSequelize.query<FilaFts>(
       `SELECT c.id AS chunk_id
-         FROM rag.chunk c, plainto_tsquery('es_unaccent', $1) AS consulta
+         FROM rag.chunk c,
+              COALESCE(
+                (SELECT NULLIF(string_agg(NULLIF(rag.tsq_alternativas(t)::text, ''), ' | '), '')::tsquery
+                   FROM unnest($4::text[]) AS t),
+                plainto_tsquery('es_unaccent', $1)
+              ) AS consulta
         WHERE c.tsv @@ consulta
           AND EXISTS (
             SELECT 1 FROM rag.documento d
@@ -107,7 +119,7 @@ export async function buscarHibridoStd(
           )
         ORDER BY ts_rank_cd(c.tsv, consulta) DESC
         LIMIT ${LIMITE_RAMA}`,
-      { bind: [consultaTexto, idDoc], type: QueryTypes.SELECT, transaction: tx },
+      { bind: [consultaTexto, idDoc, ids, terminosFts && terminosFts.length > 0 ? terminosFts : null], type: QueryTypes.SELECT, transaction: tx },
     );
 
     const escaneoExacto = filasVec.length + filasFts.length < UMBRAL_ESCANEO_EXACTO;

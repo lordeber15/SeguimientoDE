@@ -2126,6 +2126,88 @@ tbody tr.fila-destacada > td {
   max-width: 94%;
 }
 
+/* ── Respuesta tabla (listar / contar) ── */
+
+/* La tabla necesita todo el ancho del hilo; la burbuja normal (94 %) la estrangula. */
+.chat-mensaje--tabla {
+  max-width: 100%;
+  width: 100%;
+}
+
+.chat-tabla {
+  margin-top: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.chat-tabla-resultados {
+  min-width: 860px;
+  table-layout: fixed;
+}
+
+.chat-tabla-resultados thead th {
+  padding: 8px 10px;
+  font-size: 12px;
+  position: static;
+}
+
+.chat-tabla-resultados tbody td {
+  padding: 8px 10px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.chat-tabla-resultados .col-numero { width: 150px; font-variant-numeric: tabular-nums; }
+.chat-tabla-resultados .col-origen { width: 170px; }
+.chat-tabla-resultados .col-movimiento { width: 120px; }
+.chat-tabla-resultados .col-estado { width: 120px; }
+.chat-tabla-resultados .col-coincidencia { width: 170px; color: var(--color-muted-foreground); font-size: 12px; }
+.chat-tabla-resultados .col-accion { width: 80px; text-align: right; }
+
+/* Recorte a 3 líneas en un span interno: aplicado al <td>, `display: -webkit-box` lo saca del
+   modelo de tabla. El asunto completo queda en el `title` de la celda. */
+.chat-tabla-asunto {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.chat-tabla-resultados tr.is-nivel2 td {
+  color: var(--color-muted-foreground);
+}
+
+.chat-tabla-separador td {
+  background: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+  padding: 6px 10px;
+}
+
+.chat-tabla-sub {
+  display: block;
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
+.chat-tabla-cargando {
+  text-align: center;
+  color: var(--color-muted-foreground);
+}
+
+.chat-tabla-pie {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--color-border);
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+}
+
 /* Mensaje de cierre sin LLM (fuera de alcance, ayuda, sin resultados): se distingue de una
    respuesta basada en documentos para que nadie lo lea como un hallazgo. */
 .chat-mensaje--fijo {

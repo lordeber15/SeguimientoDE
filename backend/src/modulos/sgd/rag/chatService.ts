@@ -7,6 +7,13 @@ import { leerBooleano } from '../../../compartido/rag/configService';
 import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../../../compartido/rag/planificadorService';
 import { rerankear } from '../../../compartido/rag/rerankService';
 import {
+  ejecutarListado,
+  esMetaListado,
+  paginaDesdeMeta,
+  resumenTabla,
+  type TablaExpedientes,
+} from './listadoChatService';
+import {
   buscarHibrido,
   elegirDocumentoParaCita,
   estadoExpediente,
@@ -62,8 +69,11 @@ export interface CitaRespuesta {
   usada: boolean;
 }
 
-/** 'fijo' = mensaje de cierre sin LLM (ver `compartido/rag/cierreChat.ts`). */
-export type TipoRespuesta = 'texto' | 'fijo';
+/**
+ * 'fijo' = mensaje de cierre sin LLM (ver `compartido/rag/cierreChat.ts`); 'tabla' = listado de
+ * expedientes sin LLM (ver `listadoChatService.ts`).
+ */
+export type TipoRespuesta = 'texto' | 'tabla' | 'fijo';
 
 export interface RespuestaChat {
   sesionId: number;
@@ -71,6 +81,8 @@ export interface RespuestaChat {
   tipo: TipoRespuesta;
   texto: string;
   citas: CitaRespuesta[];
+  /** Solo en `tipo='tabla'`: la primera página. Las siguientes, con `paginaResultados`. */
+  tabla?: TablaExpedientes;
   candidatosVec: number;
   candidatosFts: number;
   marcadoresAlucinados: number;
@@ -410,10 +422,48 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
   }
   const plan = planificador?.plan ?? planDeRespaldo(p.mensaje);
   if (plan.intencion === 'fuera_de_alcance') return fijo('fuera_de_alcance', planificador);
-  // Fase 2: el resto de intenciones todavía se resuelve con la búsqueda de contenido. listar /
-  // contar / último / participantes / agrupar llegan con sus ejecutores en las Fases 3 y 5.
 
   const filtro: FiltroAcceso = { coDependencia: p.sinRestriccionDependencia ? null : p.coDependencia };
+
+  // [2] listar / contar: tabla de expedientes por SQL, sin modelo de respuesta (D6). En el modo
+  // "por expediente" no aplica — ya se está dentro de uno —, así que sigue a la búsqueda de contenido.
+  // último / participantes / agrupar llegan con sus ejecutores en la Fase 5.
+  if (p.modo === 'general' && (plan.intencion === 'listar' || plan.intencion === 'contar')) {
+    const listado = await ejecutarListado(plan.intencion, plan, filtro);
+    if (!listado) return fijo('sin_resultados', planificador);
+
+    const filas = await appSequelize.query<{ id: number }>(
+      `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto, tipo, meta, tokens_in, tokens_out)
+       VALUES ($1, 'assistant', $2, 'tabla', $3::jsonb, 0, 0) RETURNING id`,
+      { bind: [sesion.id, listado.texto, JSON.stringify(listado.meta)], type: QueryTypes.SELECT },
+    );
+    await tocarSesion(sesion.id);
+    await registrarRetrieval({
+      sesionId: sesion.id,
+      consulta: p.mensaje,
+      modo: p.modo,
+      candidatosVec: 0,
+      candidatosFts: 0,
+      fusionados: listado.meta.busqueda.total,
+      escaneoExacto: false,
+      marcadoresAlucinados: 0,
+      ms: Date.now() - inicio,
+      planificador,
+      respuestaFija: null,
+    });
+
+    return {
+      sesionId: sesion.id,
+      mensajeId: filas[0].id,
+      tipo: 'tabla',
+      texto: listado.texto,
+      citas: [],
+      tabla: listado.tabla,
+      candidatosVec: 0,
+      candidatosFts: 0,
+      marcadoresAlucinados: 0,
+    };
+  }
 
   const [resultado, timeline] = await Promise.all([
     p.modo === 'expediente' && p.expediente
@@ -521,6 +571,7 @@ interface FilaMensajeHistorial {
   tipo: TipoRespuesta;
   texto: string;
   fe_alta: string;
+  meta: unknown;
 }
 
 interface FilaCitaHistorial {
@@ -545,6 +596,9 @@ export interface MensajeHistorial {
   texto: string;
   feAlta: string;
   citas: CitaRespuesta[];
+  /** En `tipo='tabla'`: totales sin filas (`filas: []`, `pagina: 0`). El frontend pide la página 1
+   *  al pintarla: abrir una conversación no re-consulta el SGD por cada listado del historial. */
+  tabla?: TablaExpedientes;
 }
 
 export async function listarSesiones(usuarioId: string): Promise<
@@ -617,7 +671,9 @@ export async function obtenerHistorialSesion(
   if (sesiones[0].usuario_id !== usuarioId) throw new ChatError('Esa sesión no le pertenece', 403);
 
   const filas = await appSequelize.query<FilaMensajeHistorial>(
-    `SELECT id, rol, tipo, texto, fe_alta::text FROM rag.chat_mensaje WHERE sesion_id = $1 ORDER BY id ASC`,
+    `SELECT id, rol, tipo, texto, fe_alta::text,
+            CASE WHEN tipo = 'tabla' THEN meta END AS meta
+       FROM rag.chat_mensaje WHERE sesion_id = $1 ORDER BY id ASC`,
     { bind: [sesionId], type: QueryTypes.SELECT },
   );
 
@@ -631,7 +687,34 @@ export async function obtenerHistorialSesion(
     texto: f.texto,
     feAlta: f.fe_alta,
     citas: citasPorMensaje.get(f.id) ?? [],
+    ...(f.tipo === 'tabla' && esMetaListado(f.meta) ? { tabla: resumenTabla(f.meta) } : {}),
   }));
+}
+
+/**
+ * Página `pagina` de un listado ya respondido ("ver más"): se lee la lista guardada en `meta`, sin
+ * volver a buscar ni llamar al modelo.
+ *
+ * Autoriza por PROPIEDAD DE LA CONVERSACIÓN (mismo criterio que `textoChunkCitado`): la lista se
+ * armó con el filtro de dependencia del usuario al responder. El detalle se vuelve a acotar con su
+ * filtro actual, así que un cambio de dependencia posterior no amplía lo que ve.
+ */
+export async function paginaResultados(
+  mensajeId: number,
+  pagina: number,
+  usuarioId: string,
+  filtro: FiltroAcceso,
+): Promise<TablaExpedientes> {
+  const filas = await appSequelize.query<{ meta: unknown }>(
+    `SELECT m.meta
+       FROM rag.chat_mensaje m
+       JOIN rag.chat_sesion s ON s.id = m.sesion_id
+      WHERE m.id = $1 AND s.usuario_id = $2 AND m.tipo = 'tabla'`,
+    { bind: [mensajeId, usuarioId], type: QueryTypes.SELECT },
+  );
+  const meta = filas[0]?.meta;
+  if (!esMetaListado(meta)) throw new ChatError('Ese listado no está disponible', 404);
+  return paginaDesdeMeta(meta, pagina, filtro);
 }
 
 /**

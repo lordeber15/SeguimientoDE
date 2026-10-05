@@ -13,6 +13,7 @@ const estadoExpediente = jest.fn();
 const query = jest.fn();
 const planificar = jest.fn();
 const leerBooleano = jest.fn();
+const ejecutarListado = jest.fn();
 const ordenLlamadas: string[] = [];
 
 jest.mock('../../../../src/compartido/ai/providerFactory', () => ({
@@ -37,6 +38,12 @@ jest.mock('../../../../src/compartido/rag/planificadorService', () => ({
 jest.mock('../../../../src/compartido/rag/configService', () => ({
   leerBooleano: (...a: unknown[]) => leerBooleano(...a),
   leerConfig: () => Promise.resolve(null), // mensajes fijos: siempre el texto por defecto
+}));
+
+// El listado (búsqueda de expedientes + SGD en vivo) se prueba en sus propios archivos.
+jest.mock('../../../../src/modulos/sgd/rag/listadoChatService', () => ({
+  ...jest.requireActual('../../../../src/modulos/sgd/rag/listadoChatService'),
+  ejecutarListado: (...a: unknown[]) => ejecutarListado(...a),
 }));
 
 jest.mock('../../../../src/compartido/config/appDatabase', () => ({
@@ -67,6 +74,10 @@ function instalarQueryPorDefecto() {
     if (sql.includes("rol, texto FROM rag.chat_mensaje")) {
       return Promise.resolve([]); // sin historial previo
     }
+    if (sql.includes("'assistant', $2, 'tabla'")) {
+      ordenLlamadas.push('guardar-tabla');
+      return Promise.resolve([{ id: 88 }]);
+    }
     if (sql.includes("'assistant', $2, 'fijo'")) {
       ordenLlamadas.push('guardar-fijo');
       return Promise.resolve([{ id: 77 }]);
@@ -95,6 +106,7 @@ beforeEach(() => {
   estadoExpediente.mockResolvedValue([]);
   responder.mockReset().mockResolvedValue({ texto: 'respuesta', uso: { tokensIn: 10, tokensOut: 5, estimado: false } });
   leerBooleano.mockReset().mockResolvedValue(true);
+  ejecutarListado.mockReset();
   planificar.mockReset().mockImplementation((_prov: unknown, mensaje: string) => Promise.resolve({
     plan: planDeRespaldoReal(mensaje), uso: null, respaldo: false, ms: 1,
   }));
@@ -255,6 +267,52 @@ describe('responderChat — cierre con mensajes fijos', () => {
 
     expect(planificar).not.toHaveBeenCalled();
     expect(r.tipo).toBe('texto');
+  });
+});
+
+describe('responderChat — listar / contar', () => {
+  const planListar = (intencion: 'listar' | 'contar') => ({
+    plan: { ...planDeRespaldoReal('expedientes de Junín'), intencion }, uso: null, respaldo: false, ms: 1,
+  });
+  const tabla = { filas: [], pagina: 1, porPagina: 10, total: 3, nivel1: 1, nivel2: 2, hayMas: false };
+
+  it('responde con tabla, sin búsqueda de contenido ni modelo de respuesta', async () => {
+    planificar.mockResolvedValue(planListar('listar'));
+    ejecutarListado.mockResolvedValue({ texto: 'Encontré 3 expedientes…', tabla, meta: { version: 1, busqueda: { total: 3 } } });
+
+    const r = await chat.responderChat(peticionBase({ mensaje: 'dame los expedientes de Junín' }));
+
+    expect(r.tipo).toBe('tabla');
+    expect(r.tabla).toEqual(tabla);
+    expect(ejecutarListado).toHaveBeenCalledWith('listar', expect.anything(), { coDependencia: null });
+    expect(buscarHibrido).not.toHaveBeenCalled();
+    expect(responder).not.toHaveBeenCalled();
+    expect(ordenLlamadas).toEqual(['guardar-tabla']);
+  });
+
+  it('pasa el filtro de dependencia del usuario restringido a la búsqueda de expedientes', async () => {
+    planificar.mockResolvedValue(planListar('contar'));
+    ejecutarListado.mockResolvedValue({ texto: 'Hay 3…', tabla, meta: { version: 1, busqueda: { total: 3 } } });
+
+    await chat.responderChat(peticionBase({ sinRestriccionDependencia: false, coDependencia: '00104' }));
+    expect(ejecutarListado).toHaveBeenCalledWith('contar', expect.anything(), { coDependencia: '00104' });
+  });
+
+  it('sin expedientes → mensaje fijo de "no encontré"', async () => {
+    planificar.mockResolvedValue(planListar('listar'));
+    ejecutarListado.mockResolvedValue(null);
+
+    const r = await chat.responderChat(peticionBase());
+    expect(r.tipo).toBe('fijo');
+    expect(r.texto).toMatch(/No encontré/);
+  });
+
+  it('en modo expediente, "listar" no usa la tabla: sigue a la búsqueda de contenido', async () => {
+    planificar.mockResolvedValue(planListar('listar'));
+
+    await chat.responderChat(peticionBase({ modo: 'expediente', expediente: { nuAnnExp: '2026', nuSecExp: '0000000001' } }));
+    expect(ejecutarListado).not.toHaveBeenCalled();
+    expect(buscarHibrido).toHaveBeenCalled();
   });
 });
 

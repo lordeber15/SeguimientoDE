@@ -32,12 +32,46 @@ export interface EstadoIngestaBase {
  *  chat STD todavía no lo envía. */
 export type TipoRespuestaChat = 'texto' | 'tabla' | 'fijo';
 
+/**
+ * Fila de una respuesta tabla (listar / contar): lo común a cualquier sistema. Cada adaptador
+ * extiende esta forma con su identidad (expediente del SGD, documento del STD) y sabe convertirla
+ * en su entidad con `entidadDesdeFila`.
+ */
+export interface FilaResultadoChat {
+  asunto: string | null;
+  /** Quién originó el expediente: remitente externo, o dependencia · empleado. */
+  origen: string | null;
+  remitentes: string[];
+  documentos: number;
+  /** AAAA-MM-DD. */
+  ultimoMovimiento: string | null;
+  dependenciaActual: string | null;
+  archivado: boolean;
+  feArchivo: string | null;
+  /** 1 = coincidencia directa (asunto/remitente), 2 = solo dentro del contenido. */
+  nivel: 1 | 2;
+  /** "remitente · asunto: Huancavelica · contenido: controversia". */
+  coincidencia: string;
+}
+
+/** Una página de resultados. `pagina: 0` + `filas: []` = viene del historial, falta pedir la 1. */
+export interface TablaResultadosChat<F extends FilaResultadoChat = FilaResultadoChat> {
+  filas: F[];
+  pagina: number;
+  porPagina: number;
+  total: number;
+  nivel1: number;
+  nivel2: number;
+  hayMas: boolean;
+}
+
 export interface RespuestaChatBase<C extends CitaBasica> {
   sesionId: number;
   mensajeId: number;
   tipo?: TipoRespuestaChat;
   texto: string;
   citas: C[];
+  tabla?: TablaResultadosChat;
   candidatosVec: number;
   candidatosFts: number;
   marcadoresAlucinados: number;
@@ -49,6 +83,7 @@ export interface MensajeHistorialBase<C extends CitaBasica> {
   tipo?: TipoRespuestaChat;
   texto: string;
   citas: C[];
+  tabla?: TablaResultadosChat;
 }
 
 /**
@@ -84,6 +119,13 @@ export interface AdaptadorChat<E, C extends CitaBasica> {
   enviarContexto(e: E, mensaje: string, sesionId?: number): Promise<RespuestaChatBase<C>>;
   fetchTexto(chunkId: number): Promise<{ texto: string }>;
   abrirCita(cita: C): { url: string; titulo: string; visualizable: boolean };
+
+  /** Respuestas tabla — opcionales: un sistema sin listados (hoy el STD) no las define. */
+  fetchResultados?(mensajeId: number, pagina: number): Promise<TablaResultadosChat>;
+  /** Etiqueta de la primera columna (N° de expediente / N° STD). */
+  etiquetaFila?(fila: FilaResultadoChat): string;
+  /** Entidad para "Chatear" con esa fila en el modo por contexto. */
+  entidadDesdeFila?(fila: FilaResultadoChat): E | null;
 
   /** Permiso que habilita el enlace "Documentos (n)" hacia el panel de gestión. */
   permisoGestionar: string;

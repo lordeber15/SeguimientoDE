@@ -3,6 +3,7 @@ import {
   ChatError,
   listarSesiones,
   obtenerHistorialSesion,
+  paginaResultados,
   responderChat,
   sesionParaExpediente,
   textoChunkCitado,
@@ -223,5 +224,25 @@ export async function getChunkCitado(req: Request, res: Response) {
     res.json({ texto: await textoChunkCitado(id, req.usuario!.codUser) });
   } catch (error) {
     manejar(res, error, `Error al obtener el fragmento citado ${id}`);
+  }
+}
+
+const MAX_PAGINA = 1000;
+
+/** "Ver más" de un listado de expedientes: página `?pagina=n` (desde 1) de la lista ya guardada. */
+export async function getResultadosMensaje(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  const pagina = Number(req.query.pagina ?? 1);
+  if (!Number.isInteger(id)) return res.status(400).json({ message: 'id inválido' });
+  if (!Number.isInteger(pagina) || pagina < 1 || pagina > MAX_PAGINA) {
+    return res.status(400).json({ message: 'pagina inválida' });
+  }
+
+  try {
+    res.json(await paginaResultados(id, pagina, req.usuario!.codUser, {
+      coDependencia: sinRestriccionDependencia(req) ? null : req.usuario!.coDependencia,
+    }));
+  } catch (error) {
+    manejar(res, error, `Error al obtener los resultados del mensaje ${id}`);
   }
 }

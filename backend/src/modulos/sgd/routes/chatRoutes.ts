@@ -4,6 +4,7 @@ import {
   getChunkCitado,
   getEstadoIngestaExpediente,
   getEstadoIngestaExpedientes,
+  getResultadosMensaje,
   getSesion,
   getSesionExpediente,
   getSesiones,
@@ -26,5 +27,7 @@ router.get('/sesiones', getSesiones);
 router.get('/sesiones/:id', getSesion);
 // Texto completo de un fragmento citado: lo pide el frontend al desplegar la cita, no antes.
 router.get('/chunks/:id', getChunkCitado);
+// "Ver más" de una respuesta tabla: pagina sobre la lista guardada, sin re-buscar ni llamar al modelo.
+router.get('/mensajes/:id/resultados', getResultadosMensaje);
 
 export default router;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { AdaptadorChat, CitaBasica, TipoRespuestaChat } from '../api/chatComun';
+import type { AdaptadorChat, CitaBasica, FilaResultadoChat, TablaResultadosChat as Tabla, TipoRespuestaChat } from '../api/chatComun';
+import { TablaResultadosChat } from '../components/TablaResultadosChat';
 import { useSesion } from '../auth/SesionContext';
 import { idCita, ListaCitas } from '../components/CitaBadge';
 import { OrbePensando } from '../components/OrbePensando';
@@ -15,6 +16,7 @@ interface MensajeUI<C extends CitaBasica> {
   tipo?: TipoRespuestaChat;
   texto: string;
   citas?: C[];
+  tabla?: Tabla;
   marcadoresAlucinados?: number;
 }
 
@@ -122,7 +124,7 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
           const historial = await adaptador.fetchHistorial(sesion.id);
           if (!vigente) return;
           setMensajes(
-            historial.map((m) => ({ id: String(m.id), rol: m.rol, tipo: m.tipo, texto: m.texto, citas: m.citas })),
+            historial.map((m) => ({ id: String(m.id), rol: m.rol, tipo: m.tipo, texto: m.texto, citas: m.citas, tabla: m.tabla })),
           );
         }
       } catch (err) {
@@ -244,6 +246,14 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
     setErrorBusqueda(null);
   }
 
+  /** "Chatear" desde una fila de un listado: pasa al modo por contexto con esa entidad ya elegida. */
+  function chatearConFila(fila: FilaResultadoChat) {
+    const entidad = adaptador.entidadDesdeFila?.(fila);
+    if (!entidad) return;
+    cambiarModo('contexto');
+    elegirEntidad(entidad);
+  }
+
   function cambiarEntidad() {
     setSeleccionado(null);
     setSesionId(undefined);
@@ -285,6 +295,7 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
           tipo: respuesta.tipo,
           texto: respuesta.texto,
           citas: respuesta.citas,
+          tabla: respuesta.tabla,
           marcadoresAlucinados: respuesta.marcadoresAlucinados,
         },
       ]);
@@ -402,7 +413,10 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
               </li>
             )}
             {mensajes.map((m) => (
-              <li key={m.id} className={`chat-mensaje chat-mensaje--${m.rol}${m.tipo === 'fijo' ? ' chat-mensaje--fijo' : ''}`}>
+              <li
+                key={m.id}
+                className={`chat-mensaje chat-mensaje--${m.rol}${m.tipo === 'fijo' ? ' chat-mensaje--fijo' : ''}${m.tabla ? ' chat-mensaje--tabla' : ''}`}
+              >
                 {m.rol === 'assistant' && m.citas && m.citas.length > 0 ? (
                   <RespuestaConCitas
                     texto={m.texto}
@@ -412,6 +426,16 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
                   />
                 ) : (
                   <p className="chat-texto">{m.texto}</p>
+                )}
+
+                {m.tabla && adaptador.fetchResultados && adaptador.etiquetaFila && (
+                  <TablaResultadosChat
+                    tabla={m.tabla}
+                    mensajeId={m.id}
+                    cargarPagina={adaptador.fetchResultados}
+                    etiquetaFila={adaptador.etiquetaFila}
+                    onChatear={adaptador.entidadDesdeFila ? chatearConFila : undefined}
+                  />
                 )}
 
                 {m.citas && m.citas.length > 0 && (

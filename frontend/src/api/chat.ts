@@ -1,4 +1,4 @@
-import type { AdaptadorChat, TipoRespuestaChat } from './chatComun';
+import type { AdaptadorChat, FilaResultadoChat, TablaResultadosChat, TipoRespuestaChat } from './chatComun';
 import { apiJson } from './cliente';
 import { rutaAnexo, rutaDocumento } from './documentos';
 
@@ -22,12 +22,20 @@ export interface CitaChat {
   usada: boolean;
 }
 
+/** Fila de un listado de expedientes del SGD (`listadoChatService.ts` en el backend). */
+export interface FilaExpedienteChat extends FilaResultadoChat {
+  nuAnnExp: string;
+  nuSecExp: string;
+  numeroExpediente: string | null;
+}
+
 export interface RespuestaChat {
   sesionId: number;
   mensajeId: number;
   tipo?: TipoRespuestaChat;
   texto: string;
   citas: CitaChat[];
+  tabla?: TablaResultadosChat<FilaExpedienteChat>;
   candidatosVec: number;
   candidatosFts: number;
   marcadoresAlucinados: number;
@@ -48,6 +56,7 @@ export interface MensajeHistorial {
   texto: string;
   feAlta: string;
   citas: CitaChat[];
+  tabla?: TablaResultadosChat<FilaExpedienteChat>;
 }
 
 export interface EstadoIngestaExpediente {
@@ -92,6 +101,14 @@ export function enviarMensajeExpediente(
 }
 
 /** Texto completo del fragmento citado. Se pide al desplegar la cita, nunca antes. */
+/** "Ver más" de una respuesta tabla: página `pagina` (desde 1) de la lista guardada en el backend. */
+export function fetchResultadosMensaje(
+  mensajeId: number,
+  pagina: number,
+): Promise<TablaResultadosChat<FilaExpedienteChat>> {
+  return apiJson(`/api/rag/chat/mensajes/${mensajeId}/resultados?pagina=${pagina}`, 'cargar los resultados');
+}
+
 export function fetchTextoChunk(chunkId: number): Promise<{ texto: string }> {
   return apiJson(`/api/rag/chat/chunks/${chunkId}`, 'obtener el fragmento citado');
 }
@@ -212,6 +229,17 @@ export const adaptadorChatSgd: AdaptadorChat<ExpedienteChat, CitaChat> = {
     // La mayoría del corpus es PDF; si no lo es, el visor igual ofrece "Descargar" en la cabecera.
     visualizable: true,
   }),
+
+  fetchResultados: fetchResultadosMensaje,
+  etiquetaFila: (fila) => {
+    const f = fila as FilaExpedienteChat;
+    return f.numeroExpediente ?? `${f.nuAnnExp}-${f.nuSecExp}`;
+  },
+  // `ingestados: 0` como en App.tsx: la cobertura real se pide al elegirlo (`fetchEstadoIngesta`).
+  entidadDesdeFila: (fila) => {
+    const f = fila as FilaExpedienteChat;
+    return { nuAnnExp: f.nuAnnExp, nuSecExp: f.nuSecExp, numeroExpediente: f.numeroExpediente, documentos: f.documentos, ingestados: 0 };
+  },
 
   permisoGestionar: 'rag.gestionar',
 };

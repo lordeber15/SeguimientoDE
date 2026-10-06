@@ -42,9 +42,14 @@ beforeAll(() => {
 
 interface FilaMock { chunk_id: number }
 
-function instalarRamas(opts: { vec?: FilaMock[]; fts?: FilaMock[]; detalles?: Record<number, object> }) {
+function instalarRamas(opts: {
+  vec?: FilaMock[]; fts?: FilaMock[]; detalles?: Record<number, object>;
+  /** Chunks que deja pasar el filtro (conteo previo a la rama vectorial). */
+  filtrados?: number;
+}) {
   const detalles = opts.detalles ?? {};
   query.mockReset().mockImplementation((sql: string) => {
+    if (sql.includes('count(*)::int AS n')) return Promise.resolve([{ n: opts.filtrados ?? 0 }]);
     if (sql.includes('rag.embedding_')) return Promise.resolve(opts.vec ?? []);
     if (sql.includes('plainto_tsquery')) return Promise.resolve(opts.fts ?? []);
     if (sql.includes('FROM rag.chunk WHERE id = ANY')) {
@@ -119,24 +124,83 @@ describe('buscarHibrido — fusión RRF', () => {
   });
 });
 
+/**
+ * El modo de escaneo se decide y se configura ANTES de la consulta vectorial. Antes se decidía con
+ * los resultados ya obtenidos y el SET LOCAL llegaba tarde: con `ef_search` en 40 la rama devolvía
+ * 40 de 50, y con el filtro de una dependencia de ~3 500 chunks, 0 o 1 (verificado en la BD real).
+ */
 describe('buscarHibrido — guardarraíl exacto/HNSW', () => {
-  it('con pocos candidatos, fuerza escaneo exacto', async () => {
-    instalarRamas({ fts: [{ chunk_id: 1 }] });
-    const r = await retrieval.buscarHibrido('consulta', { coDependencia: null });
+  const sqls = () => query.mock.calls.map(([sql]) => String(sql));
+  const indice = (fragmento: string) => sqls().findIndex((s) => s.includes(fragmento));
 
-    expect(r.escaneoExacto).toBe(true);
-    expect(query.mock.calls.some(([sql]) => sql === 'SET LOCAL enable_indexscan = off')).toBe(true);
+  beforeEach(() => {
+    modeloActivo.mockResolvedValue({ id: 7, proveedor: 'ollama', modelo: 'bge-m3', dimension: 1024, activo: true, backfillPct: 0 });
+    crearEmbeddingProvider.mockReturnValue({
+      dimension: 1024,
+      embeber: jest.fn().mockResolvedValue({ vectores: [[0.1, 0.2]], uso: { tokensIn: 1, tokensOut: 0, estimado: true } }),
+    });
   });
 
-  it('con muchos candidatos, usa el modo relajado de HNSW en vez de forzar exacto', async () => {
-    const muchos = Array.from({ length: 2001 }, (_, i) => ({ chunk_id: i }));
-    instalarRamas({ fts: muchos });
+  it('sin filtro: no cuenta nada y configura HNSW (ef_search ≥ LIMIT, iterativo) antes de la consulta', async () => {
+    instalarRamas({});
     const r = await retrieval.buscarHibrido('consulta', { coDependencia: null });
 
     expect(r.escaneoExacto).toBe(false);
-    expect(
-      query.mock.calls.some(([sql]) => String(sql).includes("hnsw.iterative_scan = 'relaxed_order'")),
-    ).toBe(true);
+    expect(indice('count(*)::int AS n')).toBe(-1);
+    const vectorial = indice('rag.embedding_');
+    expect(indice('SET LOCAL hnsw.ef_search = 100')).toBeGreaterThanOrEqual(0);
+    expect(indice('SET LOCAL hnsw.ef_search = 100')).toBeLessThan(vectorial);
+    expect(indice("hnsw.iterative_scan = 'relaxed_order'")).toBeLessThan(vectorial);
+    expect(sqls().some((s) => s === 'SET LOCAL enable_indexscan = off')).toBe(false);
+  });
+
+  it('relaxed_order puede desordenar: la consulta se materializa y se reordena por distancia', async () => {
+    instalarRamas({});
+    await retrieval.buscarHibrido('consulta', { coDependencia: null });
+
+    const vectorial = sqls()[indice('rag.embedding_')];
+    expect(vectorial).toContain('AS MATERIALIZED');
+    expect(vectorial).toContain('ORDER BY distancia + 0');
+  });
+
+  it('filtro bajo el umbral: escaneo exacto solo para la consulta vectorial', async () => {
+    instalarRamas({ filtrados: 300 });
+    const r = await retrieval.buscarHibrido('consulta', { coDependencia: '00104' });
+
+    expect(r.escaneoExacto).toBe(true);
+    const off = sqls().indexOf('SET LOCAL enable_indexscan = off');
+    const on = sqls().indexOf('SET LOCAL enable_indexscan = on');
+    const vectorial = indice('rag.embedding_');
+    expect(indice('count(*)::int AS n')).toBeLessThan(off);
+    expect(off).toBeLessThan(vectorial);
+    expect(on).toBeGreaterThan(vectorial);
+    expect(on).toBeLessThan(indice('plainto_tsquery')); // el FTS sí usa sus índices
+  });
+
+  it('filtro sobre el umbral: HNSW iterativo, no exacto', async () => {
+    instalarRamas({ filtrados: 2001 });
+    const r = await retrieval.buscarHibrido('consulta', { coDependencia: '00104' });
+
+    expect(r.escaneoExacto).toBe(false);
+    expect(indice("hnsw.iterative_scan = 'relaxed_order'")).toBeLessThan(indice('rag.embedding_'));
+    expect(sqls().some((s) => s === 'SET LOCAL enable_indexscan = off')).toBe(false);
+  });
+
+  it('el conteo usa los mismos filtros que la rama (permiso y expediente)', async () => {
+    instalarRamas({ filtrados: 10 });
+    await retrieval.buscarHibrido('consulta', { coDependencia: '00104' }, { nuAnnExp: '2026', nuSecExp: '0000000001' });
+
+    const conteo = query.mock.calls.find(([sql]) => String(sql).includes('count(*)::int AS n'));
+    expect(conteo?.[1]?.bind).toEqual(['00104', '2026', '0000000001', null, null]);
+  });
+
+  it('sin rama vectorial (sin modelo activo) no cuenta ni configura nada', async () => {
+    modeloActivo.mockResolvedValue(null);
+    instalarRamas({ filtrados: 10 });
+    const r = await retrieval.buscarHibrido('consulta', { coDependencia: '00104' });
+
+    expect(r.escaneoExacto).toBe(false);
+    expect(sqls().some((s) => s.includes('count(*)::int AS n') || s.startsWith('SET LOCAL'))).toBe(false);
   });
 });
 

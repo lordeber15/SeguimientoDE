@@ -3,6 +3,11 @@ import { appSequelize } from '../../../compartido/config/appDatabase';
 import { crearEmbeddingProvider } from '../../../compartido/ai/providerFactory';
 import { estimarTokens } from '../../../compartido/rag/chunkService';
 import { modeloActivo, tablaVectores } from '../../../compartido/rag/embeddingModelService';
+import {
+  conEscaneoVectorial,
+  sqlVecinosOrdenados,
+  UMBRAL_ESCANEO_EXACTO,
+} from '../../../compartido/rag/ramaVectorial';
 import { getDocumentosExpediente } from '../services/documentoService';
 
 /**
@@ -19,12 +24,6 @@ const K_RRF = 60;
 const LIMITE_RAMA = 50;
 const LIMITE_RESULTADO = 20;
 const TOPE_POR_DOCUMENTO = 3;
-/**
- * Bajo este número de candidatos ya filtrados, se fuerza escaneo exacto en vez de HNSW: con un
- * filtro muy selectivo (un solo expediente, pocas dependencias), el grafo HNSW puede devolver
- * mucho menos de `k` SIN error — la respuesta sale incompleta pero plausible. Ver PLAN-RAG.md §9.
- */
-const UMBRAL_ESCANEO_EXACTO = 2000;
 
 export interface FiltroAcceso {
   /** `null` = sin restricción (admin/jefe ven todo). Si no, `co_dep_emi` exigido en `rag.documento`. */
@@ -44,6 +43,7 @@ export interface ResultadoBusqueda {
   chunks: ChunkRecuperado[];
   candidatosVec: number;
   candidatosFts: number;
+  /** La rama vectorial corrió con escaneo exacto (filtro bajo el umbral). `false` también si no corrió. */
   escaneoExacto: boolean;
 }
 
@@ -117,25 +117,45 @@ export async function buscarHibrido(
       `AND ($${i}::text[] IS NULL OR (d.nu_ann_exp, d.nu_sec_exp) IN (SELECT unnest($${i}::text[]), unnest($${i + 1}::text[])))`;
 
     let filasVec: FilaVec[] = [];
+    let escaneoExacto = false;
     if (vecLiteral && tabla) {
-      filasVec = await appSequelize.query<FilaVec>(
-        `SELECT c.id AS chunk_id
-           FROM rag.${tabla} e
-           JOIN rag.chunk c ON c.id = e.chunk_id
-          WHERE e.modelo_id = $2
-            AND EXISTS (
-              SELECT 1 FROM rag.documento d
-               WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(4)}
-                 ${conjuntoSql(6)}
-            )
-          ORDER BY e.vec <=> $3::vector
-          LIMIT ${LIMITE_RAMA}`,
+      // Sin ningún filtro (admin/jefe, búsqueda general) siempre se usa HNSW: el corpus entero nunca
+      // queda bajo el umbral. Con filtro, se cuentan los chunks que deja pasar — con tope, para que el
+      // conteo no cueste más que la búsqueda — y bajo el umbral se escanea exacto (ver ramaVectorial.ts).
+      const hayFiltro = filtro.coDependencia !== null || expAnn !== null || conjAnn !== null;
+      if (hayFiltro) {
+        const [{ n }] = await appSequelize.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM (
+             SELECT 1 FROM rag.documento d
+               JOIN rag.chunk c ON c.sha256 = d.contenido_sha256
+              WHERE d.vigente ${permisoSql} ${expedienteSql(2)} ${conjuntoSql(4)}
+              LIMIT ${UMBRAL_ESCANEO_EXACTO + 1}
+           ) s`,
+          { bind: [filtro.coDependencia, expAnn, expSec, conjAnn, conjSec], type: QueryTypes.SELECT, transaction: tx },
+        );
+        escaneoExacto = n <= UMBRAL_ESCANEO_EXACTO;
+      }
+
+      filasVec = await conEscaneoVectorial(appSequelize, tx, escaneoExacto, () => appSequelize.query<FilaVec>(
+        sqlVecinosOrdenados(
+          `SELECT c.id AS chunk_id, e.vec <=> $3::vector AS distancia
+             FROM rag.${tabla} e
+             JOIN rag.chunk c ON c.id = e.chunk_id
+            WHERE e.modelo_id = $2
+              AND EXISTS (
+                SELECT 1 FROM rag.documento d
+                 WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(4)}
+                   ${conjuntoSql(6)}
+              )
+            ORDER BY distancia
+            LIMIT ${LIMITE_RAMA}`,
+        ),
         {
           bind: [filtro.coDependencia, modeloId, vecLiteral, expAnn, expSec, conjAnn, conjSec],
           type: QueryTypes.SELECT,
           transaction: tx,
         },
-      );
+      ));
     }
 
     const filasFts = await appSequelize.query<FilaFts>(
@@ -163,16 +183,6 @@ export async function buscarHibrido(
         transaction: tx,
       },
     );
-
-    const escaneoExacto = filasVec.length + filasFts.length < UMBRAL_ESCANEO_EXACTO;
-    // Sin índice HNSW todavía (0 embeddings reales hoy), la rama vectorial ya es exacta por
-    // definición. El guardarraíl queda listo para cuando exista uno: bajo el umbral, se
-    // desactiva el uso de índices para forzar el escaneo exacto en esta transacción.
-    if (escaneoExacto) {
-      await appSequelize.query('SET LOCAL enable_indexscan = off', { transaction: tx });
-    } else {
-      await appSequelize.query("SET LOCAL hnsw.iterative_scan = 'relaxed_order'", { transaction: tx });
-    }
 
     const rangoVec = new Map(filasVec.map((f, i) => [f.chunk_id, i + 1]));
     const rangoFts = new Map(filasFts.map((f, i) => [f.chunk_id, i + 1]));

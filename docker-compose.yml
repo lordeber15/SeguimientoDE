@@ -73,6 +73,18 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Métricas LLM de Ragas sobre las corridas de `npm run eval:rag` (docs/PLAN-RAG-AVANZADO.md,
+  # Fase 1). Perfil `evals`: no arranca con `docker compose up`, solo a pedido:
+  #   docker compose --profile evals run --rm rag-evals /evals/salidas/sgd-12.json
+  rag-evals:
+    build: ./backend/evals/ragas
+    profiles: ['evals']
+    env_file: .env
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - ./backend/evals:/evals
+
 volumes:
   db_app_data:
   # Punto de montaje vacío para el backend cuando no hay STORAGE_HOST_PATH (ver servicio backend).

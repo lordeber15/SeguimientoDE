@@ -4,6 +4,11 @@ import { consultarStd } from '../config/stdDatabase';
 import { crearEmbeddingProvider } from '../../../compartido/ai/providerFactory';
 import { estimarTokens } from '../../../compartido/rag/chunkService';
 import { modeloActivo, tablaVectores } from '../../../compartido/rag/embeddingModelService';
+import {
+  conEscaneoVectorial,
+  sqlVecinosOrdenados,
+  UMBRAL_ESCANEO_EXACTO,
+} from '../../../compartido/rag/ramaVectorial';
 
 /**
  * Retrieval híbrido (vectorial + full-text español) sobre `std_rag`, equivalente a
@@ -16,7 +21,7 @@ import { modeloActivo, tablaVectores } from '../../../compartido/rag/embeddingMo
  * STD"): el modo "chat por documento" no debe mezclar fragmentos de otros documentos del corpus.
  *
  * Misma fusión por RRF, mismo tope de 3 chunks por documento de origen y mismo guardarraíl de
- * escaneo exacto bajo el umbral — ver los comentarios del original en `retrievalService.ts` para
+ * escaneo exacto bajo el umbral (`compartido/rag/ramaVectorial.ts`) — ver los comentarios del original en `retrievalService.ts` para
  * el razonamiento completo (PLAN-RAG.md §9); no se repiten aquí.
  */
 
@@ -24,7 +29,6 @@ const K_RRF = 60;
 const LIMITE_RAMA = 50;
 const LIMITE_RESULTADO = 20;
 const TOPE_POR_DOCUMENTO = 3;
-const UMBRAL_ESCANEO_EXACTO = 2000;
 
 export interface ChunkRecuperadoStd {
   chunkId: number;
@@ -88,20 +92,38 @@ export async function buscarHibridoStd(
     const ids = conjunto && conjunto.length > 0 ? conjunto : null;
 
     let filasVec: FilaVec[] = [];
+    let escaneoExacto = false;
     if (vecLiteral && tabla) {
-      filasVec = await stdRagSequelize.query<FilaVec>(
-        `SELECT c.id AS chunk_id
-           FROM rag.${tabla} e
-           JOIN rag.chunk c ON c.id = e.chunk_id
-          WHERE e.modelo_id = $1
-            AND EXISTS (
-              SELECT 1 FROM rag.documento d
-               WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${filtroDocSql(3)}
-            )
-          ORDER BY e.vec <=> $2::vector
-          LIMIT ${LIMITE_RAMA}`,
+      // Mismo criterio que el SGD (ver ramaVectorial.ts): sin filtro, HNSW; con filtro, conteo con tope
+      // ANTES de consultar y escaneo exacto bajo el umbral.
+      if (idDoc !== null || ids !== null) {
+        const [{ n }] = await stdRagSequelize.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM (
+             SELECT 1 FROM rag.documento d
+               JOIN rag.chunk c ON c.sha256 = d.contenido_sha256
+              WHERE d.vigente ${filtroDocSql(1)}
+              LIMIT ${UMBRAL_ESCANEO_EXACTO + 1}
+           ) s`,
+          { bind: [idDoc, ids], type: QueryTypes.SELECT, transaction: tx },
+        );
+        escaneoExacto = n <= UMBRAL_ESCANEO_EXACTO;
+      }
+
+      filasVec = await conEscaneoVectorial(stdRagSequelize, tx, escaneoExacto, () => stdRagSequelize.query<FilaVec>(
+        sqlVecinosOrdenados(
+          `SELECT c.id AS chunk_id, e.vec <=> $2::vector AS distancia
+             FROM rag.${tabla} e
+             JOIN rag.chunk c ON c.id = e.chunk_id
+            WHERE e.modelo_id = $1
+              AND EXISTS (
+                SELECT 1 FROM rag.documento d
+                 WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${filtroDocSql(3)}
+              )
+            ORDER BY distancia
+            LIMIT ${LIMITE_RAMA}`,
+        ),
         { bind: [modeloId, vecLiteral, idDoc, ids], type: QueryTypes.SELECT, transaction: tx },
-      );
+      ));
     }
 
     const filasFts = await stdRagSequelize.query<FilaFts>(
@@ -121,13 +143,6 @@ export async function buscarHibridoStd(
         LIMIT ${LIMITE_RAMA}`,
       { bind: [consultaTexto, idDoc, ids, terminosFts && terminosFts.length > 0 ? terminosFts : null], type: QueryTypes.SELECT, transaction: tx },
     );
-
-    const escaneoExacto = filasVec.length + filasFts.length < UMBRAL_ESCANEO_EXACTO;
-    if (escaneoExacto) {
-      await stdRagSequelize.query('SET LOCAL enable_indexscan = off', { transaction: tx });
-    } else {
-      await stdRagSequelize.query("SET LOCAL hnsw.iterative_scan = 'relaxed_order'", { transaction: tx });
-    }
 
     const rangoVec = new Map(filasVec.map((f, i) => [f.chunk_id, i + 1]));
     const rangoFts = new Map(filasFts.map((f, i) => [f.chunk_id, i + 1]));

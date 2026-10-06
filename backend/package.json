@@ -10,7 +10,10 @@
     "start": "node dist/server.js",
     "test": "jest",
     "test:watch": "jest --watch",
-    "eval:planificador": "ts-node --transpile-only src/scripts/evaluarPlanificador.ts"
+    "eval:planificador": "ts-node --transpile-only src/scripts/evaluarPlanificador.ts",
+    "eval:rag": "ts-node --transpile-only src/scripts/evaluarRag.ts",
+    "eval:rag:semilla": "ts-node --transpile-only src/scripts/semillaEvalRag.ts",
+    "eval:rag:importar": "ts-node --transpile-only src/scripts/importarRagas.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

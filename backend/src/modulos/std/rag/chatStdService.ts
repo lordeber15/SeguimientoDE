@@ -27,7 +27,9 @@ import {
   elegirDocumentoParaCitaStd,
   lineaTiempoStd,
   recortarPorPresupuestoStd,
+  type ChunkRecuperadoStd,
   type LineaTiempoDocumentoStd,
+  type ResultadoBusquedaStd,
 } from './retrievalStdService';
 
 /**
@@ -216,7 +218,7 @@ async function conjuntoActivo(sesionId: number): Promise<number[] | null> {
   return esMetaListadoStd(meta) ? meta.documentos.map(idDeCandidato) : null;
 }
 
-interface CitaPendiente {
+export interface CitaPendiente {
   numero: number;
   chunkId: number;
   documentoId: number;
@@ -421,6 +423,68 @@ async function responderFijo(datos: {
   };
 }
 
+export interface ContextoRecuperadoStd {
+  /** Candidatos fusionados por RRF, ANTES del rerank (top-N). */
+  resultado: ResultadoBusquedaStd;
+  timeline: LineaTiempoDocumentoStd | null;
+  chunksAcotados: ChunkRecuperadoStd[];
+  citas: CitaPendiente[];
+  usoRerank: ResultadoChat['uso'] | null;
+}
+
+/**
+ * Ruta `contenido` hasta tener las citas numeradas, SIN escribir nada en la BD — igual que
+ * `recuperarContexto` del SGD: la comparten el chat y la evaluación del RAG.
+ */
+export async function recuperarContextoStd(
+  provider: ChatProvider,
+  opciones: { consulta: string; idDocumento?: number; conjunto?: number[] | null; terminosFts?: string[] },
+): Promise<ContextoRecuperadoStd> {
+  const { consulta, idDocumento, conjunto, terminosFts } = opciones;
+
+  const [resultado, timeline] = await Promise.all([
+    buscarHibridoStd(consulta, idDocumento, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO) ?? undefined, terminosFts),
+    idDocumento ? lineaTiempoStd(idDocumento) : Promise.resolve(null),
+  ]);
+
+  const rerank = await rerankear(provider, consulta, resultado.chunks);
+  const chunksAcotados = recortarPorPresupuestoStd(rerank.chunks, PRESUPUESTO_TOKENS_CONTEXTO);
+
+  const citas: CitaPendiente[] = [];
+  let numero = 1;
+  for (const c of chunksAcotados) {
+    const documento = await elegirDocumentoParaCitaStd(c.sha256, idDocumento);
+    if (documento === null) continue;
+    citas.push({
+      numero: numero++,
+      chunkId: c.chunkId,
+      documentoId: documento.id,
+      idAdjunto: documento.idAdjunto,
+      idDocumento: documento.idDocumento,
+      nroStd: documento.nroStd,
+      origen: documento.origen,
+      texto: c.texto,
+      rutaTitulos: c.rutaTitulos,
+    });
+  }
+
+  return { resultado, timeline, chunksAcotados, citas, usoRerank: rerank.uso };
+}
+
+/** Llamada de respuesta sobre un contexto ya recuperado, sin escribir nada en la BD. */
+export async function generarRespuestaStd(
+  provider: ChatProvider,
+  datos: { timeline: LineaTiempoDocumentoStd | null; citas: CitaPendiente[]; historial: MensajeChat[]; mensaje: string },
+): Promise<{ respuesta: ResultadoChat; texto: string; numerosUsados: number[]; marcadoresInvalidos: number[] }> {
+  const mensajes: MensajeChat[] = [
+    { rol: 'system', contenido: construirPromptSistemaStd(datos.timeline, datos.citas) },
+    ...datos.historial,
+    { rol: 'user', contenido: datos.mensaje },
+  ];
+  const respuesta = await provider.responder(mensajes, { maxTokens: MAX_TOKENS_RESPUESTA });
+  return { respuesta, ...limpiarMarcadoresStd(respuesta.texto, datos.citas) };
+}
+
 export async function responderChatStd(p: PeticionChatStd): Promise<RespuestaChatStd> {
   const disponibilidad = chatDisponible();
   if (!disponibilidad.disponible) {
@@ -516,38 +580,13 @@ export async function responderChatStd(p: PeticionChatStd): Promise<RespuestaCha
     ? prepararTerminos(terminosDelPlan(plan), plan, await leerParametros(stdRagSequelize)).consultas
     : undefined;
 
-  const [resultado, timeline] = await Promise.all([
-    buscarHibridoStd(
-      consultaBusqueda,
-      p.modo === 'documento' ? p.idDocumento : undefined,
-      p.modo === 'general' ? conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO) : undefined,
-      terminosFts,
-    ),
-    p.modo === 'documento' && p.idDocumento ? lineaTiempoStd(p.idDocumento) : Promise.resolve(null),
-  ]);
-
-  const rerank = await rerankear(provider, consultaBusqueda, resultado.chunks);
-  if (rerank.uso) await registrarUsoToken(provider, 'chat_rerank', rerank.uso);
-
-  const chunksAcotados = recortarPorPresupuestoStd(rerank.chunks, PRESUPUESTO_TOKENS_CONTEXTO);
-
-  const citas: CitaPendiente[] = [];
-  let numero = 1;
-  for (const c of chunksAcotados) {
-    const documento = await elegirDocumentoParaCitaStd(c.sha256, p.idDocumento);
-    if (documento === null) continue;
-    citas.push({
-      numero: numero++,
-      chunkId: c.chunkId,
-      documentoId: documento.id,
-      idAdjunto: documento.idAdjunto,
-      idDocumento: documento.idDocumento,
-      nroStd: documento.nroStd,
-      origen: documento.origen,
-      texto: c.texto,
-      rutaTitulos: c.rutaTitulos,
-    });
-  }
+  const { resultado, timeline, chunksAcotados, citas, usoRerank } = await recuperarContextoStd(provider, {
+    consulta: consultaBusqueda,
+    idDocumento: p.modo === 'documento' ? p.idDocumento : undefined,
+    conjunto: p.modo === 'general' ? conjunto : null,
+    terminosFts,
+  });
+  if (usoRerank) await registrarUsoToken(provider, 'chat_rerank', usoRerank);
 
   // Sin fragmentos ni línea de tiempo no hay nada que sostenga una respuesta: no se llama al modelo.
   const hayLineaTiempo = Boolean(timeline && (timeline.movimientos.length > 0 || timeline.referencias.length > 0));
@@ -558,14 +597,9 @@ export async function responderChatStd(p: PeticionChatStd): Promise<RespuestaCha
 
   try {
     const historial = await historialReciente(sesion.id, mensajeAsistenteId);
-    const mensajes: MensajeChat[] = [
-      { rol: 'system', contenido: construirPromptSistemaStd(timeline, citas) },
-      ...historial,
-      { rol: 'user', contenido: p.mensaje },
-    ];
-
-    const respuesta = await provider.responder(mensajes, { maxTokens: MAX_TOKENS_RESPUESTA });
-    const { texto, numerosUsados, marcadoresInvalidos } = limpiarMarcadoresStd(respuesta.texto, citas);
+    const { respuesta, texto, numerosUsados, marcadoresInvalidos } = await generarRespuestaStd(provider, {
+      timeline, citas, historial, mensaje: p.mensaje,
+    });
 
     await marcarCitasUsadas(mensajeAsistenteId, numerosUsados);
     await actualizarMensajeAsistente(mensajeAsistenteId, texto, respuesta.uso);

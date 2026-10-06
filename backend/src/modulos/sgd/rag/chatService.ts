@@ -28,6 +28,8 @@ import {
   recortarPorPresupuesto,
   type FiltroAcceso,
   type LineaTiempo,
+  type ChunkRecuperado,
+  type ResultadoBusqueda,
 } from './retrievalService';
 
 /**
@@ -249,7 +251,7 @@ async function conjuntoActivo(sesionId: number): Promise<{ nuAnnExp: string; nuS
   return meta.expedientes.map((e) => ({ nuAnnExp: e.a, nuSecExp: e.s }));
 }
 
-interface CitaPendiente {
+export interface CitaPendiente {
   numero: number;
   chunkId: number;
   documentoId: number;
@@ -474,6 +476,81 @@ async function responderFijo(datos: {
   };
 }
 
+export interface ContextoRecuperado {
+  /** Candidatos fusionados por RRF, ANTES del rerank (top-N): la evaluación mide Hit Rate aquí también. */
+  resultado: ResultadoBusqueda;
+  timeline: LineaTiempo[] | null;
+  /** Tras rerank y presupuesto de tokens, antes de resolver el documento de cada cita. */
+  chunksAcotados: ChunkRecuperado[];
+  citas: CitaPendiente[];
+  usoRerank: ResultadoChat['uso'] | null;
+}
+
+/**
+ * Ruta `contenido` hasta tener las citas numeradas, SIN escribir nada en la BD: la usan
+ * `responderChat` y la evaluación del RAG (`src/scripts/evaluarRag.ts`), que así mide exactamente
+ * el pipeline de producción y no una copia que se desincroniza.
+ */
+export async function recuperarContexto(
+  provider: ChatProvider,
+  opciones: {
+    consulta: string;
+    filtro: FiltroAcceso;
+    expediente?: { nuAnnExp: string; nuSecExp: string };
+    conjunto?: { nuAnnExp: string; nuSecExp: string }[] | null;
+    /** Términos del plan (con sus sinónimos) para la rama FTS: la consulta reescrita completa es
+     *  demasiado estricta para plainto_tsquery. */
+    terminosFts?: string[];
+  },
+): Promise<ContextoRecuperado> {
+  const { consulta, filtro, expediente, conjunto, terminosFts } = opciones;
+
+  const [resultado, timeline] = await Promise.all([
+    expediente
+      ? buscarHibrido(consulta, filtro, expediente, undefined, terminosFts)
+      : buscarHibrido(consulta, filtro, undefined, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO), terminosFts),
+    expediente ? estadoExpediente(expediente.nuAnnExp, expediente.nuSecExp) : Promise.resolve(null),
+  ]);
+
+  const rerank = await rerankear(provider, consulta, resultado.chunks);
+  const chunksAcotados = recortarPorPresupuesto(rerank.chunks, PRESUPUESTO_TOKENS_CONTEXTO);
+
+  const citas: CitaPendiente[] = [];
+  let numero = 1;
+  for (const c of chunksAcotados) {
+    // Reafirma el filtro de permisos al elegir el documento de la cita: el chunk ya vino
+    // filtrado por `buscarHibrido`, pero la cita debe señalar un documento accesible en concreto.
+    const documento = await elegirDocumentoParaCita(c.sha256, filtro, expediente);
+    if (documento === null) continue;
+    citas.push({
+      numero: numero++,
+      chunkId: c.chunkId,
+      documentoId: documento.id,
+      nuAnn: documento.nuAnn,
+      nuEmi: documento.nuEmi,
+      nuAne: documento.nuAne,
+      texto: c.texto,
+      rutaTitulos: c.rutaTitulos,
+    });
+  }
+
+  return { resultado, timeline, chunksAcotados, citas, usoRerank: rerank.uso };
+}
+
+/** Llamada de respuesta sobre un contexto ya recuperado, sin escribir nada en la BD. */
+export async function generarRespuesta(
+  provider: ChatProvider,
+  datos: { timeline: LineaTiempo[] | null; citas: CitaPendiente[]; historial: MensajeChat[]; mensaje: string },
+): Promise<{ respuesta: ResultadoChat; texto: string; numerosUsados: number[]; marcadoresInvalidos: number[] }> {
+  const mensajes: MensajeChat[] = [
+    { rol: 'system', contenido: construirPromptSistema(datos.timeline, datos.citas) },
+    ...datos.historial,
+    { rol: 'user', contenido: datos.mensaje },
+  ];
+  const respuesta = await provider.responder(mensajes, { maxTokens: MAX_TOKENS_RESPUESTA });
+  return { respuesta, ...limpiarMarcadores(respuesta.texto, datos.citas) };
+}
+
 export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
   const disponibilidad = chatDisponible();
   if (!disponibilidad.disponible) {
@@ -577,44 +654,18 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
     return { sesionId: sesion.id, mensajeId, tipo: 'tabla', texto, tabla: listado.tabla, ...sinModelo };
   }
 
-  // Términos del plan (con sus sinónimos) para la rama FTS: la consulta reescrita completa es demasiado
-  // estricta para plainto_tsquery.
   const terminosFts = planConfiable
     ? prepararTerminos(terminosDelPlan(plan), plan, await leerParametros()).consultas
     : undefined;
 
-  const [resultado, timeline] = await Promise.all([
-    p.modo === 'expediente' && p.expediente
-      ? buscarHibrido(consultaBusqueda, filtro, p.expediente, undefined, terminosFts)
-      : buscarHibrido(consultaBusqueda, filtro, undefined, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO), terminosFts),
-    p.modo === 'expediente' && p.expediente
-      ? estadoExpediente(p.expediente.nuAnnExp, p.expediente.nuSecExp)
-      : Promise.resolve(null),
-  ]);
-
-  const rerank = await rerankear(provider, consultaBusqueda, resultado.chunks);
-  if (rerank.uso) await registrarUsoToken(provider, 'chat_rerank', rerank.uso);
-
-  const chunksAcotados = recortarPorPresupuesto(rerank.chunks, PRESUPUESTO_TOKENS_CONTEXTO);
-
-  const citas: CitaPendiente[] = [];
-  let numero = 1;
-  for (const c of chunksAcotados) {
-    // Reafirma el filtro de permisos al elegir el documento de la cita: el chunk ya vino
-    // filtrado por `buscarHibrido`, pero la cita debe señalar un documento accesible en concreto.
-    const documento = await elegirDocumentoParaCita(c.sha256, filtro, p.expediente);
-    if (documento === null) continue;
-    citas.push({
-      numero: numero++,
-      chunkId: c.chunkId,
-      documentoId: documento.id,
-      nuAnn: documento.nuAnn,
-      nuEmi: documento.nuEmi,
-      nuAne: documento.nuAne,
-      texto: c.texto,
-      rutaTitulos: c.rutaTitulos,
-    });
-  }
+  const { resultado, timeline, chunksAcotados, citas, usoRerank } = await recuperarContexto(provider, {
+    consulta: consultaBusqueda,
+    filtro,
+    expediente: p.modo === 'expediente' ? p.expediente : undefined,
+    conjunto,
+    terminosFts,
+  });
+  if (usoRerank) await registrarUsoToken(provider, 'chat_rerank', usoRerank);
 
   // [3] Sin nada que sostenga una respuesta (ni fragmentos ni línea de tiempo del expediente), no
   // se le pregunta al modelo: solo podría adivinar o repetir que no sabe, y cobrando por ello.
@@ -627,14 +678,9 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
 
   try {
     const historial = await historialReciente(sesion.id, mensajeAsistenteId);
-    const mensajes: MensajeChat[] = [
-      { rol: 'system', contenido: construirPromptSistema(timeline, citas) },
-      ...historial,
-      { rol: 'user', contenido: p.mensaje },
-    ];
-
-    const respuesta = await provider.responder(mensajes, { maxTokens: MAX_TOKENS_RESPUESTA });
-    const { texto, numerosUsados, marcadoresInvalidos } = limpiarMarcadores(respuesta.texto, citas);
+    const { respuesta, texto, numerosUsados, marcadoresInvalidos } = await generarRespuesta(provider, {
+      timeline, citas, historial, mensaje: p.mensaje,
+    });
 
     await marcarCitasUsadas(mensajeAsistenteId, numerosUsados);
     await actualizarMensajeAsistente(mensajeAsistenteId, texto, respuesta.uso);

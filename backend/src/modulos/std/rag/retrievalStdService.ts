@@ -1,11 +1,13 @@
 import { QueryTypes } from 'sequelize';
 import { stdRagSequelize } from '../config/stdRagDatabase';
 import { consultarStd } from '../config/stdDatabase';
-import { crearEmbeddingProvider } from '../../../compartido/ai/providerFactory';
 import { estimarTokens } from '../../../compartido/rag/chunkService';
-import { modeloActivo, tablaVectores } from '../../../compartido/rag/embeddingModelService';
+import { modeloActivo } from '../../../compartido/rag/embeddingModelService';
+import { paso } from '../../../compartido/observabilidad/traza';
 import {
   conEscaneoVectorial,
+  embeberConsulta,
+  resumirBusqueda,
   sqlVecinosOrdenados,
   UMBRAL_ESCANEO_EXACTO,
 } from '../../../compartido/rag/ramaVectorial';
@@ -44,6 +46,8 @@ export interface ResultadoBusquedaStd {
   candidatosVec: number;
   candidatosFts: number;
   escaneoExacto: boolean;
+  /** Ver `ResultadoBusqueda.degradacionVectorial` del SGD. */
+  degradacionVectorial?: string | null;
 }
 
 interface FilaVec { chunk_id: number }
@@ -66,24 +70,26 @@ export async function buscarHibridoStd(
    *  consulta reescrita completa es demasiado estricta para plainto_tsquery. */
   terminosFts?: string[],
 ): Promise<ResultadoBusquedaStd> {
-  const modelo = await modeloActivo(stdRagSequelize);
-  let vecLiteral: string | null = null;
-  let modeloId: number | null = null;
-  let tabla: string | null = null;
+  return paso(
+    'retrieval',
+    { consulta: consultaTexto, idDocumento: idDocumento ?? null, conjunto: conjunto?.length ?? 0, terminosFts: terminosFts ?? null },
+    () => buscarHibridoStdSinTraza(consultaTexto, idDocumento, conjunto, terminosFts),
+    { tipo: 'recuperacion', resumir: resumirBusqueda },
+  );
+}
 
-  if (modelo) {
-    try {
-      const provider = crearEmbeddingProvider();
-      if (provider.dimension === modelo.dimension) {
-        const { vectores } = await provider.embeber([consultaTexto]);
-        vecLiteral = `[${vectores[0].join(',')}]`;
-        modeloId = modelo.id;
-        tabla = tablaVectores(modelo.dimension);
-      }
-    } catch {
-      vecLiteral = null;
-    }
-  }
+async function buscarHibridoStdSinTraza(
+  consultaTexto: string,
+  idDocumento?: number,
+  conjunto?: number[],
+  terminosFts?: string[],
+): Promise<ResultadoBusquedaStd> {
+  const { consulta: embebida, degradacion } = await embeberConsulta(
+    await modeloActivo(stdRagSequelize), consultaTexto, 'std',
+  );
+  const vecLiteral = embebida?.vecLiteral ?? null;
+  const modeloId = embebida?.modeloId ?? null;
+  const tabla = embebida?.tabla ?? null;
 
   return stdRagSequelize.transaction(async (tx) => {
     const filtroDocSql = (i: number) =>
@@ -149,7 +155,7 @@ export async function buscarHibridoStd(
     const idsUnicos = [...new Set([...rangoVec.keys(), ...rangoFts.keys()])];
 
     if (idsUnicos.length === 0) {
-      return { chunks: [], candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto };
+      return { chunks: [], candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto, degradacionVectorial: degradacion };
     }
 
     const puntuados = idsUnicos
@@ -188,7 +194,7 @@ export async function buscarHibridoStd(
       if (chunks.length >= LIMITE_RESULTADO) break;
     }
 
-    return { chunks, candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto };
+    return { chunks, candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto, degradacionVectorial: degradacion };
   });
 }
 

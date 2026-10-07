@@ -3,6 +3,7 @@ import { OllamaChat, OllamaEmbedding } from './providers/ollama';
 import { OpenAiChat, OpenAiEmbedding } from './providers/openai';
 import { OpenAiVision } from './providers/openaiVision';
 import type { ChatProvider, EmbeddingProvider, NombreProveedor, VisionProvider } from './types';
+import { paso } from '../observabilidad/traza';
 
 /**
  * Selección de proveedor por configuración.
@@ -37,11 +38,11 @@ export function crearEmbeddingProvider(
 ): EmbeddingProvider {
   switch (nombre) {
     case 'ollama':
-      return new OllamaEmbedding();
+      return instrumentarEmbedding(new OllamaEmbedding());
     case 'openai':
-      return new OpenAiEmbedding(false);
+      return instrumentarEmbedding(new OpenAiEmbedding(false));
     case 'azure':
-      return new OpenAiEmbedding(true);
+      return instrumentarEmbedding(new OpenAiEmbedding(true));
     default:
       throw new Error(
         `EMBEDDING_PROVIDER="${nombre}" no es válido. Opciones: ${PROVEEDORES_EMBEDDING.join(', ')}.`,
@@ -52,18 +53,56 @@ export function crearEmbeddingProvider(
 export function crearChatProvider(nombre = proveedorChatConfigurado()): ChatProvider {
   switch (nombre) {
     case 'ollama':
-      return new OllamaChat();
+      return instrumentarChat(new OllamaChat());
     case 'openai':
-      return new OpenAiChat(false);
+      return instrumentarChat(new OpenAiChat(false));
     case 'azure':
-      return new OpenAiChat(true);
+      return instrumentarChat(new OpenAiChat(true));
     case 'anthropic':
-      return new AnthropicChat();
+      return instrumentarChat(new AnthropicChat());
     default:
       throw new Error(
         `CHAT_PROVIDER="${nombre}" no es válido. Opciones: ${PROVEEDORES_CHAT.join(', ')}.`,
       );
   }
+}
+
+/**
+ * Cada llamada al modelo queda como paso `generacion` de la traza en curso (modelo, mensajes,
+ * respuesta y tokens), sin que planificador, rerank o respuesta tengan que registrarlo. Fuera de una
+ * traza (ingesta, scripts) `paso` es un no-op. Ver compartido/observabilidad/traza.ts.
+ */
+export function instrumentarChat(p: ChatProvider): ChatProvider {
+  return {
+    nombre: p.nombre,
+    modelo: p.modelo,
+    comprobar: () => p.comprobar(),
+    responder: (mensajes, opciones) => paso(
+      `llm ${p.nombre}/${p.modelo}`,
+      { mensajes, maxTokens: opciones?.maxTokens },
+      () => p.responder(mensajes, opciones),
+      {
+        tipo: 'generacion',
+        resumir: (r) => ({ salida: r.texto, modelo: p.modelo, tokensIn: r.uso.tokensIn, tokensOut: r.uso.tokensOut }),
+      },
+    ),
+  };
+}
+
+export function instrumentarEmbedding(p: EmbeddingProvider): EmbeddingProvider {
+  return {
+    nombre: p.nombre,
+    modelo: p.modelo,
+    dimension: p.dimension,
+    comprobar: () => p.comprobar(),
+    embeber: (textos) => paso(
+      `embedding ${p.nombre}/${p.modelo}`,
+      // Solo el comienzo de cada texto: el vector no aporta nada a la traza y el texto entero tampoco.
+      { textos: textos.map((t) => t.slice(0, 300)), cantidad: textos.length },
+      () => p.embeber(textos),
+      { tipo: 'embedding', resumir: (r) => ({ modelo: p.modelo, tokensIn: r.uso.tokensIn, salida: { vectores: r.vectores.length } }) },
+    ),
+  };
 }
 
 /**

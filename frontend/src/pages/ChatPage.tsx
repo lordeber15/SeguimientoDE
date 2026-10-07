@@ -18,6 +18,7 @@ import { OrbePensando } from '../components/OrbePensando';
 import { idPanel, idPestana, Pestanas } from '../components/Pestanas';
 import { RespuestaConCitas } from '../components/RespuestaConCitas';
 import { VisorDocumento } from '../components/VisorDocumento';
+import { ApiError } from '../api/cliente';
 
 type Modo = 'general' | 'contexto';
 
@@ -31,6 +32,16 @@ interface MensajeUI<C extends CitaBasica> {
   documento?: TarjetaDocumentoChat;
   participantes?: BloqueParticipantesChat;
   marcadoresAlucinados?: number;
+  /** El modelo no respondió: la búsqueda quedó guardada en el backend y se puede reintentar. */
+  fallido?: boolean;
+}
+
+/** `mensajeFallidoId` / `sesionId` del cuerpo de un error reintentable (HTTP 502 del chat). */
+function turnoFallidoDe(err: unknown): { mensajeId: number; sesionId: number | null } | null {
+  if (!(err instanceof ApiError)) return null;
+  const mensajeId = Number(err.datos.mensajeFallidoId);
+  const sesionId = Number(err.datos.sesionId);
+  return Number.isInteger(mensajeId) ? { mensajeId, sesionId: Number.isInteger(sesionId) ? sesionId : null } : null;
 }
 
 interface DocumentoAbierto {
@@ -97,6 +108,8 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
   const [mensajes, setMensajes] = useState<MensajeUI<C>[]>([]);
   const [entrada, setEntrada] = useState('');
   const [enviando, setEnviando] = useState(false);
+  /** Id del mensaje fallido cuyo reintento está en curso (uno a la vez). */
+  const [reintentando, setReintentando] = useState<string | null>(null);
   const [redactando, setRedactando] = useState(false);
   const [cargandoInicial, setCargandoInicial] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +153,7 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
             historial.map((m) => ({
               id: String(m.id), rol: m.rol, tipo: m.tipo, texto: m.texto, citas: m.citas,
               tabla: m.tabla, documento: m.documento, participantes: m.participantes,
+              fallido: m.estado === 'fallido',
             })),
           );
         }
@@ -332,9 +346,38 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
         },
       ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'No se pudo enviar el mensaje');
+      // El modelo no respondió pero la búsqueda quedó guardada: el turno se muestra con
+      // "Reintentar" en vez de perderse (y la conversación sigue en la misma sesión).
+      const fallido = turnoFallidoDe(err);
+      if (fallido) {
+        if (fallido.sesionId !== null) setSesionId(fallido.sesionId);
+        setMensajes((m) => [...m, { id: String(fallido.mensajeId), rol: 'assistant', texto: '', fallido: true }]);
+      } else {
+        setError(err instanceof Error ? err.message : 'No se pudo enviar el mensaje');
+      }
     } finally {
       setEnviando(false);
+    }
+  }
+
+  async function reintentar(mensajeId: string) {
+    if (reintentando || enviando) return;
+    setError(null);
+    setReintentando(mensajeId);
+    try {
+      const r = await adaptador.reintentar(Number(mensajeId));
+      setMensajes((m) => m.map((x) => (x.id === mensajeId
+        ? {
+          id: String(r.mensajeId), rol: 'assistant', tipo: r.tipo, texto: r.texto, citas: r.citas,
+          tabla: r.tabla, documento: r.documento, participantes: r.participantes,
+          marcadoresAlucinados: r.marcadoresAlucinados,
+        }
+        : x)));
+    } catch (err) {
+      // Si vuelve a fallar sigue reintentable: el turno se queda como está y se avisa abajo.
+      setError(err instanceof Error ? err.message : 'No se pudo reintentar la respuesta');
+    } finally {
+      setReintentando(null);
     }
   }
 
@@ -447,9 +490,24 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
             {mensajes.map((m) => (
               <li
                 key={m.id}
-                className={`chat-mensaje chat-mensaje--${m.rol}${m.tipo === 'fijo' ? ' chat-mensaje--fijo' : ''}${m.tabla || m.documento || m.participantes ? ' chat-mensaje--tabla' : ''}`}
+                className={`chat-mensaje chat-mensaje--${m.rol}${m.tipo === 'fijo' ? ' chat-mensaje--fijo' : ''}${m.fallido ? ' chat-mensaje--fallido' : ''}${m.tabla || m.documento || m.participantes ? ' chat-mensaje--tabla' : ''}`}
               >
-                {m.rol === 'assistant' && m.citas && m.citas.length > 0 ? (
+                {m.fallido ? (
+                  <div className="chat-fallido" role="status">
+                    <p className="chat-texto">
+                      No se pudo generar la respuesta: el modelo no respondió. La búsqueda quedó
+                      guardada, así que puede reintentar sin volver a escribir la pregunta.
+                    </p>
+                    <button
+                      type="button"
+                      className="boton-secundario"
+                      onClick={() => void reintentar(m.id)}
+                      disabled={reintentando !== null || enviando}
+                    >
+                      {reintentando === m.id ? 'Reintentando…' : 'Reintentar'}
+                    </button>
+                  </div>
+                ) : m.rol === 'assistant' && m.citas && m.citas.length > 0 ? (
                   <RespuestaConCitas
                     texto={m.texto}
                     numerosValidos={new Set(m.citas.map((c) => c.numero))}

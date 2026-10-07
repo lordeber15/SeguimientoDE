@@ -64,6 +64,7 @@ export interface MensajeHistorialStd {
   id: number;
   rol: 'user' | 'assistant';
   tipo?: TipoRespuestaChat;
+  estado?: 'ok' | 'fallido';
   texto: string;
   feAlta: string;
   citas: CitaChatStd[];
@@ -109,6 +110,11 @@ export function enviarMensajeDocumentoStd(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mensaje, sesionId }),
   });
+}
+
+/** Reintenta la respuesta de un turno que quedó 'fallido' (el modelo no respondió). */
+export function reintentarMensajeStd(mensajeId: number): Promise<RespuestaChatStd> {
+  return apiJson(`/api/std/chat/mensajes/${mensajeId}/reintentar`, 'reintentar la respuesta', { method: 'POST' });
 }
 
 /** Texto completo del fragmento citado. Se pide al desplegar la cita, nunca antes. */
@@ -189,6 +195,7 @@ export const adaptadorChatStd: AdaptadorChat<DocumentoChatStd, CitaChatStd> = {
   fetchHistorial: fetchHistorialSesionStd,
   enviarGeneral: enviarMensajeGeneralStd,
   enviarContexto: (d, mensaje, sesionId) => enviarMensajeDocumentoStd(d.idDocumento, mensaje, sesionId),
+  reintentar: reintentarMensajeStd,
   fetchTexto: fetchTextoChunkStd,
   abrirCita: (cita) => ({
     url: rutaAdjuntoStd(cita.idAdjunto),

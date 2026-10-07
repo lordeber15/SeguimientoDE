@@ -45,6 +45,8 @@ export interface ResultadoRetencion {
   loginIntento: number;
   usoToken: number;
   retrievalLog: number;
+  /** Trazas del chat (Fase 2 de PLAN-RAG-AVANZADO); sus pasos caen en cascada. */
+  trazas: number;
 }
 
 /** Purga `app.login_intento`, `rag.uso_token` y `rag.retrieval_log` más viejos que el corte configurado. */
@@ -66,15 +68,20 @@ export async function ejecutarRetencion(): Promise<ResultadoRetencion> {
       `DELETE FROM rag.retrieval_log WHERE fe < ${corte} RETURNING id`,
       { bind: [dias], type: QueryTypes.SELECT },
     );
+    const trazas = await appSequelize.query<{ id: string }>(
+      `DELETE FROM rag.traza WHERE fe_inicio < ${corte} RETURNING id`,
+      { bind: [dias], type: QueryTypes.SELECT },
+    );
 
     const resultado: ResultadoRetencion = {
       loginIntento: loginIntento.length,
       usoToken: usoToken.length,
       retrievalLog: retrievalLog.length,
+      trazas: trazas.length,
     };
     await registrarMantenimiento(
       'retencion', inicio,
-      resultado.loginIntento + resultado.usoToken + resultado.retrievalLog,
+      resultado.loginIntento + resultado.usoToken + resultado.retrievalLog + resultado.trazas,
       resultado,
     );
     return resultado;
@@ -195,7 +202,7 @@ export function iniciarMantenimientoPeriodico(): void {
         const r = await ejecutarRetencion();
         console.log(
           `Mantenimiento: retención purgó ${r.loginIntento} login_intento, ${r.usoToken} `
-            + `uso_token, ${r.retrievalLog} retrieval_log.`,
+            + `uso_token, ${r.retrievalLog} retrieval_log, ${r.trazas} trazas.`,
         );
       }
       if ((await leerBooleano('rag.gc.activo', false)) && (await tocaCorrer('gc'))) {

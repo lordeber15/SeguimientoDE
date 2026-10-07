@@ -1,5 +1,6 @@
 import type { ChatProvider, ResultadoChat } from '../ai/types';
 import type { ChunkRecuperado } from '../../modulos/sgd/rag/retrievalService';
+import { paso } from '../observabilidad/traza';
 
 /**
  * Rerank semántico vía el mismo `ChatProvider` del chat (Fase 6 — decisión del usuario: reusar la
@@ -16,6 +17,8 @@ import type { ChunkRecuperado } from '../../modulos/sgd/rag/retrievalService';
 export interface ResultadoRerank {
   chunks: ChunkRecuperado[];
   uso: ResultadoChat['uso'] | null;
+  /** Se conservó el orden de RRF porque el rerank falló o no se pudo interpretar. */
+  respaldo?: boolean;
 }
 
 export async function rerankear(
@@ -24,7 +27,19 @@ export async function rerankear(
   chunks: ChunkRecuperado[],
 ): Promise<ResultadoRerank> {
   if (chunks.length <= 1) return { chunks, uso: null };
+  return paso(
+    'rerank',
+    { consulta, candidatos: chunks.map((c) => c.chunkId) },
+    () => rerankearSinTraza(provider, consulta, chunks),
+    { resumir: (r) => ({ salida: { orden: r.chunks.map((c) => c.chunkId), respaldo: r.respaldo }, nivel: r.respaldo ? 'WARNING' : 'DEFAULT' }) },
+  );
+}
 
+async function rerankearSinTraza(
+  provider: ChatProvider,
+  consulta: string,
+  chunks: ChunkRecuperado[],
+): Promise<ResultadoRerank> {
   try {
     const respuesta = await provider.responder(
       [
@@ -41,7 +56,7 @@ export async function rerankear(
     );
 
     const orden = parsearOrden(respuesta.texto, chunks.length);
-    if (!orden) return { chunks, uso: respuesta.uso }; // no se pudo interpretar: se conserva RRF
+    if (!orden) return { chunks, uso: respuesta.uso, respaldo: true }; // no se pudo interpretar: se conserva RRF
 
     const porIndice = new Map(chunks.map((c, i) => [i + 1, c]));
     const mencionados = new Set(orden);
@@ -54,7 +69,7 @@ export async function rerankear(
 
     return { chunks: [...reordenados, ...faltantes], uso: respuesta.uso };
   } catch {
-    return { chunks, uso: null };
+    return { chunks, uso: null, respaldo: true };
   }
 }
 

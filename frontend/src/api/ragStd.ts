@@ -182,7 +182,7 @@ export function activarGcStd(activo: boolean): Promise<{ ok: true }> {
   });
 }
 
-export function ejecutarRetencionAhoraStd(): Promise<{ usoToken: number; retrievalLog: number }> {
+export function ejecutarRetencionAhoraStd(): Promise<{ usoToken: number; retrievalLog: number; trazas: number }> {
   return apiJson('/api/std/rag/mantenimiento/retencion', 'ejecutar la retención', { method: 'POST' });
 }
 

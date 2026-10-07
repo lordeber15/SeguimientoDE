@@ -1,14 +1,25 @@
+import { alertar } from '../observabilidad/alertas';
+import { evento, reintentosDelContexto } from '../observabilidad/traza';
 import { ErrorIA, type NombreProveedor, type TipoErrorIA } from './types';
 
 /**
- * Cliente HTTP común a todos los proveedores: timeout propio, reintentos con espera creciente y
- * traducción del error a `ErrorIA`.
+ * Cliente HTTP común a todos los proveedores: timeout propio, reintentos con espera exponencial y
+ * jitter, y traducción del error a `ErrorIA`.
  *
  * El timeout es imprescindible: `fetch` no lleva ninguno por defecto y una petición colgada
  * bloquearía la ingesta entera, que por diseño es de concurrencia 1.
+ *
+ * Reintentos (docs/PLAN-RAG-AVANZADO.md, Fase 2): `opciones.reintentos`, o el del contexto
+ * (`conReintentos`, p. ej. 1 en el planificador y en el embedding de la consulta del chat, donde
+ * conviene degradar rápido), o `IA_REINTENTOS` (2). La espera respeta `Retry-After` si el proveedor
+ * lo manda; si no, 1 s · 2^intento con jitter (×0,5–1,5) para que varios procesos no reintenten a la
+ * vez. Cada reintento queda como evento en la traza en curso, y el fallo final dispara una alerta.
  */
 
-const REINTENTOS = 2;
+const REINTENTOS_POR_DEFECTO = 2;
+const ESPERA_BASE_MS = 1000;
+/** Tope de espera aunque `Retry-After` pida más: el usuario del chat está esperando. */
+const ESPERA_MAX_MS = 30_000;
 
 export interface OpcionesPeticion {
   url: string;
@@ -16,15 +27,45 @@ export interface OpcionesPeticion {
   cabeceras: Record<string, string>;
   proveedor: NombreProveedor;
   timeoutMs?: number;
+  reintentos?: number;
+}
+
+function reintentosEfectivos(opciones: OpcionesPeticion): number {
+  const n = opciones.reintentos ?? reintentosDelContexto() ?? Number(process.env.IA_REINTENTOS ?? REINTENTOS_POR_DEFECTO);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : REINTENTOS_POR_DEFECTO;
+}
+
+/** `Retry-After` en segundos o como fecha HTTP. `null` si no viene o no se entiende. */
+export function esperaDeRetryAfter(valor: string | null, ahora = Date.now()): number | null {
+  if (!valor) return null;
+  const segundos = Number(valor);
+  if (Number.isFinite(segundos) && segundos >= 0) return Math.min(segundos * 1000, ESPERA_MAX_MS);
+  const fecha = Date.parse(valor);
+  return Number.isNaN(fecha) ? null : Math.min(Math.max(0, fecha - ahora), ESPERA_MAX_MS);
+}
+
+export function esperaExponencial(intento: number, azar = Math.random()): number {
+  return Math.min(ESPERA_BASE_MS * 2 ** intento * (0.5 + azar), ESPERA_MAX_MS);
+}
+
+function fallar(error: ErrorIA): never {
+  // context_length lo resuelve quien llama (recortando); no es un incidente operativo.
+  if (error.tipo !== 'context_length') {
+    alertar('proveedor_ia', error.message, { proveedor: error.proveedor, tipo: error.tipo, status: error.status ?? null },
+      `${error.proveedor}|${error.tipo}`);
+  }
+  throw error;
 }
 
 export async function postJson<T>(opciones: OpcionesPeticion): Promise<T> {
   const timeout = opciones.timeoutMs ?? Number(process.env.IA_TIMEOUT_MS ?? 120_000);
+  const reintentos = reintentosEfectivos(opciones);
   let ultimo: ErrorIA | null = null;
 
-  for (let intento = 0; intento <= REINTENTOS; intento++) {
+  for (let intento = 0; intento <= reintentos; intento++) {
     const abortador = new AbortController();
     const temporizador = setTimeout(() => abortador.abort(), timeout);
+    let retryAfter: string | null = null;
 
     try {
       const respuesta = await fetch(opciones.url, {
@@ -36,6 +77,7 @@ export async function postJson<T>(opciones: OpcionesPeticion): Promise<T> {
 
       if (respuesta.ok) return (await respuesta.json()) as T;
 
+      retryAfter = respuesta.headers?.get?.('retry-after') ?? null;
       const texto = await respuesta.text().catch(() => '');
       ultimo = new ErrorIA(
         `${opciones.proveedor}: HTTP ${respuesta.status} ${texto.slice(0, 300)}`,
@@ -44,11 +86,11 @@ export async function postJson<T>(opciones: OpcionesPeticion): Promise<T> {
         respuesta.status,
       );
 
-      // Un 401/403 o un texto que no cabe no mejoran repitiendo la misma petición.
-      if (ultimo.tipo === 'auth' || ultimo.tipo === 'context_length') throw ultimo;
+      // Un 401/403, un texto que no cabe o el crédito agotado no mejoran repitiendo la misma petición.
+      if (ultimo.tipo === 'auth' || ultimo.tipo === 'context_length' || ultimo.tipo === 'quota') fallar(ultimo);
     } catch (error) {
       if (error instanceof ErrorIA) {
-        if (error.tipo === 'auth' || error.tipo === 'context_length') throw error;
+        if (error.tipo === 'auth' || error.tipo === 'context_length' || error.tipo === 'quota') throw error;
         ultimo = error;
       } else if (error instanceof Error && error.name === 'AbortError') {
         ultimo = new ErrorIA(
@@ -67,12 +109,17 @@ export async function postJson<T>(opciones: OpcionesPeticion): Promise<T> {
       clearTimeout(temporizador);
     }
 
-    if (intento < REINTENTOS) {
-      await new Promise((r) => setTimeout(r, 1000 * 2 ** intento));
+    if (intento < reintentos) {
+      const espera = esperaDeRetryAfter(retryAfter) ?? esperaExponencial(intento);
+      evento('reintento_ia', {
+        proveedor: opciones.proveedor, intento: intento + 1, de: reintentos, tipo: ultimo?.tipo,
+        status: ultimo?.status ?? null, esperaMs: Math.round(espera),
+      }, 'WARNING');
+      await new Promise((r) => setTimeout(r, espera));
     }
   }
 
-  throw ultimo ?? new ErrorIA(`${opciones.proveedor}: error desconocido`, 'desconocido', opciones.proveedor);
+  fallar(ultimo ?? new ErrorIA(`${opciones.proveedor}: error desconocido`, 'desconocido', opciones.proveedor));
 }
 
 function clasificarPorEstado(status: number, cuerpo: string): TipoErrorIA {

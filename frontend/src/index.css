@@ -2324,6 +2324,26 @@ tbody tr.fila-destacada > td {
   font-style: italic;
 }
 
+/* Turno cuya respuesta no se pudo generar (el modelo no respondió): la búsqueda quedó guardada en
+   el backend y el botón la reintenta sin volver a escribir la pregunta. */
+.chat-mensaje--fallido {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--color-destructive);
+}
+
+.chat-fallido {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.chat-fallido .chat-texto {
+  flex: 1 1 240px;
+  margin: 0;
+}
+
 /* ── Marcador [Dn] dentro del texto de la respuesta ── */
 
 .chat-marcador {

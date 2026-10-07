@@ -63,6 +63,7 @@ export interface MensajeHistorial {
   id: number;
   rol: 'user' | 'assistant';
   tipo?: TipoRespuestaChat;
+  estado?: 'ok' | 'fallido';
   texto: string;
   feAlta: string;
   citas: CitaChat[];
@@ -110,6 +111,11 @@ export function enviarMensajeExpediente(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mensaje, sesionId }),
   });
+}
+
+/** Reintenta la respuesta de un turno que quedó 'fallido' (el modelo no respondió). */
+export function reintentarMensaje(mensajeId: number): Promise<RespuestaChat> {
+  return apiJson(`/api/rag/chat/mensajes/${mensajeId}/reintentar`, 'reintentar la respuesta', { method: 'POST' });
 }
 
 /** Texto completo del fragmento citado. Se pide al desplegar la cita, nunca antes. */
@@ -234,6 +240,7 @@ export const adaptadorChatSgd: AdaptadorChat<ExpedienteChat, CitaChat> = {
   fetchHistorial: fetchHistorialSesion,
   enviarGeneral: enviarMensajeGeneral,
   enviarContexto: (e, mensaje, sesionId) => enviarMensajeExpediente(e.nuAnnExp, e.nuSecExp, mensaje, sesionId),
+  reintentar: reintentarMensaje,
   fetchTexto: fetchTextoChunk,
   abrirCita: (cita) => ({
     url: cita.nuAne > 0 ? rutaAnexo(cita.nuAnn, cita.nuEmi, cita.nuAne) : rutaDocumento(cita.nuAnn, cita.nuEmi),

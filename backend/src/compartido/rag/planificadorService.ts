@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { ChatProvider, MensajeChat, ResultadoChat } from '../ai/types';
+import { alertar } from '../observabilidad/alertas';
+import { conReintentos, paso } from '../observabilidad/traza';
 
 /**
  * Planificador del chat (docs/PLAN-CHAT-CONSULTAS.md, Fase 2): una llamada CORTA al modelo que,
@@ -285,7 +287,36 @@ export function interpretarPlan(texto: string, mensajeOriginal: string): PlanCon
   };
 }
 
+/** El planificador es un paso corto antes de buscar: con el proveedor caído conviene caer al plan de
+ *  respaldo rápido en vez de esperar 2 reintentos con backoff (ver compartido/ai/http.ts). */
+const REINTENTOS_PLANIFICADOR = 1;
+
 export async function planificar(
+  provider: ChatProvider,
+  mensaje: string,
+  contexto: ContextoPlanificador,
+): Promise<ResultadoPlanificador> {
+  const r = await paso(
+    'planificador',
+    { mensaje, modo: contexto.modo, turnosHistorial: contexto.historial.length },
+    () => conReintentos(REINTENTOS_PLANIFICADOR, () => planificarSinTraza(provider, mensaje, contexto)),
+    {
+      resumir: (x) => ({
+        salida: { plan: x.plan, respaldo: x.respaldo, diagnostico: x.diagnostico },
+        nivel: x.respaldo ? 'WARNING' : 'DEFAULT',
+      }),
+    },
+  );
+  // Un proveedor caído ya lo alerta el cliente HTTP; esto es el otro caso: respondió, pero no un plan.
+  if (r.respaldo && r.diagnostico?.startsWith('salida no interpretable')) {
+    alertar('planificador_json', 'el planificador devolvió una salida que no es un plan válido; se usó el de respaldo', {
+      proveedor: provider.nombre, modelo: provider.modelo, diagnostico: r.diagnostico.slice(0, 300),
+    });
+  }
+  return r;
+}
+
+async function planificarSinTraza(
   provider: ChatProvider,
   mensaje: string,
   contexto: ContextoPlanificador,

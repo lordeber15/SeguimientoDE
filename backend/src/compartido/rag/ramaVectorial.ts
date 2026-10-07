@@ -1,4 +1,52 @@
 import type { Sequelize, Transaction } from 'sequelize';
+import { crearEmbeddingProvider } from '../ai/providerFactory';
+import { alertar } from '../observabilidad/alertas';
+import { conReintentos, evento, mensajeDe } from '../observabilidad/traza';
+import { tablaVectores } from './embeddingModelService';
+
+/** Embedding de la consulta del chat: 1 reintento — si el proveedor está caído, mejor caer a FTS ya. */
+const REINTENTOS_EMBEDDING_CONSULTA = 1;
+
+export interface ConsultaEmbebida {
+  vecLiteral: string;
+  modeloId: number;
+  tabla: string;
+}
+
+/**
+ * Embebe la consulta con el modelo activo. `consulta = null` → la rama vectorial se omite y el
+ * retrieval es FTS puro (D8: el chat funciona aunque peor). Sin modelo activo eso es configuración y
+ * no se reporta; con modelo activo pero sin poder embeber (proveedor caído, dimensión cambiada en el
+ * `.env`) es una DEGRADACIÓN: se devuelve el motivo, queda como evento en la traza y se alerta —
+ * antes era invisible (el 2026-10-06 la rama vectorial devolvió 0 en todo con Ollama apagado).
+ */
+export async function embeberConsulta(
+  modelo: { id: number; dimension: number } | null,
+  consultaTexto: string,
+  modulo: 'sgd' | 'std',
+): Promise<{ consulta: ConsultaEmbebida | null; degradacion: string | null }> {
+  if (!modelo) return { consulta: null, degradacion: null };
+
+  let degradacion: string;
+  try {
+    const provider = crearEmbeddingProvider();
+    if (provider.dimension === modelo.dimension) {
+      const { vectores } = await conReintentos(REINTENTOS_EMBEDDING_CONSULTA, () => provider.embeber([consultaTexto]));
+      return {
+        consulta: { vecLiteral: `[${vectores[0].join(',')}]`, modeloId: modelo.id, tabla: tablaVectores(modelo.dimension) },
+        degradacion: null,
+      };
+    }
+    // Dimensión distinta = el `.env` cambió sin desactivar el modelo: no se mezclan espacios.
+    degradacion = `el proveedor de embeddings configurado tiene dimensión ${provider.dimension} y el modelo activo ${modelo.dimension}`;
+  } catch (e) {
+    degradacion = `no se pudo embeber la consulta: ${mensajeDe(e)}`;
+  }
+
+  evento('vectorial_degradada', { modulo, motivo: degradacion }, 'WARNING');
+  alertar('vectorial_degradada', `${modulo.toUpperCase()}: búsqueda solo por texto (FTS) — ${degradacion}`, { modulo }, modulo);
+  return { consulta: null, degradacion };
+}
 
 /**
  * Configuración del índice HNSW para la rama vectorial del retrieval, común al SGD y al STD.
@@ -54,4 +102,18 @@ export async function conEscaneoVectorial<T>(
   await db.query(`SET LOCAL hnsw.ef_search = ${HNSW_EF_SEARCH}`, { transaction: tx });
   await db.query("SET LOCAL hnsw.iterative_scan = 'relaxed_order'", { transaction: tx });
   return consulta();
+}
+
+/** Lo que de la búsqueda va a la traza: cifras e ids, no el texto de los fragmentos. */
+export function resumirBusqueda(r: {
+  chunks: { chunkId: number }[]; candidatosVec: number; candidatosFts: number; escaneoExacto: boolean;
+  degradacionVectorial?: string | null;
+}) {
+  return {
+    salida: {
+      candidatosVec: r.candidatosVec, candidatosFts: r.candidatosFts, escaneoExacto: r.escaneoExacto,
+      chunks: r.chunks.map((c) => c.chunkId), degradacionVectorial: r.degradacionVectorial ?? null,
+    },
+    nivel: r.degradacionVectorial ? 'WARNING' as const : 'DEFAULT' as const,
+  };
 }

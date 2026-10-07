@@ -10,6 +10,7 @@ import {
   getSesiones,
   postChatExpediente,
   postChatGeneral,
+  postReintentarMensaje,
 } from '../controllers/chatController';
 import { requiereAuth, requierePermiso } from '../../../compartido/middlewares/authMiddleware';
 
@@ -29,5 +30,7 @@ router.get('/sesiones/:id', getSesion);
 router.get('/chunks/:id', getChunkCitado);
 // "Ver más" de una respuesta tabla: pagina sobre la lista guardada, sin re-buscar ni llamar al modelo.
 router.get('/mensajes/:id/resultados', getResultadosMensaje);
+// Reintento de un turno 'fallido': la respuesta del modelo, sobre las citas que ese turno ya guardó.
+router.post('/mensajes/:id/reintentar', postReintentarMensaje);
 
 export default router;

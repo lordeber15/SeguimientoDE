@@ -15,6 +15,7 @@ import { iniciarPlanificadorBarrido } from './modulos/sgd/rag/barridoService';
 import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './modulos/sgd/rag/ingestaService';
 import { iniciarMantenimientoPeriodico } from './modulos/sgd/rag/mantenimientoService';
 import { revisarConfiguracionIA } from './compartido/ai/providerFactory';
+import { activarPublicacionDeTrazas } from './compartido/observabilidad/publicacion';
 import { iniciarLimpiezaPeriodica } from './modulos/sgd/services/unirPdfService';
 
 const PORT = Number(process.env.PORT ?? 3012);
@@ -22,6 +23,8 @@ const PORT = Number(process.env.PORT ?? 3012);
 async function start() {
   // Antes que nada: si falta una variable crítica, mejor no arrancar que fallar en el primer login.
   validarEntorno();
+  // Trazas del chat a la BD (y a Langfuse si está configurado). Solo aquí: tests y scripts no publican.
+  activarPublicacionDeTrazas();
 
   try {
     await sequelize.authenticate();

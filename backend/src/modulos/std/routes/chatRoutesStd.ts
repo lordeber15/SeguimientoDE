@@ -9,6 +9,7 @@ import {
   getSesiones,
   postChatDocumento,
   postChatGeneral,
+  postReintentarMensajeStd,
 } from '../controllers/chatControllerStd';
 import { requiereAuth, requierePermiso } from '../../../compartido/middlewares/authMiddleware';
 
@@ -27,5 +28,7 @@ router.get('/sesiones/:id', getSesion);
 router.get('/chunks/:id', getChunkCitado);
 // "Ver más" de una respuesta tabla (listado de documentos guardado en el mensaje).
 router.get('/mensajes/:id/resultados', getResultadosMensaje);
+// Reintento de un turno 'fallido' sobre las citas que ese turno ya guardó.
+router.post('/mensajes/:id/reintentar', postReintentarMensajeStd);
 
 export default router;

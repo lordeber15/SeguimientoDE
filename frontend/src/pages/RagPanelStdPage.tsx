@@ -374,7 +374,7 @@ export function RagPanelStdPage() {
     try {
       const r = await ejecutarRetencionAhoraStd();
       toast.success(
-        `Retención ejecutada: ${r.usoToken} uso(s) de token, ${r.retrievalLog} consulta(s) de log purgadas.`,
+        `Retención ejecutada: ${r.usoToken} uso(s) de token, ${r.retrievalLog} consulta(s) de log y ${r.trazas ?? 0} traza(s) del chat purgadas.`,
         { id },
       );
       cargar();

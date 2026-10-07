@@ -38,6 +38,8 @@ function motivoDe(error: unknown): string {
 export interface ResultadoRetencionStd {
   usoToken: number;
   retrievalLog: number;
+  /** Trazas del chat (Fase 2 de PLAN-RAG-AVANZADO); sus pasos caen en cascada. */
+  trazas: number;
 }
 
 export async function ejecutarRetencionStd(): Promise<ResultadoRetencionStd> {
@@ -54,12 +56,17 @@ export async function ejecutarRetencionStd(): Promise<ResultadoRetencionStd> {
       `DELETE FROM rag.retrieval_log WHERE fe < ${corte} RETURNING id`,
       { bind: [dias], type: QueryTypes.SELECT },
     );
+    const trazas = await stdRagSequelize.query<{ id: string }>(
+      `DELETE FROM rag.traza WHERE fe_inicio < ${corte} RETURNING id`,
+      { bind: [dias], type: QueryTypes.SELECT },
+    );
 
     const resultado: ResultadoRetencionStd = {
       usoToken: usoToken.length,
       retrievalLog: retrievalLog.length,
+      trazas: trazas.length,
     };
-    await registrarMantenimiento('retencion', inicio, resultado.usoToken + resultado.retrievalLog, resultado);
+    await registrarMantenimiento('retencion', inicio, resultado.usoToken + resultado.retrievalLog + resultado.trazas, resultado);
     return resultado;
   } catch (error) {
     await registrarMantenimiento('retencion', inicio, 0, null, motivoDe(error));
@@ -161,7 +168,7 @@ export function iniciarMantenimientoPeriodicoStd(): void {
     try {
       if ((await leerBooleano('rag.retencion.activa', true, stdRagSequelize)) && (await tocaCorrer('retencion'))) {
         const r = await ejecutarRetencionStd();
-        console.log(`Mantenimiento STD: retención purgó ${r.usoToken} uso_token, ${r.retrievalLog} retrieval_log.`);
+        console.log(`Mantenimiento STD: retención purgó ${r.usoToken} uso_token, ${r.retrievalLog} retrieval_log, ${r.trazas} trazas.`);
       }
       if ((await leerBooleano('rag.gc.activo', false, stdRagSequelize)) && (await tocaCorrer('gc'))) {
         const r = await ejecutarGCStd();

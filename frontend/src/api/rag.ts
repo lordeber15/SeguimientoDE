@@ -284,7 +284,7 @@ export function activarGC(activo: boolean): Promise<{ ok: true }> {
 }
 
 /** Funciona aunque el interruptor esté apagado — igual que "Barrer ahora". */
-export function ejecutarRetencionAhora(): Promise<{ loginIntento: number; usoToken: number; retrievalLog: number }> {
+export function ejecutarRetencionAhora(): Promise<{ loginIntento: number; usoToken: number; retrievalLog: number; trazas: number }> {
   return apiJson('/api/rag/mantenimiento/retencion', 'ejecutar la retención', { method: 'POST' });
 }
 

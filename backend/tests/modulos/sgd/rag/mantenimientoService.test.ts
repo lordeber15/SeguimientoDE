@@ -33,18 +33,19 @@ beforeEach(() => {
 });
 
 describe('ejecutarRetencion', () => {
-  it('purga las tres tablas con el corte configurado y lo registra en rag.mantenimiento', async () => {
+  it('purga las tablas de registro (y las trazas) con el corte configurado y lo registra en rag.mantenimiento', async () => {
     leerNumero.mockResolvedValue(180);
     query.mockImplementation((sql: string) => {
       if (sql.includes('DELETE FROM app.login_intento')) return Promise.resolve([{ id: 1 }, { id: 2 }]);
       if (sql.includes('DELETE FROM rag.uso_token')) return Promise.resolve([{ id: 1 }]);
       if (sql.includes('DELETE FROM rag.retrieval_log')) return Promise.resolve([]);
+      if (sql.includes('DELETE FROM rag.traza')) return Promise.resolve([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
       return Promise.resolve(undefined);
     });
 
     const r = await mantenimiento.ejecutarRetencion();
 
-    expect(r).toEqual({ loginIntento: 2, usoToken: 1, retrievalLog: 0 });
+    expect(r).toEqual({ loginIntento: 2, usoToken: 1, retrievalLog: 0, trazas: 3 });
 
     const llamadaLogin = query.mock.calls.find(([sql]) => String(sql).includes('app.login_intento'));
     expect(llamadaLogin?.[1]?.bind).toEqual([180]);

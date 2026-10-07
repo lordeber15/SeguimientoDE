@@ -6,6 +6,8 @@ import { filtroGratis, mensajeFijo, type MotivoFijo } from '../../../compartido/
 import { leerBooleano } from '../../../compartido/rag/configService';
 import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../../../compartido/rag/planificadorService';
 import { rerankear } from '../../../compartido/rag/rerankService';
+import { avisarMarcadoresAlucinados } from '../../../compartido/observabilidad/alertas';
+import { enTraza, evento, paso, trazaActual, type Traza } from '../../../compartido/observabilidad/traza';
 import { leerParametros, prepararTerminos, terminosDelPlan } from './busquedaExpedientesService';
 import {
   ejecutarParticipantes,
@@ -59,11 +61,25 @@ const MAX_CONJUNTO_CONTENIDO = 300;
 
 export class ChatError extends Error {
   readonly status: number;
-  constructor(mensaje: string, status = 400) {
+  /** Viaja en el cuerpo de la respuesta de error (p. ej. `mensajeFallidoId` para ofrecer "Reintentar"). */
+  readonly datos?: Record<string, unknown>;
+  constructor(mensaje: string, status = 400, datos?: Record<string, unknown>) {
     super(mensaje);
     this.name = 'ChatError';
     this.status = status;
+    this.datos = datos;
   }
+}
+
+/** La llamada de respuesta falló: el turno queda guardado como 'fallido' y se puede reintentar. */
+export function errorTurnoFallido(mensajeId: number, sesionId: number, causa: unknown): ChatError {
+  const detalle = causa instanceof Error ? causa.message : String(causa);
+  return new ChatError(
+    'El modelo no pudo generar la respuesta. La búsqueda quedó guardada: puede reintentar sin volver a escribir la pregunta.',
+    502,
+    // Number(): los ids bigserial llegan como string desde pg.
+    { mensajeFallidoId: Number(mensajeId), sesionId: Number(sesionId), reintentable: true, detalle: detalle.slice(0, 300) },
+  );
 }
 
 /**
@@ -184,19 +200,24 @@ async function guardarMensajeUsuario(sesionId: number, texto: string): Promise<v
   );
 }
 
-async function crearMensajeAsistentePendiente(sesionId: number): Promise<number> {
+async function crearMensajeAsistentePendiente(sesionId: number, trazaId: string | null): Promise<number> {
   const filas = await appSequelize.query<{ id: number }>(
-    `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto) VALUES ($1, 'assistant', '') RETURNING id`,
-    { bind: [sesionId], type: QueryTypes.SELECT },
+    `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto, traza_id) VALUES ($1, 'assistant', '', $2) RETURNING id`,
+    { bind: [sesionId, trazaId], type: QueryTypes.SELECT },
   );
   return filas[0].id;
 }
 
-async function borrarMensaje(mensajeId: number): Promise<void> {
-  await appSequelize.query(`DELETE FROM rag.chat_mensaje WHERE id = $1`, {
-    bind: [mensajeId],
-    type: QueryTypes.DELETE,
-  });
+/**
+ * La llamada de respuesta falló: el mensaje queda 'fallido' CON sus citas (antes se borraba y se
+ * perdía todo lo calculado). `meta` guarda lo necesario para reintentar y auditar: el plan y las
+ * cifras del retrieval; las citas ya están en `rag.cita`.
+ */
+async function marcarFallido(mensajeId: number, meta: Record<string, unknown>): Promise<void> {
+  await appSequelize.query(
+    `UPDATE rag.chat_mensaje SET estado = 'fallido', meta = $2::jsonb WHERE id = $1`,
+    { bind: [mensajeId, JSON.stringify(meta)], type: QueryTypes.UPDATE },
+  );
 }
 
 async function actualizarMensajeAsistente(
@@ -205,7 +226,7 @@ async function actualizarMensajeAsistente(
   uso: { tokensIn: number; tokensOut: number },
 ): Promise<void> {
   await appSequelize.query(
-    `UPDATE rag.chat_mensaje SET texto = $2, tokens_in = $3, tokens_out = $4 WHERE id = $1`,
+    `UPDATE rag.chat_mensaje SET texto = $2, tokens_in = $3, tokens_out = $4, estado = 'ok' WHERE id = $1`,
     { bind: [mensajeId, texto, uso.tokensIn, uso.tokensOut], type: QueryTypes.UPDATE },
   );
 }
@@ -219,12 +240,17 @@ async function tocarSesion(sesionId: number): Promise<void> {
 
 interface FilaHistorial { rol: 'user' | 'assistant'; texto: string }
 
-async function historialReciente(sesionId: number, excluirMensajeId: number): Promise<MensajeChat[]> {
+/**
+ * Turnos previos de la sesión, del más viejo al más nuevo. `antesDe` = solo los anteriores a ese
+ * mensaje (el reintento de un turno viejo no debe ver lo que vino después). Los turnos fallidos no
+ * cuentan: no tienen respuesta.
+ */
+async function historialReciente(sesionId: number, antesDe: number | null = null): Promise<MensajeChat[]> {
   const filas = await appSequelize.query<FilaHistorial>(
     `SELECT rol, texto FROM rag.chat_mensaje
-      WHERE sesion_id = $1 AND id != $2
+      WHERE sesion_id = $1 AND ($2::bigint IS NULL OR id < $2) AND estado = 'ok'
       ORDER BY id DESC LIMIT $3`,
-    { bind: [sesionId, excluirMensajeId, MENSAJES_HISTORIAL], type: QueryTypes.SELECT },
+    { bind: [sesionId, antesDe, MENSAJES_HISTORIAL], type: QueryTypes.SELECT },
   );
   return filas.reverse().map((f) => ({
     rol: f.rol,
@@ -297,14 +323,14 @@ async function registrarRetrieval(datos: {
     `INSERT INTO rag.retrieval_log
        (sesion_id, consulta, modo, candidatos_vec, candidatos_fts, fusionados, escaneo_exacto,
         marcadores_alucinados, ms, intencion, consulta_reescrita, planificador_respaldo,
-        ms_planificador, respuesta_fija)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        ms_planificador, respuesta_fija, traza_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
     {
       bind: [
         datos.sesionId, datos.consulta, datos.modo, datos.candidatosVec, datos.candidatosFts,
         datos.fusionados, datos.escaneoExacto, datos.marcadoresAlucinados, datos.ms,
         p?.plan.intencion ?? null, p?.plan.consulta ?? null, p?.respaldo ?? null, p?.ms ?? null,
-        datos.respuestaFija,
+        datos.respuestaFija, trazaActual()?.id ?? null,
       ],
       type: QueryTypes.INSERT,
     },
@@ -402,12 +428,12 @@ async function guardarRespuestaEstructurada(datos: {
   uso?: { tokensIn: number; tokensOut: number };
 }): Promise<number> {
   const filas = await appSequelize.query<{ id: number }>(
-    `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto, tipo, meta, tokens_in, tokens_out)
-     VALUES ($1, 'assistant', $2, $3, $4::jsonb, $5, $6) RETURNING id`,
+    `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto, tipo, meta, tokens_in, tokens_out, traza_id)
+     VALUES ($1, 'assistant', $2, $3, $4::jsonb, $5, $6, $7) RETURNING id`,
     {
       bind: [
         datos.sesionId, datos.texto, datos.tipo, JSON.stringify(datos.meta),
-        datos.uso?.tokensIn ?? 0, datos.uso?.tokensOut ?? 0,
+        datos.uso?.tokensIn ?? 0, datos.uso?.tokensOut ?? 0, trazaActual()?.id ?? null,
       ],
       type: QueryTypes.SELECT,
     },
@@ -445,10 +471,11 @@ async function responderFijo(datos: {
   const meta = { motivo: datos.motivo, plan: datos.planificador?.plan ?? null };
 
   const filas = await appSequelize.query<{ id: number }>(
-    `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto, tipo, meta, tokens_in, tokens_out)
-     VALUES ($1, 'assistant', $2, 'fijo', $3::jsonb, 0, 0) RETURNING id`,
-    { bind: [datos.sesionId, texto, JSON.stringify(meta)], type: QueryTypes.SELECT },
+    `INSERT INTO rag.chat_mensaje (sesion_id, rol, texto, tipo, meta, tokens_in, tokens_out, traza_id)
+     VALUES ($1, 'assistant', $2, 'fijo', $3::jsonb, 0, 0, $4) RETURNING id`,
+    { bind: [datos.sesionId, texto, JSON.stringify(meta), trazaActual()?.id ?? null], type: QueryTypes.SELECT },
   );
+  evento('respuesta_fija', { motivo: datos.motivo });
   await tocarSesion(datos.sesionId);
   await registrarRetrieval({
     sesionId: datos.sesionId,
@@ -537,18 +564,35 @@ export async function recuperarContexto(
   return { resultado, timeline, chunksAcotados, citas, usoRerank: rerank.uso };
 }
 
-/** Llamada de respuesta sobre un contexto ya recuperado, sin escribir nada en la BD. */
+/**
+ * Llamada de respuesta sobre un contexto ya recuperado, sin escribir nada en la BD. `historial` son
+ * los turnos ANTERIORES a la pregunta: la pregunta va aparte, como último mensaje `user`.
+ */
 export async function generarRespuesta(
   provider: ChatProvider,
   datos: { timeline: LineaTiempo[] | null; citas: CitaPendiente[]; historial: MensajeChat[]; mensaje: string },
 ): Promise<{ respuesta: ResultadoChat; texto: string; numerosUsados: number[]; marcadoresInvalidos: number[] }> {
-  const mensajes: MensajeChat[] = [
-    { rol: 'system', contenido: construirPromptSistema(datos.timeline, datos.citas) },
-    ...datos.historial,
-    { rol: 'user', contenido: datos.mensaje },
-  ];
-  const respuesta = await provider.responder(mensajes, { maxTokens: MAX_TOKENS_RESPUESTA });
-  return { respuesta, ...limpiarMarcadores(respuesta.texto, datos.citas) };
+  return paso(
+    'respuesta',
+    { citas: datos.citas.map((c) => c.numero), lineaTiempo: datos.timeline?.length ?? 0, turnosHistorial: datos.historial.length },
+    async () => {
+      const mensajes: MensajeChat[] = [
+        { rol: 'system', contenido: construirPromptSistema(datos.timeline, datos.citas) },
+        ...datos.historial,
+        { rol: 'user', contenido: datos.mensaje },
+      ];
+      const respuesta = await provider.responder(mensajes, { maxTokens: MAX_TOKENS_RESPUESTA });
+      const limpio = limpiarMarcadores(respuesta.texto, datos.citas);
+      avisarMarcadoresAlucinados('sgd', limpio.marcadoresInvalidos, provider);
+      return { respuesta, ...limpio };
+    },
+    {
+      resumir: (r) => ({
+        salida: { citasUsadas: r.numerosUsados, marcadoresAlucinados: r.marcadoresInvalidos },
+        nivel: r.marcadoresInvalidos.length > 0 ? 'WARNING' : 'DEFAULT',
+      }),
+    },
+  );
 }
 
 export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
@@ -558,15 +602,29 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
   }
   if (!p.mensaje.trim()) throw new ChatError('El mensaje no puede estar vacío');
 
+  return enTraza(
+    { nombre: `chat.sgd.${p.modo}`, modulo: 'sgd', db: appSequelize, usuarioId: p.usuarioId, entrada: p.mensaje },
+    async (traza) => {
+      const r = await responderChatEnTraza(p, traza);
+      traza.mensajeId = r.mensajeId;
+      traza.salida = { tipo: r.tipo, texto: r.texto, citas: r.citas.length };
+      return r;
+    },
+  );
+}
+
+async function responderChatEnTraza(p: PeticionChat, traza: Traza): Promise<RespuestaChat> {
   // Un solo proveedor para todo el turno (rerank + respuesta): evita instanciarlo dos veces y dos
   // configuraciones que en teoría deberían ser la misma pero, tras un cambio de `.env`, no lo son.
   const provider = crearChatProvider();
 
   const inicio = Date.now();
   const sesion = await obtenerOCrearSesion(p);
+  traza.sesionId = sesion.id;
   // El historial se lee ANTES de guardar el mensaje nuevo: el planificador lo recibe aparte como
-  // "pregunta nueva" y no debe verlo duplicado como último turno.
-  const historialPrevio = await historialReciente(sesion.id, 0);
+  // "pregunta nueva", y la respuesta también (la pregunta va como último mensaje `user`). Antes la
+  // respuesta releía el historial ya con la pregunta guardada y la recibía DOS veces.
+  const historialPrevio = await historialReciente(sesion.id);
   await guardarMensajeUsuario(sesion.id, p.mensaje);
 
   const fijo = (motivo: MotivoFijo, planificador: ResultadoPlanificador | null) =>
@@ -604,7 +662,9 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
   // [2] listar / contar: tabla de expedientes por SQL, sin modelo de respuesta (D6). En el modo
   // "por expediente" no aplica — ya se está dentro de uno —, así que sigue a la búsqueda de contenido.
   if (p.modo === 'general' && (plan.intencion === 'listar' || plan.intencion === 'contar')) {
-    const listado = await ejecutarListado(plan.intencion, plan, filtro, conjunto ? { dentroDe: conjunto } : {});
+    const listado = await paso(plan.intencion, { conjunto: conjunto?.length ?? 0 },
+      () => ejecutarListado(plan.intencion as 'listar' | 'contar', plan, filtro, conjunto ? { dentroDe: conjunto } : {}),
+      { tipo: 'recuperacion', resumir: (l) => ({ salida: l ? l.meta.busqueda : null }) });
     if (!listado) return fijo('sin_resultados', planificador);
 
     const mensajeId = await guardarRespuestaEstructurada({
@@ -620,13 +680,15 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
     conjunto,
   };
   if (plan.intencion === 'ultimo_documento') {
-    const r = await ejecutarUltimoDocumento(plan, filtro, objetivo);
+    const r = await paso('ultimo_documento', { conjunto: conjunto?.length ?? 0 }, () => ejecutarUltimoDocumento(plan, filtro, objetivo),
+      { tipo: 'recuperacion', resumir: (x) => ({ salida: x ? x.meta : null }) });
     if (!r) return fijo('sin_resultados', planificador);
     const mensajeId = await guardarRespuestaEstructurada({ ...base, tipo: 'documento', texto: r.texto, meta: r.meta, resultados: 1 });
     return { sesionId: sesion.id, mensajeId, tipo: 'documento', texto: r.texto, documento: r.documento, ...sinModelo };
   }
   if (plan.intencion === 'participantes') {
-    const r = await ejecutarParticipantes(plan, filtro, objetivo);
+    const r = await paso('participantes', { conjunto: conjunto?.length ?? 0 }, () => ejecutarParticipantes(plan, filtro, objetivo),
+      { tipo: 'recuperacion', resumir: (x) => ({ salida: x ? { expedientes: x.participantes.totalExpedientes } : null }) });
     if (!r) return fijo('sin_resultados', planificador);
     const mensajeId = await guardarRespuestaEstructurada({
       ...base, tipo: 'participantes', texto: r.texto, meta: r.meta, resultados: r.participantes.totalExpedientes,
@@ -638,7 +700,9 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
   // nombre de su proyecto), sin modelo — ver `agruparPorContrato`. Se responde como tabla para que
   // cada grupo sea verificable abajo.
   if (p.modo === 'general' && plan.intencion === 'agrupar') {
-    const listado = await ejecutarListado('listar', plan, filtro, conjunto ? { dentroDe: conjunto } : {});
+    const listado = await paso('agrupar', { conjunto: conjunto?.length ?? 0 },
+      () => ejecutarListado('listar', plan, filtro, conjunto ? { dentroDe: conjunto } : {}),
+      { tipo: 'recuperacion', resumir: (l) => ({ salida: l ? l.meta.busqueda : null }) });
     if (!listado) return fijo('sin_resultados', planificador);
 
     const agrupacion = await agruparPorObra(listado.meta, filtro);
@@ -673,60 +737,209 @@ export async function responderChat(p: PeticionChat): Promise<RespuestaChat> {
     return fijo('sin_resultados', planificador);
   }
 
-  const mensajeAsistenteId = await crearMensajeAsistentePendiente(sesion.id);
+  const mensajeAsistenteId = await crearMensajeAsistentePendiente(sesion.id, traza.id);
+  traza.mensajeId = mensajeAsistenteId;
   await persistirCitas(mensajeAsistenteId, citas);
 
-  try {
-    const historial = await historialReciente(sesion.id, mensajeAsistenteId);
-    const { respuesta, texto, numerosUsados, marcadoresInvalidos } = await generarRespuesta(provider, {
-      timeline, citas, historial, mensaje: p.mensaje,
-    });
-
-    await marcarCitasUsadas(mensajeAsistenteId, numerosUsados);
-    await actualizarMensajeAsistente(mensajeAsistenteId, texto, respuesta.uso);
-    await registrarUsoToken(provider, 'chat', respuesta.uso);
-    await tocarSesion(sesion.id);
-    await registrarRetrieval({
-      sesionId: sesion.id,
-      consulta: p.mensaje,
-      modo: p.modo,
+  return completarTurno({
+    provider,
+    sesionId: sesion.id,
+    mensajeId: mensajeAsistenteId,
+    modo: p.modo,
+    pregunta: p.mensaje,
+    timeline,
+    citas,
+    historial: historialPrevio,
+    retrieval: {
       candidatosVec: resultado.candidatosVec,
       candidatosFts: resultado.candidatosFts,
       fusionados: chunksAcotados.length,
       escaneoExacto: resultado.escaneoExacto,
-      marcadoresAlucinados: marcadoresInvalidos.length,
-      ms: Date.now() - inicio,
-      planificador,
-      respuestaFija: null,
-    });
+    },
+    planificador,
+    inicio,
+  });
+}
 
-    return {
-      sesionId: sesion.id,
-      mensajeId: mensajeAsistenteId,
-      tipo: 'texto',
-      texto,
-      citas: citas.map((c) => ({
-        numero: c.numero,
-        chunkId: c.chunkId,
-        documentoId: c.documentoId,
-        nuAnn: c.nuAnn,
-        nuEmi: c.nuEmi,
-        nuAne: c.nuAne,
-        extracto: extractoDeChunk(c.texto),
-        chars: c.texto.length,
-        rutaTitulos: c.rutaTitulos,
-        usada: numerosUsados.includes(c.numero),
-      })),
-      candidatosVec: resultado.candidatosVec,
-      candidatosFts: resultado.candidatosFts,
-      marcadoresAlucinados: marcadoresInvalidos.length,
-    };
+interface CifrasRetrieval {
+  candidatosVec: number;
+  candidatosFts: number;
+  fusionados: number;
+  escaneoExacto: boolean;
+}
+
+/**
+ * Última etapa de un turno de contenido, con las citas ya persistidas: la llamada de respuesta y su
+ * registro. Común al turno normal y a su reintento. Si la llamada falla, el mensaje queda 'fallido'
+ * (con las citas y lo necesario en `meta`) y se lanza un ChatError 502 reintentable: antes se BORRABA
+ * y había que volver a escribir la pregunta, planificar y buscar de cero.
+ */
+async function completarTurno(d: {
+  provider: ChatProvider;
+  sesionId: number;
+  mensajeId: number;
+  modo: string;
+  pregunta: string;
+  timeline: LineaTiempo[] | null;
+  citas: CitaPendiente[];
+  historial: MensajeChat[];
+  retrieval: CifrasRetrieval;
+  planificador: ResultadoPlanificador | null;
+  inicio: number;
+}): Promise<RespuestaChat> {
+  let generada: Awaited<ReturnType<typeof generarRespuesta>>;
+  try {
+    generada = await generarRespuesta(d.provider, {
+      timeline: d.timeline, citas: d.citas, historial: d.historial, mensaje: d.pregunta,
+    });
   } catch (error) {
-    // La llamada al proveedor falló: no queda ninguna respuesta real que sostenga las citas
-    // ofrecidas, así que se deshace el mensaje pendiente (cascada sobre `rag.cita`).
-    await borrarMensaje(mensajeAsistenteId);
-    throw error;
+    await marcarFallido(d.mensajeId, {
+      fallo: { error: error instanceof Error ? error.message.slice(0, 500) : String(error), fe: new Date().toISOString() },
+      plan: d.planificador ? { ...d.planificador.plan, respaldo: d.planificador.respaldo, ms: d.planificador.ms } : null,
+      retrieval: d.retrieval,
+    });
+    throw errorTurnoFallido(d.mensajeId, d.sesionId, error);
   }
+
+  const { respuesta, texto, numerosUsados, marcadoresInvalidos } = generada;
+  await marcarCitasUsadas(d.mensajeId, numerosUsados);
+  await actualizarMensajeAsistente(d.mensajeId, texto, respuesta.uso);
+  await registrarUsoToken(d.provider, 'chat', respuesta.uso);
+  await tocarSesion(d.sesionId);
+  await registrarRetrieval({
+    sesionId: d.sesionId,
+    consulta: d.pregunta,
+    modo: d.modo,
+    ...d.retrieval,
+    marcadoresAlucinados: marcadoresInvalidos.length,
+    ms: Date.now() - d.inicio,
+    planificador: d.planificador,
+    respuestaFija: null,
+  });
+
+  return {
+    sesionId: d.sesionId,
+    mensajeId: d.mensajeId,
+    tipo: 'texto',
+    texto,
+    citas: d.citas.map((c) => ({
+      numero: c.numero,
+      chunkId: c.chunkId,
+      documentoId: c.documentoId,
+      nuAnn: c.nuAnn,
+      nuEmi: c.nuEmi,
+      nuAne: c.nuAne,
+      extracto: extractoDeChunk(c.texto),
+      chars: c.texto.length,
+      rutaTitulos: c.rutaTitulos,
+      usada: numerosUsados.includes(c.numero),
+    })),
+    candidatosVec: d.retrieval.candidatosVec,
+    candidatosFts: d.retrieval.candidatosFts,
+    marcadoresAlucinados: marcadoresInvalidos.length,
+  };
+}
+
+interface FilaMensajeFallido {
+  id: number;
+  sesion_id: number;
+  estado: string;
+  meta: { retrieval?: CifrasRetrieval } | null;
+  traza_id: string | null;
+  usuario_id: string;
+  modo: 'general' | 'expediente';
+  nu_ann_exp: string | null;
+  nu_sec_exp: string | null;
+}
+
+/**
+ * Reintenta la respuesta de un turno 'fallido' (docs/PLAN-RAG-AVANZADO.md, Fase 2: recuperación de
+ * estado). No vuelve a planificar ni a buscar: usa las citas que el turno ya había guardado, y
+ * CONTINÚA su traza (mismo id) en vez de abrir otra desde cero. Las citas se vuelven a filtrar con
+ * los permisos ACTUALES del usuario.
+ */
+export async function reintentarRespuesta(
+  mensajeId: number,
+  usuario: { usuarioId: string; sinRestriccionDependencia: boolean; coDependencia: string | null },
+): Promise<RespuestaChat> {
+  const disponibilidad = chatDisponible();
+  if (!disponibilidad.disponible) {
+    throw new ChatError(`El chat no está disponible: ${disponibilidad.motivo}`, 409);
+  }
+
+  const [m] = await appSequelize.query<FilaMensajeFallido>(
+    `SELECT m.id, m.sesion_id, m.estado, m.meta, m.traza_id, s.usuario_id, s.modo, s.nu_ann_exp, s.nu_sec_exp
+       FROM rag.chat_mensaje m
+       JOIN rag.chat_sesion s ON s.id = m.sesion_id
+      WHERE m.id = $1 AND m.rol = 'assistant'`,
+    { bind: [mensajeId], type: QueryTypes.SELECT },
+  );
+  if (!m) throw new ChatError('El mensaje no existe', 404);
+  if (m.usuario_id !== usuario.usuarioId) throw new ChatError('Ese mensaje no le pertenece', 403);
+  if (m.estado !== 'fallido') throw new ChatError('Ese mensaje ya tiene respuesta: no hay nada que reintentar', 409);
+
+  return enTraza(
+    {
+      id: m.traza_id ?? undefined, nombre: `chat.sgd.${m.modo}`, modulo: 'sgd', db: appSequelize,
+      usuarioId: usuario.usuarioId, sesionId: m.sesion_id, mensajeId, entrada: { reintento: mensajeId },
+    },
+    async (traza) => {
+      const inicio = Date.now();
+      const [pregunta] = await appSequelize.query<{ id: number; texto: string }>(
+        `SELECT id, texto FROM rag.chat_mensaje
+          WHERE sesion_id = $1 AND rol = 'user' AND id < $2 ORDER BY id DESC LIMIT 1`,
+        { bind: [m.sesion_id, mensajeId], type: QueryTypes.SELECT },
+      );
+      if (!pregunta) throw new ChatError('No se encontró la pregunta de ese turno', 409);
+
+      const filtro: FiltroAcceso = { coDependencia: usuario.sinRestriccionDependencia ? null : usuario.coDependencia };
+      const citas = await paso('citas_guardadas', { mensajeId }, () => citasGuardadas(mensajeId, filtro),
+        { tipo: 'recuperacion', resumir: (c) => ({ salida: { citas: c.map((x) => x.numero) } }) });
+      const expediente = m.modo === 'expediente' && m.nu_ann_exp && m.nu_sec_exp
+        ? { nuAnnExp: m.nu_ann_exp, nuSecExp: m.nu_sec_exp }
+        : null;
+      const timeline = expediente ? await estadoExpediente(expediente.nuAnnExp, expediente.nuSecExp) : null;
+      if (citas.length === 0 && !(timeline && timeline.length > 0)) {
+        throw new ChatError('Los fragmentos de ese turno ya no están disponibles: vuelva a hacer la pregunta', 409);
+      }
+
+      const r = await completarTurno({
+        provider: crearChatProvider(),
+        sesionId: m.sesion_id,
+        mensajeId,
+        modo: m.modo,
+        pregunta: pregunta.texto,
+        timeline,
+        citas,
+        historial: await historialReciente(m.sesion_id, pregunta.id),
+        retrieval: m.meta?.retrieval ?? { candidatosVec: 0, candidatosFts: 0, fusionados: citas.length, escaneoExacto: false },
+        planificador: null,
+        inicio,
+      });
+      traza.salida = { tipo: r.tipo, texto: r.texto, citas: r.citas.length };
+      return r;
+    },
+  );
+}
+
+/** Citas ya persistidas de un mensaje, con el texto de su chunk, re-filtradas por permisos. */
+async function citasGuardadas(mensajeId: number, filtro: FiltroAcceso): Promise<CitaPendiente[]> {
+  const filas = await appSequelize.query<{
+    numero: number; chunk_id: number; documento_id: number; nu_ann: string; nu_emi: string; nu_ane: number;
+    texto: string; ruta_titulos: string | null;
+  }>(
+    `SELECT ci.numero, ci.chunk_id, ci.documento_id, d.nu_ann, d.nu_emi, d.nu_ane, c.texto, c.ruta_titulos
+       FROM rag.cita ci
+       JOIN rag.chunk c ON c.id = ci.chunk_id
+       JOIN rag.documento d ON d.id = ci.documento_id
+      WHERE ci.mensaje_id = $1 AND ($2::text IS NULL OR d.co_dep_emi = $2)
+      ORDER BY ci.numero`,
+    { bind: [mensajeId, filtro.coDependencia], type: QueryTypes.SELECT },
+  );
+  return filas.map((f) => ({
+    numero: f.numero, chunkId: f.chunk_id, documentoId: f.documento_id,
+    nuAnn: f.nu_ann, nuEmi: f.nu_emi, nuAne: f.nu_ane, texto: f.texto, rutaTitulos: f.ruta_titulos,
+  }));
 }
 
 interface FilaMensajeHistorial {
@@ -736,6 +949,7 @@ interface FilaMensajeHistorial {
   texto: string;
   fe_alta: string;
   meta: unknown;
+  estado: 'ok' | 'fallido';
 }
 
 interface FilaCitaHistorial {
@@ -759,6 +973,8 @@ export interface MensajeHistorial {
   tipo: TipoRespuesta;
   texto: string;
   feAlta: string;
+  /** 'fallido' = la respuesta no se pudo generar; el frontend ofrece reintentarla. */
+  estado: 'ok' | 'fallido';
   citas: CitaRespuesta[];
   /** En `tipo='tabla'`: totales sin filas (`filas: []`, `pagina: 0`). El frontend pide la página 1
    *  al pintarla: abrir una conversación no re-consulta el SGD por cada listado del historial. */
@@ -838,7 +1054,7 @@ export async function obtenerHistorialSesion(
   if (sesiones[0].usuario_id !== usuarioId) throw new ChatError('Esa sesión no le pertenece', 403);
 
   const filas = await appSequelize.query<FilaMensajeHistorial>(
-    `SELECT id, rol, tipo, texto, fe_alta::text,
+    `SELECT id, rol, tipo, texto, fe_alta::text, estado,
             CASE WHEN tipo IN ('tabla', 'documento', 'participantes') THEN meta END AS meta
        FROM rag.chat_mensaje WHERE sesion_id = $1 ORDER BY id ASC`,
     { bind: [sesionId], type: QueryTypes.SELECT },
@@ -853,6 +1069,7 @@ export async function obtenerHistorialSesion(
     tipo: f.tipo,
     texto: f.texto,
     feAlta: f.fe_alta,
+    estado: f.estado ?? 'ok',
     citas: citasPorMensaje.get(f.id) ?? [],
     ...(f.tipo === 'tabla' && esMetaListado(f.meta) ? { tabla: resumenTabla(f.meta) } : {}),
     ...(f.tipo === 'documento' && metaConCampo(f.meta, 'documento') ? { documento: f.meta.documento as TarjetaDocumento } : {}),

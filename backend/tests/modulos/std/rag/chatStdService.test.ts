@@ -86,7 +86,7 @@ beforeEach(() => {
     if (sql.includes('rol, texto FROM rag.chat_mensaje')) return Promise.resolve([]);
     if (sql.includes("'assistant', $2, $3, $4::jsonb")) { guardados.push(`guardar-${opts?.bind?.[2]}`); return Promise.resolve([{ id: 88 }]); }
     if (sql.includes("'assistant', $2, 'fijo'")) { guardados.push('guardar-fijo'); return Promise.resolve([{ id: 77 }]); }
-    if (sql.includes("VALUES ($1, 'assistant', '')")) { guardados.push('pendiente'); return Promise.resolve([{ id: 99 }]); }
+    if (sql.includes("VALUES ($1, 'assistant', '', $2)")) { guardados.push('pendiente'); return Promise.resolve([{ id: 99 }]); }
     return Promise.resolve(undefined);
   });
   chatDisponible.mockReturnValue({ disponible: true, motivo: null });

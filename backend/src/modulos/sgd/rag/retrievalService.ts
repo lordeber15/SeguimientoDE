@@ -1,10 +1,12 @@
 import { QueryTypes } from 'sequelize';
 import { appSequelize } from '../../../compartido/config/appDatabase';
-import { crearEmbeddingProvider } from '../../../compartido/ai/providerFactory';
 import { estimarTokens } from '../../../compartido/rag/chunkService';
-import { modeloActivo, tablaVectores } from '../../../compartido/rag/embeddingModelService';
+import { modeloActivo } from '../../../compartido/rag/embeddingModelService';
+import { paso } from '../../../compartido/observabilidad/traza';
 import {
   conEscaneoVectorial,
+  embeberConsulta,
+  resumirBusqueda,
   sqlVecinosOrdenados,
   UMBRAL_ESCANEO_EXACTO,
 } from '../../../compartido/rag/ramaVectorial';
@@ -45,6 +47,8 @@ export interface ResultadoBusqueda {
   candidatosFts: number;
   /** La rama vectorial corrió con escaneo exacto (filtro bajo el umbral). `false` también si no corrió. */
   escaneoExacto: boolean;
+  /** Motivo por el que la rama vectorial NO corrió habiendo modelo activo (FTS puro). `null` = normal. */
+  degradacionVectorial?: string | null;
 }
 
 interface FilaVec { chunk_id: number }
@@ -82,27 +86,28 @@ export async function buscarHibrido(
    *  consulta completa, que es donde la paráfrasis sí ayuda. */
   terminosFts?: string[],
 ): Promise<ResultadoBusqueda> {
-  const modelo = await modeloActivo();
-  let vecLiteral: string | null = null;
-  let modeloId: number | null = null;
-  let tabla: string | null = null;
+  return paso(
+    'retrieval',
+    {
+      consulta: consultaTexto, coDependencia: filtro.coDependencia, expediente: expediente ?? null,
+      conjunto: conjunto?.length ?? 0, terminosFts: terminosFts ?? null,
+    },
+    () => buscarHibridoSinTraza(consultaTexto, filtro, expediente, conjunto, terminosFts),
+    { tipo: 'recuperacion', resumir: resumirBusqueda },
+  );
+}
 
-  if (modelo) {
-    try {
-      const provider = crearEmbeddingProvider();
-      if (provider.dimension === modelo.dimension) {
-        const { vectores } = await provider.embeber([consultaTexto]);
-        vecLiteral = `[${vectores[0].join(',')}]`;
-        modeloId = modelo.id;
-        tabla = tablaVectores(modelo.dimension);
-      }
-      // Dimensión distinta = el `.env` cambió sin desactivar el modelo. No es este el lugar para
-      // resolverlo (el guardarraíl de arranque ya avisa); aquí basta con no mezclar espacios.
-    } catch {
-      // Proveedor caído: igual que "sin modelo activo", se degrada a FTS puro en vez de romper el chat.
-      vecLiteral = null;
-    }
-  }
+async function buscarHibridoSinTraza(
+  consultaTexto: string,
+  filtro: FiltroAcceso,
+  expediente?: { nuAnnExp: string; nuSecExp: string },
+  conjunto?: { nuAnnExp: string; nuSecExp: string }[],
+  terminosFts?: string[],
+): Promise<ResultadoBusqueda> {
+  const { consulta: embebida, degradacion } = await embeberConsulta(await modeloActivo(), consultaTexto, 'sgd');
+  const vecLiteral = embebida?.vecLiteral ?? null;
+  const modeloId = embebida?.modeloId ?? null;
+  const tabla = embebida?.tabla ?? null;
 
   return appSequelize.transaction(async (tx) => {
     const permisoSql = 'AND ($1::text IS NULL OR d.co_dep_emi = $1)';
@@ -189,7 +194,7 @@ export async function buscarHibrido(
     const idsUnicos = [...new Set([...rangoVec.keys(), ...rangoFts.keys()])];
 
     if (idsUnicos.length === 0) {
-      return { chunks: [], candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto };
+      return { chunks: [], candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto, degradacionVectorial: degradacion };
     }
 
     const puntuados = idsUnicos
@@ -230,7 +235,7 @@ export async function buscarHibrido(
       if (chunks.length >= LIMITE_RESULTADO) break;
     }
 
-    return { chunks, candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto };
+    return { chunks, candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto, degradacionVectorial: degradacion };
   });
 }
 

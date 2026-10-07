@@ -4,11 +4,13 @@ import {
   listarSesionesStd,
   obtenerHistorialSesionStd,
   paginaResultadosStd,
+  reintentarRespuestaStd,
   responderChatStd,
   sesionParaDocumentoStd,
   textoChunkCitadoStd,
 } from '../rag/chatStdService';
 import { estadoIngestaDocumentoStd, estadoIngestaDocumentosStd } from '../rag/retrievalStdService';
+import { alertar } from '../../../compartido/observabilidad/alertas';
 
 /** `tbl_documento.id_documento` es `int unsigned`: hasta 10 dígitos, nunca negativo. */
 const RE_ID_DOCUMENTO = /^\d{1,10}$/;
@@ -18,10 +20,23 @@ const MAX_PAGINA = 1000;
 
 function manejar(res: Response, error: unknown, contexto: string) {
   if (error instanceof ChatStdError) {
-    return res.status(error.status).json({ message: error.message });
+    return res.status(error.status).json({ message: error.message, ...(error.datos ?? {}) });
   }
   console.error(`${contexto}:`, error);
+  alertar('chat_error', `STD: ${contexto}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500), {}, 'std');
   return res.status(500).json({ message: 'Error al procesar la operación' });
+}
+
+/** Ver `postReintentarMensaje` del SGD. */
+export async function postReintentarMensajeStd(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ message: 'id inválido' });
+
+  try {
+    res.json(await reintentarRespuestaStd(id, req.usuario!.codUser));
+  } catch (error) {
+    manejar(res, error, `Error al reintentar el mensaje ${id}`);
+  }
 }
 
 function mensajeValido(req: Request): string | null {

@@ -4,10 +4,12 @@ import {
   listarSesiones,
   obtenerHistorialSesion,
   paginaResultados,
+  reintentarRespuesta,
   responderChat,
   sesionParaExpediente,
   textoChunkCitado,
 } from '../rag/chatService';
+import { alertar } from '../../../compartido/observabilidad/alertas';
 import {
   buscarExpedientes,
   estadoIngestaExpediente,
@@ -24,9 +26,10 @@ const LARGO_MIN_BUSQUEDA = 3; // mismo umbral que seguimientoController.ts
 
 function manejar(res: Response, error: unknown, contexto: string) {
   if (error instanceof ChatError) {
-    return res.status(error.status).json({ message: error.message });
+    return res.status(error.status).json({ message: error.message, ...(error.datos ?? {}) });
   }
   console.error(`${contexto}:`, error);
+  alertar('chat_error', `SGD: ${contexto}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500), {}, 'sgd');
   return res.status(500).json({ message: 'Error al procesar la operación' });
 }
 
@@ -85,6 +88,25 @@ export async function postChatExpediente(req: Request, res: Response) {
     res.json(respuesta);
   } catch (error) {
     manejar(res, error, `Error en el chat del expediente ${nuAnnExp}/${nuSecExp}`);
+  }
+}
+
+/**
+ * Reintenta la respuesta de un turno que quedó 'fallido' (el modelo no respondió): reusa sus citas
+ * guardadas, sin volver a planificar ni buscar. Los permisos se re-aplican con el usuario de AHORA.
+ */
+export async function postReintentarMensaje(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ message: 'id inválido' });
+
+  try {
+    res.json(await reintentarRespuesta(id, {
+      usuarioId: req.usuario!.codUser,
+      sinRestriccionDependencia: sinRestriccionDependencia(req),
+      coDependencia: req.usuario!.coDependencia,
+    }));
+  } catch (error) {
+    manejar(res, error, `Error al reintentar el mensaje ${id}`);
   }
 }
 

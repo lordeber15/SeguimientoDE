@@ -63,12 +63,17 @@ jest.mock('../../../../src/compartido/config/appDatabase', () => ({
   appSequelize: { query: (...a: unknown[]) => query(...a) },
 }));
 
+import type { Traza } from '../../../../src/compartido/observabilidad/traza';
+
 type ChatSvc = typeof import('../../../../src/modulos/sgd/rag/chatService');
 let chat: ChatSvc;
+/** La MISMA instancia del módulo que ve el chat (jest.isolateModules carga copias aparte). */
+let registrarPublicador: typeof import('../../../../src/compartido/observabilidad/traza').registrarPublicador;
 
 beforeAll(() => {
   jest.isolateModules(() => {
     chat = require('../../../../src/modulos/sgd/rag/chatService');
+    ({ registrarPublicador } = require('../../../../src/compartido/observabilidad/traza'));
   });
 });
 
@@ -108,6 +113,10 @@ function instalarQueryPorDefecto() {
     }
     if (sql.startsWith('DELETE FROM rag.chat_mensaje')) {
       ordenLlamadas.push('borrar-mensaje-pendiente');
+      return Promise.resolve(undefined);
+    }
+    if (sql.includes("SET estado = 'fallido'")) {
+      ordenLlamadas.push('marcar-fallido');
       return Promise.resolve(undefined);
     }
     return Promise.resolve(undefined);
@@ -220,13 +229,160 @@ describe('responderChat', () => {
     expect(resultado.citas.find((c) => c.numero === 1)?.usada).toBe(true);
   });
 
-  it('si el proveedor de chat falla, borra el mensaje pendiente en vez de dejarlo huérfano', async () => {
+  it('si el proveedor de chat falla, el turno queda FALLIDO con sus citas (no se borra) y el error es reintentable', async () => {
     buscarHibrido.mockResolvedValue(UN_CHUNK);
     elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
     responder.mockRejectedValue(new Error('el proveedor no respondió'));
 
-    await expect(chat.responderChat(peticionBase())).rejects.toThrow('el proveedor no respondió');
-    expect(ordenLlamadas).toEqual(['crear-mensaje-pendiente', 'insert-cita', 'borrar-mensaje-pendiente']);
+    const error = await chat.responderChat(peticionBase()).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(chat.ChatError);
+    expect(error).toMatchObject({
+      status: 502,
+      datos: { mensajeFallidoId: 99, reintentable: true, detalle: 'el proveedor no respondió' },
+    });
+    expect(ordenLlamadas).toEqual(['crear-mensaje-pendiente', 'insert-cita', 'marcar-fallido']);
+    const fallido = query.mock.calls.find(([sql]) => String(sql).includes("SET estado = 'fallido'"))!;
+    expect(JSON.parse(fallido[1].bind[1])).toMatchObject({
+      fallo: { error: 'el proveedor no respondió' },
+      retrieval: { candidatosVec: 0, candidatosFts: 1, fusionados: 1, escaneoExacto: true },
+    });
+  });
+
+  it('la respuesta recibe la pregunta UNA sola vez (antes llegaba duplicada vía historial)', async () => {
+    buscarHibrido.mockResolvedValue(UN_CHUNK);
+    elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
+    const original = query.getMockImplementation()!;
+    // El historial se lee ANTES de guardar la pregunta: si se leyera después, traería la pregunta.
+    let preguntaGuardada = false;
+    query.mockImplementation((sql: string, opts: unknown) => {
+      if (sql.includes("VALUES ($1, 'user', $2)")) preguntaGuardada = true;
+      if (sql.includes('rol, texto FROM rag.chat_mensaje')) {
+        return Promise.resolve(preguntaGuardada ? [{ rol: 'user', texto: '¿en qué estado está el trámite?' }] : []);
+      }
+      return original(sql, opts);
+    });
+
+    await chat.responderChat(peticionBase());
+
+    const mensajes = responder.mock.calls.at(-1)![0] as { rol: string; contenido: string }[];
+    expect(mensajes.filter((m) => m.contenido === '¿en qué estado está el trámite?')).toHaveLength(1);
+  });
+
+  it('el historial excluye turnos fallidos', async () => {
+    buscarHibrido.mockResolvedValue(UN_CHUNK);
+    elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
+
+    await chat.responderChat(peticionBase());
+
+    const historial = query.mock.calls.find(([sql]) => String(sql).includes('rol, texto FROM rag.chat_mensaje'))!;
+    expect(String(historial[0])).toContain("estado = 'ok'");
+  });
+});
+
+describe('reintentarRespuesta', () => {
+  const usuario = { usuarioId: 'u1', sinRestriccionDependencia: false, coDependencia: '00104' };
+  const fila = (over: Record<string, unknown> = {}) => ({
+    id: 99, sesion_id: 42, estado: 'fallido', traza_id: 'a'.repeat(32), usuario_id: 'u1',
+    modo: 'general', nu_ann_exp: null, nu_sec_exp: null,
+    meta: { retrieval: { candidatosVec: 40, candidatosFts: 50, fusionados: 1, escaneoExacto: false } },
+    ...over,
+  });
+
+  function instalarReintento(over: Record<string, unknown> = {}, citas: unknown[] = [{
+    numero: 1, chunk_id: 1, documento_id: 501, nu_ann: '2026', nu_emi: '0000000123', nu_ane: 0,
+    texto: 'texto guardado', ruta_titulos: null,
+  }]) {
+    const original = query.getMockImplementation()!;
+    query.mockImplementation((sql: string, opts: unknown) => {
+      if (sql.includes('FROM rag.chat_mensaje m') && sql.includes('JOIN rag.chat_sesion s')) return Promise.resolve([fila(over)]);
+      if (sql.includes("rol = 'user' AND id < $2")) return Promise.resolve([{ id: 98, texto: 'pregunta original' }]);
+      if (sql.includes('FROM rag.cita ci')) return Promise.resolve(citas);
+      return original(sql, opts);
+    });
+  }
+
+  it('responde con las citas guardadas, sin volver a planificar ni a buscar', async () => {
+    instalarReintento();
+    responder.mockResolvedValue({ texto: 'ahora sí [D1]', uso: { tokensIn: 5, tokensOut: 3, estimado: false } });
+
+    const r = await chat.reintentarRespuesta(99, usuario);
+
+    expect(r).toMatchObject({ sesionId: 42, mensajeId: 99, tipo: 'texto', texto: 'ahora sí [D1]', candidatosVec: 40 });
+    expect(r.citas[0]).toMatchObject({ numero: 1, documentoId: 501, usada: true });
+    expect(planificar).not.toHaveBeenCalled();
+    expect(buscarHibrido).not.toHaveBeenCalled();
+    const mensajes = responder.mock.calls[0][0] as { rol: string; contenido: string }[];
+    expect(mensajes.at(-1)).toEqual({ rol: 'user', contenido: 'pregunta original' });
+    expect(mensajes[0].contenido).toContain('texto guardado');
+    // Las citas se re-filtran con los permisos ACTUALES del usuario.
+    const citas = query.mock.calls.find(([sql]) => String(sql).includes('FROM rag.cita ci'))!;
+    expect(citas[1].bind).toEqual([99, '00104']);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("estado = 'ok' WHERE id = $1"))).toBe(true);
+  });
+
+  it('rechaza un mensaje ajeno, inexistente o que no está fallido', async () => {
+    instalarReintento({ usuario_id: 'OTRO' });
+    await expect(chat.reintentarRespuesta(99, usuario)).rejects.toMatchObject({ status: 403 });
+
+    instalarReintento({ estado: 'ok' });
+    await expect(chat.reintentarRespuesta(99, usuario)).rejects.toMatchObject({ status: 409 });
+
+    query.mockImplementation(() => Promise.resolve([]));
+    await expect(chat.reintentarRespuesta(99, usuario)).rejects.toMatchObject({ status: 404 });
+    expect(responder).not.toHaveBeenCalled();
+  });
+
+  it('si ya no queda ninguna cita visible, pide rehacer la pregunta en vez de responder sin contexto', async () => {
+    instalarReintento({}, []);
+    await expect(chat.reintentarRespuesta(99, usuario)).rejects.toMatchObject({ status: 409 });
+    expect(responder).not.toHaveBeenCalled();
+  });
+
+  it('si vuelve a fallar, sigue fallido y reintentable', async () => {
+    instalarReintento();
+    responder.mockRejectedValue(new Error('otra vez caído'));
+
+    await expect(chat.reintentarRespuesta(99, usuario)).rejects.toMatchObject({
+      status: 502, datos: { mensajeFallidoId: 99, reintentable: true },
+    });
+    expect(ordenLlamadas).toContain('marcar-fallido');
+  });
+});
+
+describe('responderChat — traza', () => {
+  afterEach(() => registrarPublicador(null));
+
+  it('publica una traza con usuario, sesión, mensaje y el paso de respuesta', async () => {
+    const publicadas: Traza[] = [];
+    registrarPublicador(async (t) => { publicadas.push(t); });
+    buscarHibrido.mockResolvedValue(UN_CHUNK);
+    elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
+
+    await chat.responderChat(peticionBase());
+    await new Promise((r) => setImmediate(r));
+
+    expect(publicadas).toHaveLength(1);
+    const t = publicadas[0];
+    expect(t).toMatchObject({ modulo: 'sgd', usuarioId: 'u1', sesionId: 42, mensajeId: 99, estado: 'ok' });
+    expect(t.pasos.map((p) => p.nombre)).toContain('respuesta');
+    // El mensaje y el log del retrieval quedan enlazados a la traza.
+    const pendiente = query.mock.calls.find(([sql]) => String(sql).includes("VALUES ($1, 'assistant', '', $2)"))!;
+    expect(pendiente[1].bind[1]).toBe(t.id);
+  });
+
+  it('un turno que falla también se publica, con estado de error', async () => {
+    const publicadas: Traza[] = [];
+    registrarPublicador(async (t) => { publicadas.push(t); });
+    buscarHibrido.mockResolvedValue(UN_CHUNK);
+    elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
+    responder.mockRejectedValue(new Error('caído'));
+
+    await chat.responderChat(peticionBase()).catch(() => undefined);
+    await new Promise((r) => setImmediate(r));
+
+    expect(publicadas[0]).toMatchObject({ estado: 'error' });
+    expect(publicadas[0].pasos.find((p) => p.nombre === 'respuesta')).toMatchObject({ nivel: 'ERROR', error: 'caído' });
   });
 });
 

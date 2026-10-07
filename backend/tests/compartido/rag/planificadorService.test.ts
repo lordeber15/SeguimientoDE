@@ -53,7 +53,25 @@ describe('interpretarPlan', () => {
       terminos: { obligatorios: ['China Civil'], opcionales: [], sinonimos: {} },
       filtros: { remitente: 'China Civil', emisor: null, dependencia: null, tipoDoc: null, desde: null, hasta: null, actual: false },
       continuaAnterior: false,
+      subconsultas: [],
     });
+  });
+
+  it('subconsultas: solo en "contenido", con 2 o más partes distintas de la consulta, máximo 3', () => {
+    const compuesta = interpretarPlan(JSON.stringify({
+      intencion: 'contenido',
+      consulta: 'plazo y penalidades de la obra de Junín',
+      subconsultas: ['plazo de la obra de Junín', 'penalidades de la obra de Junín', 'plazo de la obra de Junín', 'a', 'b'],
+    }), 'x');
+    expect(compuesta?.subconsultas).toEqual(['plazo de la obra de Junín', 'penalidades de la obra de Junín', 'a']);
+
+    const unaSola = interpretarPlan(JSON.stringify({
+      intencion: 'contenido', consulta: 'monto del contrato', subconsultas: ['monto del contrato', 'Monto del contrato '],
+    }), 'x');
+    expect(unaSola?.subconsultas).toEqual([]);
+
+    const listado = interpretarPlan(JSON.stringify({ intencion: 'listar', subconsultas: ['a', 'b'] }), 'x');
+    expect(listado?.subconsultas).toEqual([]);
   });
 
   it('con campos ausentes o en null usa valores neutros y la consulta original', () => {
@@ -107,6 +125,39 @@ describe('planificar', () => {
     expect(r.respaldo).toBe(true);
     expect(r.uso).toBeNull();
     expect(r.diagnostico).toContain('timeout');
+  });
+
+  it('modelo rápido que no da un plan → reintenta con el de chat y usa su plan', async () => {
+    const rapido = { ...proveedor('no sé'), modelo: 'qwen-mini' };
+    const chat = proveedor('{"intencion":"contar","consulta":"cuántos de Junín"}');
+
+    const r = await planificar(rapido, '¿cuántos de Junín?', ctx, chat);
+
+    expect(r.respaldo).toBe(false);
+    expect(r.plan.intencion).toBe('contar');
+    expect(r.modelo).toBe('gpt-4o-mini');
+    expect(rapido.responder).toHaveBeenCalled();
+  });
+
+  it('si el rápido responde bien, el de chat no se llama', async () => {
+    const rapido = { ...proveedor('{"intencion":"contar"}'), modelo: 'qwen-mini' };
+    const chat = proveedor('{"intencion":"listar"}');
+
+    const r = await planificar(rapido, 'x', ctx, chat);
+
+    expect(r.plan.intencion).toBe('contar');
+    expect(r.modelo).toBe('qwen-mini');
+    expect(chat.responder).not.toHaveBeenCalled();
+  });
+
+  it('si ninguno da un plan, respaldo con el diagnóstico del rápido', async () => {
+    const rapido = { ...proveedor('basura'), modelo: 'qwen-mini' };
+
+    const r = await planificar(rapido, 'monto', ctx, proveedor('otra basura'));
+
+    expect(r.respaldo).toBe(true);
+    expect(r.diagnostico).toContain('basura');
+    expect(r.diagnostico).not.toContain('otra');
   });
 
   it('envía el historial recortado y la nota de modo expediente', async () => {

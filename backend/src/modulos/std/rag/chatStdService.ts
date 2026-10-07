@@ -1,12 +1,19 @@
 import { QueryTypes } from 'sequelize';
 import { stdRagSequelize } from '../config/stdRagDatabase';
-import { chatDisponible, crearChatProvider } from '../../../compartido/ai/providerFactory';
+import { chatDisponible, crearChatProvider, crearChatProviderRapido } from '../../../compartido/ai/providerFactory';
 import type { ChatProvider, MensajeChat, ResultadoChat } from '../../../compartido/ai/types';
-import { leerParametros, prepararTerminos, terminosDelPlan } from '../../../compartido/rag/busquedaTerminos';
+import { leerParametros, prepararTerminos, terminosDeConsulta, terminosDelPlan } from '../../../compartido/rag/busquedaTerminos';
 import { filtroGratis, mensajeFijo, type MotivoFijo } from '../../../compartido/rag/cierreChat';
 import { leerBooleano } from '../../../compartido/rag/configService';
 import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../../../compartido/rag/planificadorService';
-import { rerankear } from '../../../compartido/rag/rerankService';
+import { rerankear, type ResultadoRerank } from '../../../compartido/rag/rerankService';
+import {
+  combinarBusquedas,
+  expandirConVocabulario,
+  generarHyde,
+  transformacionesDelTurno,
+  type Transformaciones,
+} from '../../../compartido/rag/transformacionConsulta';
 import { enTraza, evento, paso, trazaActual, type Traza } from '../../../compartido/observabilidad/traza';
 import { avisarMarcadoresAlucinados } from '../../../compartido/observabilidad/alertas';
 import { idDeCandidato } from './busquedaDocumentosStdService';
@@ -27,8 +34,10 @@ import {
 import {
   buscarHibridoStd,
   elegirDocumentoParaCitaStd,
+  LIMITE_RESULTADO,
   lineaTiempoStd,
   recortarPorPresupuestoStd,
+  TOPE_POR_DOCUMENTO,
   type ChunkRecuperadoStd,
   type LineaTiempoDocumentoStd,
   type ResultadoBusquedaStd,
@@ -299,7 +308,7 @@ async function registrarRetrieval(datos: {
 
 async function registrarUsoToken(
   provider: ChatProvider,
-  operacion: 'chat' | 'chat_rerank' | 'chat_planificador',
+  operacion: 'chat' | 'chat_rerank' | 'chat_planificador' | 'chat_hyde',
   uso: ResultadoChat['uso'],
 ): Promise<void> {
   await stdRagSequelize.query(
@@ -452,6 +461,12 @@ export interface ContextoRecuperadoStd {
   chunksAcotados: ChunkRecuperadoStd[];
   citas: CitaPendiente[];
   usoRerank: ResultadoChat['uso'] | null;
+  /** Tokens de HyDE (modelo rápido), para `rag.uso_token`. */
+  usoHyde: ResultadoChat['uso'] | null;
+  /** Qué transformaciones de la consulta se aplicaron (Fase 4). */
+  transformacion: { subconsultas: number; hyde: boolean; vocabulario: boolean };
+  /** Cómo se reordenó: método, si cayó al orden de RRF y el puntaje del cross-encoder (si lo hubo). */
+  rerank: Omit<ResultadoRerank, 'chunks' | 'uso' | 'puntajes'> & { ms: number };
 }
 
 /**
@@ -460,16 +475,37 @@ export interface ContextoRecuperadoStd {
  */
 export async function recuperarContextoStd(
   provider: ChatProvider,
-  opciones: { consulta: string; idDocumento?: number; conjunto?: number[] | null; terminosFts?: string[] },
+  opciones: {
+    consulta: string;
+    idDocumento?: number;
+    conjunto?: number[] | null;
+    terminosFts?: string[];
+    /** Fase 4: subconsultas del plan, HyDE y vocabulario de dominio (ver el SGD). */
+    transformaciones?: Transformaciones;
+  },
 ): Promise<ContextoRecuperadoStd> {
-  const { consulta, idDocumento, conjunto, terminosFts } = opciones;
+  const { consulta, idDocumento, conjunto, terminosFts, transformaciones: t = {} } = opciones;
+  const subconsultas = t.subconsultas ?? [];
 
-  const [resultado, timeline] = await Promise.all([
-    buscarHibridoStd(consulta, idDocumento, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO) ?? undefined, terminosFts),
+  const hyde = t.hyde ? await generarHyde(t.hyde, consulta) : null;
+  const buscar = (q: string, terminos: string[] | undefined, textoHyde: string | null) =>
+    buscarHibridoStd(q, idDocumento, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO) ?? undefined, terminos, {
+      consultaVectorial: t.sinonimos ? expandirConVocabulario(q, t.sinonimos) : undefined,
+      textoHyde,
+    });
+
+  const [principal, timeline, ...porSubconsulta] = await Promise.all([
+    buscar(consulta, terminosFts, hyde?.texto ?? null),
     idDocumento ? lineaTiempoStd(idDocumento) : Promise.resolve(null),
-  ]);
+    ...subconsultas.map((q) => buscar(q, terminosDeConsulta(q), null)),
+  ]) as [ResultadoBusquedaStd, LineaTiempoDocumentoStd | null, ...ResultadoBusquedaStd[]];
+  const resultado = combinarBusquedas([principal, ...porSubconsulta], {
+    limite: LIMITE_RESULTADO, topePorDocumento: TOPE_POR_DOCUMENTO,
+  });
 
+  const inicioRerank = Date.now();
   const rerank = await rerankear(provider, consulta, resultado.chunks);
+  const msRerank = Date.now() - inicioRerank;
   const chunksAcotados = recortarPorPresupuestoStd(rerank.chunks, PRESUPUESTO_TOKENS_CONTEXTO);
 
   const citas: CitaPendiente[] = [];
@@ -490,7 +526,17 @@ export async function recuperarContextoStd(
     });
   }
 
-  return { resultado, timeline, chunksAcotados, citas, usoRerank: rerank.uso };
+  return {
+    resultado, timeline, chunksAcotados, citas, usoRerank: rerank.uso, usoHyde: hyde?.uso ?? null,
+    transformacion: {
+      subconsultas: subconsultas.length,
+      hyde: hyde !== null,
+      vocabulario: t.sinonimos !== undefined && expandirConVocabulario(consulta, t.sinonimos) !== consulta,
+    },
+    rerank: {
+      metodo: rerank.metodo, respaldo: rerank.respaldo, puntajeMax: rerank.puntajeMax, bajoUmbral: rerank.bajoUmbral, ms: msRerank,
+    },
+  };
 }
 
 /**
@@ -551,6 +597,8 @@ export async function responderChatStd(p: PeticionChatStd): Promise<RespuestaCha
 
 async function responderChatStdEnTraza(p: PeticionChatStd, traza: Traza): Promise<RespuestaChatStd> {
   const provider = crearChatProvider();
+  // Modelo rápido (Fase 4) para el planificador y HyDE; sin configurar, el mismo de chat.
+  const rapido = crearChatProviderRapido() ?? provider;
 
   const inicio = Date.now();
   const sesion = await obtenerOCrearSesion(p);
@@ -570,11 +618,13 @@ async function responderChatStdEnTraza(p: PeticionChatStd, traza: Traza): Promis
   // [1] Planificador (el mismo del SGD; el modo "por documento" es su modo "expediente").
   let planificador: ResultadoPlanificador | null = null;
   if (await leerBooleano('chat.planificador.activo', true, stdRagSequelize)) {
-    planificador = await planificar(provider, p.mensaje, {
+    planificador = await planificar(rapido, p.mensaje, {
       modo: p.modo === 'documento' ? 'expediente' : 'general',
       historial: historialPrevio,
-    });
-    if (planificador.uso) await registrarUsoToken(provider, 'chat_planificador', planificador.uso);
+    }, provider);
+    if (planificador.uso) {
+      await registrarUsoToken(planificador.modelo === rapido.modelo ? rapido : provider, 'chat_planificador', planificador.uso);
+    }
   }
   const plan = planificador?.plan ?? planDeRespaldo(p.mensaje);
   if (plan.intencion === 'fuera_de_alcance') return fijo('fuera_de_alcance', planificador);
@@ -639,17 +689,20 @@ async function responderChatStdEnTraza(p: PeticionChatStd, traza: Traza): Promis
   }
 
   // [3] contenido: RAG con la consulta reescrita, el conjunto activo y los términos del plan.
+  const parametros = await leerParametros(stdRagSequelize);
   const terminosFts = planConfiable
-    ? prepararTerminos(terminosDelPlan(plan), plan, await leerParametros(stdRagSequelize)).consultas
+    ? prepararTerminos(terminosDelPlan(plan), plan, parametros).consultas
     : undefined;
 
-  const { resultado, timeline, chunksAcotados, citas, usoRerank } = await recuperarContextoStd(provider, {
+  const { resultado, timeline, chunksAcotados, citas, usoRerank, usoHyde } = await recuperarContextoStd(provider, {
     consulta: consultaBusqueda,
     idDocumento: p.modo === 'documento' ? p.idDocumento : undefined,
     conjunto: p.modo === 'general' ? conjunto : null,
     terminosFts,
+    transformaciones: await transformacionesDelTurno(planConfiable ? plan : null, rapido, parametros.sinonimos, stdRagSequelize),
   });
   if (usoRerank) await registrarUsoToken(provider, 'chat_rerank', usoRerank);
+  if (usoHyde) await registrarUsoToken(rapido, 'chat_hyde', usoHyde);
 
   // Sin fragmentos ni línea de tiempo no hay nada que sostenga una respuesta: no se llama al modelo.
   const hayLineaTiempo = Boolean(timeline && (timeline.movimientos.length > 0 || timeline.referencias.length > 0));

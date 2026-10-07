@@ -133,10 +133,11 @@ export class OpenAiChat implements ChatProvider {
   readonly modelo: string;
   private readonly endpoint: Endpoint;
 
-  constructor(esAzure = false) {
-    this.modelo = esAzure
+  /** `modelo`: otro modelo/deployment que el de chat (p. ej. el rápido del planificador, Fase 4). */
+  constructor(esAzure = false, modelo?: string) {
+    this.modelo = modelo || (esAzure
       ? process.env.AZURE_CHAT_DEPLOYMENT ?? ''
-      : process.env.OPENAI_CHAT_MODEL ?? 'gpt-4o-mini';
+      : process.env.OPENAI_CHAT_MODEL ?? 'gpt-4o-mini');
     this.endpoint = esAzure ? endpointAzure(this.modelo) : endpointOpenai();
     this.nombre = this.endpoint.proveedor;
   }

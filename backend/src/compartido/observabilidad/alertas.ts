@@ -18,6 +18,7 @@ export type TipoAlerta =
   | 'proveedor_ia'          // un proveedor de IA falló tras agotar los reintentos (o credencial inválida)
   | 'planificador_json'     // el planificador devolvió algo que no es un plan: se usó el de respaldo
   | 'vectorial_degradada'   // sin embedding de la consulta: el retrieval cayó a FTS puro
+  | 'rerank_degradado'      // el cross-encoder no respondió: se usó el orden de RRF
   | 'marcadores_alucinados' // el modelo citó [Dn] que no se le ofrecieron
   | 'chat_error';           // error no controlado en el chat (HTTP 500)
 

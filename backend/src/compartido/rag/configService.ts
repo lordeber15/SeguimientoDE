@@ -50,6 +50,38 @@ export async function leerNumero(
   return Number.isFinite(valor) ? valor : porDefecto;
 }
 
+/** Claves del chat editables desde el panel de cada módulo (docs/PLAN-RAG-AVANZADO.md, Fase 4). */
+export const CLAVES_CHAT_EDITABLES = [
+  'chat.planificador.activo',
+  'chat.descomposicion.activa',
+  'chat.hyde.activo',
+  'chat.sinonimos',
+] as const;
+
+/**
+ * Valida el valor de una clave con formato propio antes de guardarlo. `null` = válido. Un JSON roto en
+ * `chat.sinonimos` no tumbaría el chat (`leerParametros` cae a `{}`), pero borraría EN SILENCIO todo el
+ * vocabulario: mejor rechazarlo en el formulario.
+ */
+export function validarValorConfig(clave: string, valor: string): string | null {
+  if (clave === 'chat.sinonimos') {
+    let v: unknown;
+    try {
+      v = JSON.parse(valor);
+    } catch {
+      return 'chat.sinonimos debe ser JSON válido: {"término": ["alternativa", …]}';
+    }
+    const valido = typeof v === 'object' && v !== null && !Array.isArray(v)
+      && Object.entries(v).every(([k, lista]) => k.trim() !== ''
+        && Array.isArray(lista) && lista.every((x) => typeof x === 'string' && x.trim() !== ''));
+    return valido ? null : 'chat.sinonimos: cada término debe tener una lista de textos no vacíos';
+  }
+  if (clave.endsWith('.activo') || clave.endsWith('.activa')) {
+    return valor === 'true' || valor === 'false' ? null : `${clave} debe ser true o false`;
+  }
+  return null;
+}
+
 export async function escribirConfig(
   clave: string,
   valor: string,

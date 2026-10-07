@@ -1,6 +1,6 @@
 /** Contratos de la capa de IA. Los adaptadores concretos viven en `ai/providers/`. */
 
-export type NombreProveedor = 'ollama' | 'openai' | 'anthropic' | 'azure';
+export type NombreProveedor = 'ollama' | 'openai' | 'anthropic' | 'azure' | 'tei' | 'cohere';
 
 export interface UsoTokens {
   tokensIn: number;
@@ -38,6 +38,19 @@ export interface ChatProvider {
   readonly nombre: NombreProveedor;
   readonly modelo: string;
   responder(mensajes: MensajeChat[], opciones?: { maxTokens?: number }): Promise<ResultadoChat>;
+  comprobar(): Promise<void>;
+}
+
+/**
+ * Cross-encoder (docs/PLAN-RAG-AVANZADO.md, Fase 3): puntúa cada par (consulta, texto) leyéndolos
+ * juntos, a diferencia del embedding, que los codifica por separado. Capacidad aparte de
+ * `ChatProvider`: ni Ollama ni Anthropic la tienen, y la sirve otro servicio (TEI) o Cohere.
+ */
+export interface RerankProvider {
+  readonly nombre: NombreProveedor;
+  readonly modelo: string;
+  /** Un puntaje por texto, en el MISMO orden de `textos`. Normalizado a [0, 1]: más alto = más relevante. */
+  puntuar(consulta: string, textos: string[]): Promise<number[]>;
   comprobar(): Promise<void>;
 }
 

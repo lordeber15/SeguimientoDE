@@ -904,6 +904,296 @@
       "tipo": "codigo",
       "origen": "sintetico",
       "revisado": false
+    },
+    {
+      "id": "comp-c12f407f3a",
+      "pregunta": "¿Qué especialista se recomienda contratar para el problema de flujo en el IESTP 4 de Junio de 1821 y, además, cuál es el número del contrato para la obra 'Creación del Parque de Tecnología e Innovación para el Agro de la Universidad Nacional Agraria La Molina'?",
+      "historial": [],
+      "ground_truth": "Consultor Especialista en Hidrogeología Contrato1 28-2022-MCEBS",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000041791",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000028494",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "se sustentó y recomendó la contratación inmediata de un Consultor Especialista en Hidrogeología",
+          "Contrato1 28-2022-MCEBS del 26.08.2022"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-0eca3c2935 + sint-0536b607f6"
+    },
+    {
+      "id": "comp-2d95add6f0",
+      "pregunta": "¿Quién es el especialista propuesto para la consultoría del Programa de Inversión respecto a la educación en Lima y, además, cuál es la experiencia específica requerida para el consultor en el sector público?",
+      "historial": [],
+      "ground_truth": "Mauro Esteban Arias Ayamamani 04 años en actividades relacionadas con contabilidad.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000052177",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000053209",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "se propone al señor Mauro Esteban Arias Ayamamani como Especialista en Arquitectura II",
+          "Experiencia específica en el sector público de 04 años en actividades relacionadas con contabilidad."
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-04ad548d10 + sint-142acc56f0"
+    },
+    {
+      "id": "comp-cef72286f9",
+      "pregunta": "¿Cuál es el plazo de ejecución del servicio de consultoría para la Oficina de Gestión Administrativa y, además, qué material se utiliza para el piso del aula 2?",
+      "historial": [],
+      "ground_truth": "El servicio de consultoría será hasta el 31 de diciembre de 2026. Porcelanato 60x60cm, antideslizante, alto tránsito.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000017929",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000031912",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "El servicio de consultoría será hasta el 31 de diciembre de 2026",
+          "PISO: DE PORCELANATO 60x60cm, ANTIDESLIZANTE, ALTO TRANSITO"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-02fb8e4ef8 + sint-03460fe3a5"
+    },
+    {
+      "id": "comp-c60d07d61f",
+      "pregunta": "¿Cuál es la fecha de elaboración del memorando N° 000024-2026-MINEDU-VMGP/UE118/PMESUT-OCP y, además, cuál es la fecha de emisión del PROVEÍDO N° 001386-2026-OGA?",
+      "historial": [],
+      "ground_truth": "30 de Julio de 2026 12/06/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000033191",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000013094",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Fecha Elaboración: San Isidro, 30 de Julio de 2026",
+          "Fecha de emisión: 12/06/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-092b9f742b + sint-10f92cf4ba"
+    },
+    {
+      "id": "comp-8c653d9d0f",
+      "pregunta": "¿Cuál es la dirección de la mesa de partes del PMESUT y, además, cuál es el número de contrato relacionado con la construcción y equipamiento del Instituto de Medicina Tropical de la UNTRM en Chachapoyas?",
+      "historial": [],
+      "ground_truth": "Calle Los Laureles 399, San Isidro - Lima CONTRATO N° 038-2026-MCEBS",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000053783",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000029737",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "la siguiente documentación física en mesa de partes del PMESUT sito en Calle Los Laureles 399, San Isidro - Lima",
+          "CONTRATO N° 038-2026-MCEBS – Contrato de Supervisión"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-032d936d92 + sint-0d6443cb3a"
+    },
+    {
+      "id": "comp-02bbe1c8f5",
+      "pregunta": "¿Cuál es el costo total de la descripción de los proyectos del Programa de Inversión y, además, cuál es la fecha del PROVEIDO 001108-2026-MINEDU-VMGP/UE118/OGA (SGD)?",
+      "historial": [],
+      "ground_truth": "Información complementaria respecto al costo total de la descripción de los proyectos. 04/06/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000005147",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000010705",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Información complementaria respecto al costo total de la descripción de los proyectos.",
+          "04/06/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-12fe23d902 + sint-0aed125789"
+    },
+    {
+      "id": "comp-510cfc2220",
+      "pregunta": "¿Cuál es la fecha de emisión del Proveído N° 002517-2026-OGA-UL y, además, cuál es la fecha de atención para el trámite del contrato de consultoría PE-L1268-P00643-2026-UE.118-PMESTP-CI?",
+      "historial": [],
+      "ground_truth": "15/07/2026 13/05/26",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000027217",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000002734",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Fecha de emisión: 15/07/2026",
+          "PLAZO DE ATENCION 13/05/26"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-1340097a68 + sint-01a3678ce2"
+    },
+    {
+      "id": "comp-c08068cdf8",
+      "pregunta": "¿Cuántos documentos técnicos fueron emitidos en total por la USEI durante abril y mayo de 2026 y, además, cuál es la fecha de elaboración del informe sobre la valorización de obra N°47?",
+      "historial": [],
+      "ground_truth": "22 documentos 29 de Mayo de 2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000005725",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000008677",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Documentos técnicos emitidos (Informes + Comunicaciones Internas + Val. Técnicas)|22 documentos",
+          "Lima, 29 de Mayo de 2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-0ccd43903e + sint-07545a2698"
+    },
+    {
+      "id": "comp-8562979355",
+      "pregunta": "¿Cuál es el número de contrato relacionado con la consultoría de septiembre de 2026 y, además, cuál es la fecha de la carta que envió APCA CONSULTORES ASOCIADOS?",
+      "historial": [],
+      "ground_truth": "Contrato N°135-2026-MCEBS 02 de octubre de 2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000055394",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000058613",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Ref.: Contrato N°135-2026-MCEBS",
+          "Lima, 02 de octubre de 2026. Carta N° 270-2026-RO-CHB-UNIFIEE"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-07705a1402 + sint-145737f629"
+    },
+    {
+      "id": "comp-bb70e6be91",
+      "pregunta": "¿Cuál es la nueva fecha de término del contrato mencionado en el Informe N° 000006-2026-MINEDU-VMGP/UE118/PMESUT-OFGI y, además, cuál es la fecha de la evaluación de la Consultoría Individual N° PE-L1227-P00474?",
+      "historial": [],
+      "ground_truth": "31 de julio de 2026 30/07/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000015876",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000033169",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "ampliación del plazo del mencionado contrato, hasta el 31 de julio de 2026",
+          "30/07/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-0a9787e21f + sint-0bb451bed5"
     }
   ]
 }

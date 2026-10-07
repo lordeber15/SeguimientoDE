@@ -82,3 +82,42 @@ Hit@N bajo = falla la recuperación misma (búsqueda vectorial, FTS o reescritur
 El juez de Ragas usa por defecto el mismo modelo de chat del backend (`OPENAI_*`) y los embeddings de
 Ollama (`bge-m3`). Para cambiarlo: `EVAL_LLM_BASE_URL`, `EVAL_LLM_API_KEY`, `EVAL_LLM_MODEL`,
 `EVAL_EMBED_BASE_URL`, `EVAL_EMBED_MODEL`; con modelos de Ollama como juez, `EVAL_LLM_MODO=md_json`.
+
+## Comparar métodos de rerank (Fase 3)
+
+`--rerank local|cohere|llm|ninguno` sustituye a `RAG_RERANK_PROVIDER` en esa corrida. Con `local`
+desde el host: `docker compose --profile rerank up -d reranker` y `RERANK_URL=http://127.0.0.1:8082`.
+
+```bash
+npm run eval:rag -- --modulo sgd --incluir-borradores --sin-generacion --rerank llm
+npm run eval:rag -- --modulo sgd --incluir-borradores --sin-generacion --rerank local
+```
+
+Al final se imprime la latencia del rerank (p50/p95; el criterio de la fase es p95 < 800 ms en local),
+cuántos casos cayeron al orden de RRF y, con cross-encoder, el puntaje máximo medio de los casos con y
+sin un relevante en el contexto. `RAG_RERANK_UMBRAL` útil queda entre esos dos valores; en cada línea
+de caso, `rr` es su puntaje máximo (`!` = respaldo a RRF). Todo queda también en `config.rerank` de
+`rag.eval_corrida` y en `metricas.rerank` de cada `rag.eval_resultado`.
+
+## Transformación de consultas (Fase 4)
+
+Cada interruptor del módulo (`chat.descomposicion.activa`, `chat.hyde.activo`, editables en el panel
+del RAG) y el vocabulario (`chat.sinonimos`) se pueden forzar en una corrida para compararlos:
+
+```bash
+# Línea de comparación: sin ninguna transformación
+npm run eval:rag -- --modulo sgd --incluir-borradores --sin-generacion --sin-vocabulario --sin-descomposicion --sin-hyde
+# Vocabulario + descomposición (lo que hace el chat por defecto)
+npm run eval:rag -- --modulo sgd --incluir-borradores --sin-generacion --sin-hyde
+# Todo, con HyDE
+npm run eval:rag -- --modulo sgd --incluir-borradores --sin-generacion --hyde
+```
+
+Además del resumen se imprime una tabla **por tipo de caso**: el criterio de la fase es que suban
+`jerga` y `compuesta`, y el promedio general los diluye. En cada línea de caso, `sub N` = se buscó con
+N subconsultas, `H` = con HyDE, `V` = la consulta se expandió con el vocabulario.
+
+Casos compuestos: `npm run eval:rag:semilla -- --modulo sgd --sinteticos 0 --compuestos 10` une pares de
+casos sintéticos en una sola pregunta de dos partes; su "Recall de evidencias" dice si llegaron AMBAS.
+Los casos de jerga no se pueden sintetizar bien: escríbalos a mano (`"tipo": "jerga"`) con la palabra
+que usan los usuarios y no los documentos.

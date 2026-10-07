@@ -1,4 +1,5 @@
 import '../compartido/config/env';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import { QueryTypes, type Sequelize } from 'sequelize';
 import { z } from 'zod';
@@ -24,6 +25,7 @@ import { stdRagSequelize } from '../modulos/std/config/stdRagDatabase';
  *
  *   npm run eval:rag:semilla -- --modulo sgd --sinteticos 40
  *   npm run eval:rag:semilla -- --modulo sgd --sinteticos 0 --historial
+ *   npm run eval:rag:semilla -- --modulo sgd --sinteticos 0 --compuestos 10
  *
  * Dos fuentes:
  * - `--sinteticos N`: N fragmentos reales al azar (uno por documento); el modelo de chat escribe una
@@ -33,6 +35,9 @@ import { stdRagSequelize } from '../modulos/std/config/stdRagDatabase';
  * - `--historial` (solo SGD): preguntas reales del chat que obtuvieron respuesta con citas usadas; los
  *   documentos citados quedan como relevantes y la respuesta que se dio, como `ground_truth`
  *   provisional — es lo que MÁS hay que revisar.
+ * - `--compuestos N` (Fase 4, decomposition): une pares de casos sintéticos de documentos DISTINTOS en
+ *   una sola pregunta con dos partes ("¿…? y además, ¿…?"). Relevantes, evidencias y ground_truth son la
+ *   unión de los dos: el "Recall de evidencias" mide si el retrieval trae AMBAS partes.
  *
  * No toca los casos que ya existen (mismo id = se salta).
  */
@@ -181,6 +186,49 @@ async function desdeHistorial(limite: number): Promise<CasoRag[]> {
   }));
 }
 
+/** Id estable del par: el mismo par no se agrega dos veces aunque se corra la semilla de nuevo. */
+const idCompuesto = (a: CasoRag, b: CasoRag) =>
+  `comp-${createHash('sha256').update(`${a.id}|${b.id}`).digest('hex').slice(0, 10)}`;
+
+/** "Cuál es…" → "cuál es…", salvo siglas o nombres ("IESTP…", "China Civil…": 2.ª letra también mayúscula). */
+const minusculaInicial = (t: string) => (/^\p{Lu}\p{Ll}/u.test(t) ? t[0].toLowerCase() + t.slice(1) : t);
+
+const claveDocumentos = (c: CasoRag) => JSON.stringify(c.relevantes.documentos);
+
+/**
+ * Pares de casos sintéticos (solo de una pregunta, con documento y evidencia) de documentos distintos,
+ * recorridos en orden: el i-ésimo con el (i + mitad)-ésimo, para no repetir el mismo caso en todos.
+ */
+function componerCompuestos(existentes: CasoRag[], n: number): CasoRag[] {
+  const base = existentes.filter((c) => c.origen === 'sintetico' && c.tipo !== 'compuesta'
+    && c.historial.length === 0 && !c.expediente && !c.idDocumento && !c.sin_respuesta
+    && c.relevantes.documentos.length > 0 && c.relevantes.evidencias.length > 0);
+  const mitad = Math.floor(base.length / 2);
+  const pares: CasoRag[] = [];
+  for (let i = 0; i < mitad && pares.length < n; i++) {
+    const a = base[i];
+    const b = base[i + mitad];
+    if (claveDocumentos(a) === claveDocumentos(b)) continue;
+    const sinSigno = (p: string) => p.trim().replace(/^¿/, '').replace(/\?$/, '');
+    pares.push({
+      id: idCompuesto(a, b),
+      pregunta: `¿${sinSigno(a.pregunta)} y, además, ${minusculaInicial(sinSigno(b.pregunta))}?`,
+      historial: [],
+      ground_truth: `${a.ground_truth.trim()} ${b.ground_truth.trim()}`,
+      relevantes: {
+        documentos: [...a.relevantes.documentos, ...b.relevantes.documentos],
+        evidencias: [...a.relevantes.evidencias, ...b.relevantes.evidencias],
+      },
+      sin_respuesta: false,
+      tipo: 'compuesta',
+      origen: 'sintetico',
+      revisado: false,
+      nota: `Compuesto de ${a.id} + ${b.id}`,
+    });
+  }
+  return pares;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const valor = (flag: string) => {
@@ -191,6 +239,7 @@ async function main(): Promise<void> {
   if (!MODULOS.includes(modulo)) throw new Error(`--modulo debe ser ${MODULOS.join(' o ')}`);
   const sinteticos = Math.max(0, Number(valor('--sinteticos') ?? 20) || 0);
   const conHistorial = argv.includes('--historial');
+  const compuestos = Math.max(0, Number(valor('--compuestos') ?? 0) || 0);
   if (conHistorial && modulo !== 'sgd') throw new Error('--historial solo aplica al SGD (el chat del STD aún no tiene historial útil)');
 
   const archivo = rutaCasos(modulo);
@@ -231,6 +280,12 @@ async function main(): Promise<void> {
       }
     }
     console.log(`Sintéticos: ${generados} generados, ${descartados} descartados (sin dato o evidencia no literal).`);
+  }
+
+  if (compuestos > 0) {
+    const pares = componerCompuestos([...existentes, ...nuevos], compuestos);
+    const agregados = pares.filter(agregar).length;
+    console.log(`Compuestos: ${agregados} casos nuevos (de ${pares.length} pares posibles).`);
   }
 
   const salida = esquemaArchivoCasos.parse({ modulo, casos: [...existentes, ...nuevos] });

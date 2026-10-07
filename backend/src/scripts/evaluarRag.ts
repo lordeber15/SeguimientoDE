@@ -4,7 +4,12 @@ import fs from 'fs';
 import path from 'path';
 import { QueryTypes, type Sequelize } from 'sequelize';
 import { appSequelize } from '../compartido/config/appDatabase';
-import { crearChatProvider, proveedorEmbeddingConfigurado } from '../compartido/ai/providerFactory';
+import {
+  crearChatProvider,
+  crearChatProviderRapido,
+  METODOS_RERANK,
+  proveedorEmbeddingConfigurado,
+} from '../compartido/ai/providerFactory';
 import type { ChatProvider, ResultadoChat } from '../compartido/ai/types';
 import { leerParametros, prepararTerminos, terminosDelPlan } from '../compartido/rag/busquedaTerminos';
 import { mensajeFijo } from '../compartido/rag/cierreChat';
@@ -25,6 +30,8 @@ import {
   type MetricasCaso,
   type ModuloEval,
 } from '../compartido/rag/evaluacionRag';
+import { configRerank } from '../compartido/rag/rerankService';
+import { CLAVE_DESCOMPOSICION, CLAVE_HYDE, type Transformaciones } from '../compartido/rag/transformacionConsulta';
 import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../compartido/rag/planificadorService';
 import { generarRespuesta, recuperarContexto } from '../modulos/sgd/rag/chatService';
 import { stdRagSequelize } from '../modulos/std/config/stdRagDatabase';
@@ -44,7 +51,10 @@ import { generarRespuestaStd, recuperarContextoStd } from '../modulos/std/rag/ch
  *   npm run eval:rag -- --modulo sgd --aceptar          # marca la corrida como nueva línea base
  *
  * Opciones: --incluir-borradores (también casos sin revisar), --archivo <ruta> (otro dataset),
- * --tolerancia 0.05 (caída máxima admitida por métrica), --no-fallar (exit 0 aunque haya regresión).
+ * --tolerancia 0.05 (caída máxima admitida por métrica), --no-fallar (exit 0 aunque haya regresión),
+ * --rerank local|cohere|llm|ninguno (sustituye a RAG_RERANK_PROVIDER, para comparar métodos — Fase 3),
+ * --hyde / --sin-hyde, --sin-descomposicion, --sin-vocabulario (sustituyen a los interruptores del
+ * módulo para comparar las transformaciones de la consulta — Fase 4).
  *
  * Escribe la corrida en `rag.eval_corrida` / `rag.eval_resultado` (BD propia) y exporta
  * `evals/salidas/<modulo>-<id>.json` con el esquema {question, contexts, answer, ground_truth} que
@@ -61,6 +71,20 @@ interface Opciones {
   noFallar: boolean;
   tolerancia: number;
   archivo: string | null;
+  rerank: string | null;
+  /** `null` = lo que diga `chat.hyde.activo` del módulo. */
+  hyde: boolean | null;
+  sinDescomposicion: boolean;
+  sinVocabulario: boolean;
+}
+
+/** Lo que se resuelve una vez por corrida y comparten todos los casos. */
+interface EntornoEval {
+  provider: ChatProvider;
+  rapido: ChatProvider;
+  planificadorActivo: boolean;
+  hyde: boolean;
+  descomposicion: boolean;
 }
 
 function leerOpciones(argv: string[]): Opciones {
@@ -81,6 +105,16 @@ function leerOpciones(argv: string[]): Opciones {
     noFallar: argv.includes('--no-fallar'),
     tolerancia,
     archivo: valor('--archivo'),
+    rerank: (() => {
+      const r = valor('--rerank');
+      if (r !== null && !(METODOS_RERANK as readonly string[]).includes(r)) {
+        throw new Error(`--rerank debe ser ${METODOS_RERANK.join(', ')}`);
+      }
+      return r;
+    })(),
+    hyde: argv.includes('--hyde') ? true : argv.includes('--sin-hyde') ? false : null,
+    sinDescomposicion: argv.includes('--sin-descomposicion'),
+    sinVocabulario: argv.includes('--sin-vocabulario'),
   };
 }
 
@@ -88,7 +122,13 @@ function leerOpciones(argv: string[]): Opciones {
 interface AdaptadorModulo {
   db: Sequelize;
   resolverShas(caso: CasoRag): Promise<Set<string>>;
-  ejecutar(provider: ChatProvider, caso: CasoRag, consulta: string, terminosFts: string[] | undefined): Promise<{
+  ejecutar(
+    provider: ChatProvider,
+    caso: CasoRag,
+    consulta: string,
+    terminosFts: string[] | undefined,
+    transformaciones: Transformaciones,
+  ): Promise<{
     candidatos: FragmentoEvaluado[];
     contexto: FragmentoEvaluado[];
     /** El modelo no se llama si no hay contexto (igual que el chat, que responde el mensaje fijo). */
@@ -99,8 +139,24 @@ interface AdaptadorModulo {
      *  de embeddings inaccesible o sin modelo activo) y el caso no mide el híbrido. */
     candidatosVec: number;
     candidatosFts: number;
+    rerank: RerankCaso;
+    usoHyde: ResultadoChat['uso'] | null;
+    transformacion: { subconsultas: number; hyde: boolean; vocabulario: boolean };
   }>;
 }
+
+/** Del rerank de cada caso: con qué latencia corrió, si cayó al orden de RRF y el mejor puntaje del
+ *  cross-encoder (sirve para calibrar RAG_RERANK_UMBRAL comparando casos con y sin acierto). */
+interface RerankCaso {
+  ms: number;
+  respaldo: boolean;
+  puntajeMax: number | null;
+  bajoUmbral: number;
+}
+
+const resumenRerank = (r: { ms: number; respaldo?: true; puntajeMax?: number; bajoUmbral: number }): RerankCaso => ({
+  ms: r.ms, respaldo: r.respaldo === true, puntajeMax: r.puntajeMax ?? null, bajoUmbral: r.bajoUmbral,
+});
 
 const adaptadorSgd: AdaptadorModulo = {
   db: appSequelize,
@@ -118,8 +174,9 @@ const adaptadorSgd: AdaptadorModulo = {
     }
     return shas;
   },
-  async ejecutar(provider, caso, consulta, terminosFts) {
+  async ejecutar(provider, caso, consulta, terminosFts, transformaciones) {
     const ctx = await recuperarContexto(provider, {
+      transformaciones,
       consulta,
       // La evaluación mide el corpus completo: sin filtro de dependencia (como admin/jefe).
       filtro: { coDependencia: null },
@@ -134,6 +191,9 @@ const adaptadorSgd: AdaptadorModulo = {
       usoRerank: ctx.usoRerank,
       candidatosVec: ctx.resultado.candidatosVec,
       candidatosFts: ctx.resultado.candidatosFts,
+      rerank: resumenRerank(ctx.rerank),
+      usoHyde: ctx.usoHyde,
+      transformacion: ctx.transformacion,
       generar: async () => {
         const r = await generarRespuesta(provider, {
           timeline: ctx.timeline, citas: ctx.citas, historial: caso.historial, mensaje: caso.pregunta,
@@ -161,8 +221,8 @@ const adaptadorStd: AdaptadorModulo = {
     }
     return shas;
   },
-  async ejecutar(provider, caso, consulta, terminosFts) {
-    const ctx = await recuperarContextoStd(provider, { consulta, idDocumento: caso.idDocumento, terminosFts });
+  async ejecutar(provider, caso, consulta, terminosFts, transformaciones) {
+    const ctx = await recuperarContextoStd(provider, { consulta, idDocumento: caso.idDocumento, terminosFts, transformaciones });
     const shaPorChunk = new Map(ctx.chunksAcotados.map((c) => [c.chunkId, c.sha256]));
     const hayLineaTiempo = Boolean(ctx.timeline && (ctx.timeline.movimientos.length > 0 || ctx.timeline.referencias.length > 0));
     return {
@@ -172,6 +232,9 @@ const adaptadorStd: AdaptadorModulo = {
       usoRerank: ctx.usoRerank,
       candidatosVec: ctx.resultado.candidatosVec,
       candidatosFts: ctx.resultado.candidatosFts,
+      rerank: resumenRerank(ctx.rerank),
+      usoHyde: ctx.usoHyde,
+      transformacion: ctx.transformacion,
       generar: async () => {
         const r = await generarRespuestaStd(provider, {
           timeline: ctx.timeline, citas: ctx.citas, historial: caso.historial, mensaje: caso.pregunta,
@@ -192,6 +255,8 @@ interface ResultadoCaso {
   ms: number;
   candidatosVec: number | null;
   candidatosFts: number | null;
+  rerank: RerankCaso | null;
+  transformacion: { subconsultas: number; hyde: boolean; vocabulario: boolean } | null;
   tokensIn: number;
   tokensOut: number;
   error: string | null;
@@ -199,11 +264,11 @@ interface ResultadoCaso {
 
 async function evaluarCaso(
   adaptador: AdaptadorModulo,
-  provider: ChatProvider,
+  entorno: EntornoEval,
   caso: CasoRag,
   opciones: Opciones,
-  planificadorActivo: boolean,
 ): Promise<ResultadoCaso> {
+  const { provider, rapido, planificadorActivo } = entorno;
   const inicio = Date.now();
   let tokensIn = 0;
   let tokensOut = 0;
@@ -223,22 +288,30 @@ async function evaluarCaso(
     }
 
     if (planificadorActivo) {
-      planificador = await planificar(provider, caso.pregunta, {
+      planificador = await planificar(rapido, caso.pregunta, {
         modo: caso.expediente || caso.idDocumento ? 'expediente' : 'general',
         historial: caso.historial,
-      });
+      }, provider);
       sumar(planificador.uso);
     }
     // Igual que el chat: con el plan de respaldo no hay reescritura confiable, se busca el texto literal.
     const plan = planificador?.plan ?? planDeRespaldo(caso.pregunta);
     const planConfiable = planificador !== null && !planificador.respaldo;
     const consulta = planConfiable ? plan.consulta : caso.pregunta;
+    const parametros = await leerParametros(adaptador.db);
     const terminosFts = planConfiable
-      ? prepararTerminos(terminosDelPlan(plan), plan, await leerParametros(adaptador.db)).consultas
+      ? prepararTerminos(terminosDelPlan(plan), plan, parametros).consultas
       : undefined;
+    // Igual que `transformacionesDelTurno` del chat, pero con los interruptores de la corrida.
+    const transformaciones: Transformaciones = {
+      sinonimos: opciones.sinVocabulario ? undefined : parametros.sinonimos,
+      subconsultas: planConfiable && entorno.descomposicion ? plan.subconsultas : [],
+      hyde: planConfiable && entorno.hyde ? rapido : null,
+    };
 
-    const r = await adaptador.ejecutar(provider, caso, consulta, terminosFts);
+    const r = await adaptador.ejecutar(provider, caso, consulta, terminosFts, transformaciones);
     sumar(r.usoRerank);
+    sumar(r.usoHyde);
 
     let respuesta: string | null = null;
     let marcadores = 0;
@@ -265,6 +338,8 @@ async function evaluarCaso(
       ms: Date.now() - inicio,
       candidatosVec: r.candidatosVec,
       candidatosFts: r.candidatosFts,
+      rerank: r.rerank,
+      transformacion: r.transformacion,
       tokensIn,
       tokensOut,
       error: null,
@@ -272,7 +347,7 @@ async function evaluarCaso(
   } catch (e) {
     return {
       caso, metricas: null, intencion: planificador?.plan.intencion ?? null, consulta: caso.pregunta,
-      contextos: [], respuesta: null, ms: Date.now() - inicio, candidatosVec: null, candidatosFts: null, tokensIn, tokensOut,
+      contextos: [], respuesta: null, ms: Date.now() - inicio, candidatosVec: null, candidatosFts: null, rerank: null, transformacion: null, tokensIn, tokensOut,
       error: (e instanceof Error ? e.message : String(e)).slice(0, 500),
     };
   }
@@ -322,7 +397,7 @@ async function guardarCorrida(datos: {
           bind: [
             fila.id, r.caso.id, JSON.stringify({
               ...r.metricas, candidatosVec: r.candidatosVec, candidatosFts: r.candidatosFts,
-              tokensIn: r.tokensIn, tokensOut: r.tokensOut,
+              tokensIn: r.tokensIn, tokensOut: r.tokensOut, rerank: r.rerank, transformacion: r.transformacion,
             }),
             r.intencion, r.consulta, r.respuesta, r.ms, r.error,
           ],
@@ -374,6 +449,60 @@ function imprimirResumen(agregadas: MetricasAgregadas, base: MetricasAgregadas |
     + `${agregadas.msPromedio} ms por caso`);
 }
 
+function percentil(valores: number[], p: number): number | null {
+  if (valores.length === 0) return null;
+  const orden = [...valores].sort((a, b) => a - b);
+  return orden[Math.min(orden.length - 1, Math.ceil(p * orden.length) - 1)];
+}
+
+const media = (v: number[]) => (v.length === 0 ? null : v.reduce((a, b) => a + b, 0) / v.length);
+
+/**
+ * Latencia del rerank (criterio de la Fase 3: p95 < 800 ms en local) y, con cross-encoder, el
+ * puntaje máximo medio de los casos con y sin un relevante en el contexto: el umbral útil queda
+ * entre ambos. Devuelve lo mismo para guardarlo en la config de la corrida.
+ */
+function imprimirRerank(metodo: string, resultados: ResultadoCaso[]): Record<string, number | null> {
+  const ok = resultados.filter((r) => r.rerank);
+  const ms = ok.map((r) => r.rerank!.ms);
+  const respaldos = ok.filter((r) => r.rerank!.respaldo).length;
+  const puntaje = (acierto: boolean) => media(ok
+    .filter((r) => r.metricas?.etiquetado && r.metricas.hitK === (acierto ? 1 : 0) && r.rerank!.puntajeMax !== null)
+    .map((r) => r.rerank!.puntajeMax!));
+  const e = {
+    msP50: percentil(ms, 0.5), msP95: percentil(ms, 0.95), respaldos,
+    puntajeMaxConAcierto: puntaje(true), puntajeMaxSinAcierto: puntaje(false),
+  };
+  const fmt = (v: number | null, d = 3) => (v === null ? '—' : v.toFixed(d));
+  console.log(`Rerank ${metodo}: p50 ${fmt(e.msP50, 0)} ms · p95 ${fmt(e.msP95, 0)} ms · respaldos a RRF ${respaldos}/${ok.length}`);
+  if (e.puntajeMaxConAcierto !== null || e.puntajeMaxSinAcierto !== null) {
+    console.log(`  puntaje máx. medio — con acierto @K ${fmt(e.puntajeMaxConAcierto)} · sin acierto ${fmt(e.puntajeMaxSinAcierto)}`);
+  }
+  return e;
+}
+
+/**
+ * Métricas por tipo de caso (factual, jerga, compuesta…): el criterio de la Fase 4 es que suban los de
+ * jerga y los compuestos, y un promedio global los esconde entre los factuales.
+ */
+function imprimirPorTipo(resultados: ResultadoCaso[]): Record<string, { n: number; hitN: number | null; hitK: number | null; recallEvidencias: number | null }> {
+  const tipos = [...new Set(resultados.map((r) => r.caso.tipo))].sort();
+  const salida: Record<string, { n: number; hitN: number | null; hitK: number | null; recallEvidencias: number | null }> = {};
+  if (tipos.length <= 1) return salida;
+  console.log('\nPor tipo de caso              n   hit@N   hit@K   recall evid.');
+  for (const tipo of tipos) {
+    const del = resultados.filter((r) => r.caso.tipo === tipo);
+    const prom = (f: (m: MetricasCaso) => number | null) => {
+      const v = del.map((r) => (r.metricas ? f(r.metricas) : null)).filter((x): x is number => x !== null);
+      return v.length === 0 ? null : v.reduce((a, b) => a + b, 0) / v.length;
+    };
+    const fila = { n: del.length, hitN: prom((m) => m.hitN), hitK: prom((m) => m.hitK), recallEvidencias: prom((m) => m.recallEvidencias) };
+    salida[tipo] = fila;
+    console.log(`${tipo.padEnd(26)} ${String(fila.n).padStart(4)}  ${pct(fila.hitN)} ${pct(fila.hitK)} ${pct(fila.recallEvidencias)}`);
+  }
+  return salida;
+}
+
 async function main(): Promise<number> {
   const opciones = leerOpciones(process.argv.slice(2));
   const archivo = opciones.archivo ?? rutaCasos(opciones.modulo);
@@ -389,21 +518,35 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  // Antes de cualquier llamada: `configRerank()` lee el entorno en cada rerank.
+  if (opciones.rerank) process.env.RAG_RERANK_PROVIDER = opciones.rerank;
   const adaptador = opciones.modulo === 'sgd' ? adaptadorSgd : adaptadorStd;
   const provider = crearChatProvider();
-  const planificadorActivo = await leerBooleano('chat.planificador.activo', true, adaptador.db);
+  const entorno: EntornoEval = {
+    provider,
+    rapido: crearChatProviderRapido() ?? provider,
+    planificadorActivo: await leerBooleano('chat.planificador.activo', true, adaptador.db),
+    hyde: opciones.hyde ?? await leerBooleano(CLAVE_HYDE, false, adaptador.db),
+    descomposicion: !opciones.sinDescomposicion && await leerBooleano(CLAVE_DESCOMPOSICION, true, adaptador.db),
+  };
+  const { planificadorActivo } = entorno;
 
   console.log(`Evaluando ${casos.length} casos del ${opciones.modulo.toUpperCase()} con ${provider.nombre}/${provider.modelo}`
-    + `${opciones.sinGeneracion ? ' (sin generación)' : ''}…\n`);
+    + `, rerank ${configRerank().metodo}, planificador ${entorno.rapido.modelo}`
+    + `, HyDE ${entorno.hyde ? 'sí' : 'no'}, subconsultas ${entorno.descomposicion ? 'sí' : 'no'}`
+    + `, vocabulario ${opciones.sinVocabulario ? 'no' : 'sí'}${opciones.sinGeneracion ? ' (sin generación)' : ''}…\n`);
 
   const resultados: ResultadoCaso[] = [];
   for (const caso of casos) {
-    const r = await evaluarCaso(adaptador, provider, caso, opciones, planificadorActivo);
+    const r = await evaluarCaso(adaptador, entorno, caso, opciones);
     resultados.push(r);
     const m = r.metricas;
     const marca = r.error ? 'ERR' : !m?.etiquetado ? ' · ' : m.hitK ? 'OK ' : m.hitN ? '~  ' : 'MAL';
     console.log(`${marca} ${caso.id.padEnd(32)} hit@N ${pct(m?.hitN)} hit@K ${pct(m?.hitK)} `
-      + `mrr ${pct(m?.mrr)} vec ${r.candidatosVec ?? '-'} fts ${r.candidatosFts ?? '-'} [${r.intencion ?? '-'}] ${r.ms} ms${r.error ? `  ${r.error}` : ''}`);
+      + `mrr ${pct(m?.mrr)} vec ${r.candidatosVec ?? '-'} fts ${r.candidatosFts ?? '-'} `
+      + `rr ${r.rerank?.puntajeMax?.toFixed(3) ?? '-'}${r.rerank?.respaldo ? '!' : ''} `
+      + `${r.transformacion?.subconsultas ? `sub ${r.transformacion.subconsultas} ` : ''}${r.transformacion?.hyde ? 'H ' : ''}`
+      + `${r.transformacion?.vocabulario ? 'V ' : ''}[${r.intencion ?? '-'}] ${r.ms} ms${r.error ? `  ${r.error}` : ''}`);
   }
 
   const agregadas = agregarMetricas(resultados);
@@ -414,6 +557,9 @@ async function main(): Promise<number> {
   }
   const base = await lineaBase(opciones.modulo);
   imprimirResumen(agregadas, base?.metricas ?? null);
+  const rerank = configRerank();
+  const estadisticasRerank = imprimirRerank(rerank.metodo, resultados);
+  const porTipo = imprimirPorTipo(resultados);
 
   const regresiones = base
     ? detectarRegresiones(
@@ -427,10 +573,14 @@ async function main(): Promise<number> {
     chat: { proveedor: provider.nombre, modelo: provider.modelo },
     embeddings: proveedorEmbeddingConfigurado(),
     planificador: planificadorActivo,
+    modeloPlanificador: { proveedor: entorno.rapido.nombre, modelo: entorno.rapido.modelo },
+    transformaciones: { hyde: entorno.hyde, descomposicion: entorno.descomposicion, vocabulario: !opciones.sinVocabulario },
+    porTipo,
     sinGeneracion: opciones.sinGeneracion,
     incluirBorradores: opciones.incluirBorradores,
     ids: opciones.ids,
     presupuestoTokens: Number(process.env.RAG_CHAT_PRESUPUESTO_TOKENS ?? 3000),
+    rerank: { ...rerank, ...estadisticasRerank },
     dataset: path.relative(DIR_EVALS, archivo),
   };
   const corridaId = await guardarCorrida({ opciones, config, agregadas, resultados, aceptada: opciones.aceptar });

@@ -1,11 +1,19 @@
 import { QueryTypes } from 'sequelize';
 import { appSequelize } from '../../../compartido/config/appDatabase';
-import { chatDisponible, crearChatProvider } from '../../../compartido/ai/providerFactory';
+import { chatDisponible, crearChatProvider, crearChatProviderRapido } from '../../../compartido/ai/providerFactory';
 import type { ChatProvider, MensajeChat, ResultadoChat } from '../../../compartido/ai/types';
 import { filtroGratis, mensajeFijo, type MotivoFijo } from '../../../compartido/rag/cierreChat';
 import { leerBooleano } from '../../../compartido/rag/configService';
 import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../../../compartido/rag/planificadorService';
-import { rerankear } from '../../../compartido/rag/rerankService';
+import { rerankear, type ResultadoRerank } from '../../../compartido/rag/rerankService';
+import { terminosDeConsulta } from '../../../compartido/rag/busquedaTerminos';
+import {
+  combinarBusquedas,
+  expandirConVocabulario,
+  generarHyde,
+  transformacionesDelTurno,
+  type Transformaciones,
+} from '../../../compartido/rag/transformacionConsulta';
 import { avisarMarcadoresAlucinados } from '../../../compartido/observabilidad/alertas';
 import { enTraza, evento, paso, trazaActual, type Traza } from '../../../compartido/observabilidad/traza';
 import { leerParametros, prepararTerminos, terminosDelPlan } from './busquedaExpedientesService';
@@ -27,7 +35,9 @@ import {
   buscarHibrido,
   elegirDocumentoParaCita,
   estadoExpediente,
+  LIMITE_RESULTADO,
   recortarPorPresupuesto,
+  TOPE_POR_DOCUMENTO,
   type FiltroAcceso,
   type LineaTiempo,
   type ChunkRecuperado,
@@ -342,7 +352,7 @@ async function registrarRetrieval(datos: {
  * `ingest_job` que lo posea, es una llamada disparada por el usuario, no por un job de fondo. */
 async function registrarUsoToken(
   provider: ChatProvider,
-  operacion: 'chat' | 'chat_rerank' | 'chat_planificador',
+  operacion: 'chat' | 'chat_rerank' | 'chat_planificador' | 'chat_hyde',
   uso: ResultadoChat['uso'],
 ): Promise<void> {
   await appSequelize.query(
@@ -511,6 +521,12 @@ export interface ContextoRecuperado {
   chunksAcotados: ChunkRecuperado[];
   citas: CitaPendiente[];
   usoRerank: ResultadoChat['uso'] | null;
+  /** Tokens de HyDE (modelo rápido), para `rag.uso_token`. */
+  usoHyde: ResultadoChat['uso'] | null;
+  /** Qué transformaciones de la consulta se aplicaron (Fase 4). */
+  transformacion: { subconsultas: number; hyde: boolean; vocabulario: boolean };
+  /** Cómo se reordenó: método, si cayó al orden de RRF y el puntaje del cross-encoder (si lo hubo). */
+  rerank: Omit<ResultadoRerank, 'chunks' | 'uso' | 'puntajes'> & { ms: number };
 }
 
 /**
@@ -528,18 +544,36 @@ export async function recuperarContexto(
     /** Términos del plan (con sus sinónimos) para la rama FTS: la consulta reescrita completa es
      *  demasiado estricta para plainto_tsquery. */
     terminosFts?: string[];
+    /** Fase 4: subconsultas del plan, HyDE y vocabulario de dominio. */
+    transformaciones?: Transformaciones;
   },
 ): Promise<ContextoRecuperado> {
-  const { consulta, filtro, expediente, conjunto, terminosFts } = opciones;
+  const { consulta, filtro, expediente, conjunto, terminosFts, transformaciones: t = {} } = opciones;
+  const subconsultas = t.subconsultas ?? [];
 
-  const [resultado, timeline] = await Promise.all([
-    expediente
-      ? buscarHibrido(consulta, filtro, expediente, undefined, terminosFts)
-      : buscarHibrido(consulta, filtro, undefined, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO), terminosFts),
+  // HyDE va antes de buscar (su vector entra en el RRF de la consulta completa); el resto, en paralelo.
+  const hyde = t.hyde ? await generarHyde(t.hyde, consulta) : null;
+  const textoHyde = hyde?.texto ?? null;
+  const buscar = (q: string, terminos: string[] | undefined, hyde: string | null) => {
+    const extra = { consultaVectorial: t.sinonimos ? expandirConVocabulario(q, t.sinonimos) : undefined, textoHyde: hyde };
+    return expediente
+      ? buscarHibrido(q, filtro, expediente, undefined, terminos, extra)
+      : buscarHibrido(q, filtro, undefined, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO), terminos, extra);
+  };
+
+  const [principal, timeline, ...porSubconsulta] = await Promise.all([
+    buscar(consulta, terminosFts, textoHyde),
     expediente ? estadoExpediente(expediente.nuAnnExp, expediente.nuSecExp) : Promise.resolve(null),
-  ]);
+    // Cada subconsulta con sus propias palabras en la FTS: los términos del plan son de la pregunta entera.
+    ...subconsultas.map((q) => buscar(q, terminosDeConsulta(q), null)),
+  ]) as [ResultadoBusqueda, LineaTiempo[] | null, ...ResultadoBusqueda[]];
+  const resultado = combinarBusquedas([principal, ...porSubconsulta], {
+    limite: LIMITE_RESULTADO, topePorDocumento: TOPE_POR_DOCUMENTO,
+  });
 
+  const inicioRerank = Date.now();
   const rerank = await rerankear(provider, consulta, resultado.chunks);
+  const msRerank = Date.now() - inicioRerank;
   const chunksAcotados = recortarPorPresupuesto(rerank.chunks, PRESUPUESTO_TOKENS_CONTEXTO);
 
   const citas: CitaPendiente[] = [];
@@ -561,7 +595,17 @@ export async function recuperarContexto(
     });
   }
 
-  return { resultado, timeline, chunksAcotados, citas, usoRerank: rerank.uso };
+  return {
+    resultado, timeline, chunksAcotados, citas, usoRerank: rerank.uso, usoHyde: hyde?.uso ?? null,
+    transformacion: {
+      subconsultas: subconsultas.length,
+      hyde: textoHyde !== null,
+      vocabulario: t.sinonimos !== undefined && expandirConVocabulario(consulta, t.sinonimos) !== consulta,
+    },
+    rerank: {
+      metodo: rerank.metodo, respaldo: rerank.respaldo, puntajeMax: rerank.puntajeMax, bajoUmbral: rerank.bajoUmbral, ms: msRerank,
+    },
+  };
 }
 
 /**
@@ -617,6 +661,8 @@ async function responderChatEnTraza(p: PeticionChat, traza: Traza): Promise<Resp
   // Un solo proveedor para todo el turno (rerank + respuesta): evita instanciarlo dos veces y dos
   // configuraciones que en teoría deberían ser la misma pero, tras un cambio de `.env`, no lo son.
   const provider = crearChatProvider();
+  // Modelo rápido (Fase 4) para el planificador y HyDE; sin configurar, el mismo de chat.
+  const rapido = crearChatProviderRapido() ?? provider;
 
   const inicio = Date.now();
   const sesion = await obtenerOCrearSesion(p);
@@ -638,8 +684,10 @@ async function responderChatEnTraza(p: PeticionChat, traza: Traza): Promise<Resp
   // `contenido` y no se gasta la llamada.
   let planificador: ResultadoPlanificador | null = null;
   if (await leerBooleano('chat.planificador.activo', true)) {
-    planificador = await planificar(provider, p.mensaje, { modo: p.modo, historial: historialPrevio });
-    if (planificador.uso) await registrarUsoToken(provider, 'chat_planificador', planificador.uso);
+    planificador = await planificar(rapido, p.mensaje, { modo: p.modo, historial: historialPrevio }, provider);
+    if (planificador.uso) {
+      await registrarUsoToken(planificador.modelo === rapido.modelo ? rapido : provider, 'chat_planificador', planificador.uso);
+    }
   }
   const plan = planificador?.plan ?? planDeRespaldo(p.mensaje);
   if (plan.intencion === 'fuera_de_alcance') return fijo('fuera_de_alcance', planificador);
@@ -718,18 +766,21 @@ async function responderChatEnTraza(p: PeticionChat, traza: Traza): Promise<Resp
     return { sesionId: sesion.id, mensajeId, tipo: 'tabla', texto, tabla: listado.tabla, ...sinModelo };
   }
 
+  const parametros = await leerParametros();
   const terminosFts = planConfiable
-    ? prepararTerminos(terminosDelPlan(plan), plan, await leerParametros()).consultas
+    ? prepararTerminos(terminosDelPlan(plan), plan, parametros).consultas
     : undefined;
 
-  const { resultado, timeline, chunksAcotados, citas, usoRerank } = await recuperarContexto(provider, {
+  const { resultado, timeline, chunksAcotados, citas, usoRerank, usoHyde } = await recuperarContexto(provider, {
     consulta: consultaBusqueda,
     filtro,
     expediente: p.modo === 'expediente' ? p.expediente : undefined,
     conjunto,
     terminosFts,
+    transformaciones: await transformacionesDelTurno(planConfiable ? plan : null, rapido, parametros.sinonimos),
   });
   if (usoRerank) await registrarUsoToken(provider, 'chat_rerank', usoRerank);
+  if (usoHyde) await registrarUsoToken(rapido, 'chat_hyde', usoHyde);
 
   // [3] Sin nada que sostenga una respuesta (ni fragmentos ni línea de tiempo del expediente), no
   // se le pregunta al modelo: solo podría adivinar o repetir que no sabe, y cobrando por ello.

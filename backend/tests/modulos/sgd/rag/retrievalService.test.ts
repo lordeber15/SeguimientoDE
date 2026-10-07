@@ -174,7 +174,26 @@ describe('buscarHibrido — guardarraíl exacto/HNSW', () => {
     expect(indice('count(*)::int AS n')).toBeLessThan(off);
     expect(off).toBeLessThan(vectorial);
     expect(on).toBeGreaterThan(vectorial);
-    expect(on).toBeLessThan(indice('plainto_tsquery')); // el FTS sí usa sus índices
+    // El FTS sí usa sus índices: corre en paralelo, en otra conexión, fuera de la transacción del SET LOCAL.
+    const fts = query.mock.calls.find(([sql]) => String(sql).includes('plainto_tsquery'));
+    expect(fts?.[1]?.transaction).toBeUndefined();
+  });
+
+  it('las dos ramas se lanzan en paralelo: el FTS no espera a que termine la vectorial', async () => {
+    let soltarVectorial: (filas: FilaMock[]) => void = () => undefined;
+    instalarRamas({ fts: [{ chunk_id: 2 }], detalles: { 2: { texto: 't', ruta_titulos: null, ord: 0, sha256: 's2' } } });
+    const base = query.getMockImplementation()!;
+    query.mockImplementation((sql: string, ...resto: unknown[]) => (String(sql).includes('rag.embedding_')
+      ? new Promise((r) => { soltarVectorial = r; })
+      : base(sql, ...resto)));
+
+    const busqueda = retrieval.buscarHibrido('consulta', { coDependencia: null });
+    await new Promise((r) => setImmediate(r));
+    expect(sqls().some((s) => s.includes('plainto_tsquery'))).toBe(true);
+
+    soltarVectorial([]);
+    const r = await busqueda;
+    expect(r.candidatosFts).toBe(1);
   });
 
   it('filtro sobre el umbral: HNSW iterativo, no exacto', async () => {

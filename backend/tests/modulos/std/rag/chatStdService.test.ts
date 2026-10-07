@@ -23,6 +23,10 @@ const guardados: string[] = [];
 jest.mock('../../../../src/compartido/ai/providerFactory', () => ({
   chatDisponible: (...a: unknown[]) => chatDisponible(...a),
   crearChatProvider: () => ({ nombre: 'openai', modelo: 'gpt-4o-mini', responder: (...a: unknown[]) => responder(...a) }),
+  // Rerank por LLM (el valor por defecto): usa el mismo `responder` mockeado.
+  metodoRerankConfigurado: () => 'llm',
+  crearRerankProvider: () => null,
+  crearChatProviderRapido: () => null,
 }));
 
 jest.mock('../../../../src/modulos/std/rag/retrievalStdService', () => ({
@@ -94,7 +98,8 @@ beforeEach(() => {
   buscarHibridoStd.mockReset().mockResolvedValue({ chunks: [], candidatosVec: 0, candidatosFts: 0, escaneoExacto: true });
   elegirDocumentoParaCitaStd.mockReset().mockResolvedValue(null);
   lineaTiempoStd.mockReset().mockResolvedValue({ movimientos: [], referencias: [] });
-  leerBooleano.mockReset().mockResolvedValue(true);
+  // Todo encendido salvo HyDE, que arranca apagado (migración 026): sumaría una llamada al modelo.
+  leerBooleano.mockReset().mockImplementation((clave: string) => Promise.resolve(clave !== 'chat.hyde.activo'));
   planificar.mockReset().mockImplementation((_p: unknown, mensaje: string) => Promise.resolve({
     plan: planDeRespaldo(mensaje), uso: null, respaldo: false, ms: 1,
   }));
@@ -205,6 +210,7 @@ describe('responderChatStd — contenido', () => {
     expect(r.tipo).toBe('texto');
     expect(buscarHibridoStd).toHaveBeenCalledWith(
       'ampliación de plazo del contrato 227-2022-MCEBS', undefined, undefined, ['ampliación de plazo'],
+      { consultaVectorial: 'ampliación de plazo del contrato 227-2022-MCEBS', textoHyde: null },
     );
     expect(r.citas).toHaveLength(1);
     expect(guardados).toEqual(['pendiente']);

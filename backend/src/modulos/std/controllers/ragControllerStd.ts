@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { crearEmbeddingProvider } from '../../../compartido/ai/providerFactory';
 import { ErrorIA } from '../../../compartido/ai/types';
 import { barrerStd, BarridoStdOcupado } from '../rag/barridoStdService';
-import { escribirConfig, listarConfig } from '../../../compartido/rag/configService';
+import { CLAVES_CHAT_EDITABLES, escribirConfig, listarConfig, validarValorConfig } from '../../../compartido/rag/configService';
 import {
   activarModelo,
   listarModelos,
@@ -254,6 +254,7 @@ const CLAVES_EDITABLES = new Set([
   'rag.retencion.dias',
   'rag.gc.activo',
   'rag.gc.gracia_dias',
+  ...CLAVES_CHAT_EDITABLES,
 ]);
 
 export async function getConfig(_req: Request, res: Response) {
@@ -274,6 +275,8 @@ export async function putConfig(req: Request, res: Response) {
   if (typeof valor !== 'string' && typeof valor !== 'boolean' && typeof valor !== 'number') {
     return res.status(400).json({ message: 'Se espera "valor"' });
   }
+  const invalido = validarValorConfig(clave, String(valor));
+  if (invalido) return res.status(400).json({ message: invalido });
 
   try {
     await escribirConfig(clave, String(valor), req.usuario!.codUser, stdRagSequelize);

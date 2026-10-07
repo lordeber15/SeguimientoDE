@@ -83,7 +83,11 @@ const esquemaPlan = z.object({
       actual: v?.actual ?? false,
     })),
   continua_anterior: z.boolean().nullish().transform((v) => v ?? false),
+  subconsultas: listaTerminos,
 });
+
+/** Tope de subconsultas: cada una es un retrieval completo en paralelo (2 conexiones + un embedding). */
+export const MAX_SUBCONSULTAS = 3;
 
 export interface PlanConsulta {
   intencion: Intencion;
@@ -102,6 +106,9 @@ export interface PlanConsulta {
     actual: boolean;
   };
   continuaAnterior: boolean;
+  /** Pregunta compuesta (Fase 4, decomposition): una pregunta autónoma por cada cosa que pide, máx.
+   *  `MAX_SUBCONSULTAS`. Vacío si es simple: entonces se busca solo `consulta`. */
+  subconsultas: string[];
 }
 
 export interface ResultadoPlanificador {
@@ -112,6 +119,8 @@ export interface ResultadoPlanificador {
   ms: number;
   /** Solo con respaldo, para diagnosticar: la salida del modelo que no se pudo interpretar, o el error. */
   diagnostico?: string;
+  /** Modelo que produjo el plan (el rápido, o el de chat si el rápido falló o no hay). */
+  modelo?: string;
 }
 
 export interface ContextoPlanificador {
@@ -124,7 +133,7 @@ export interface ContextoPlanificador {
 
 const MAX_TURNOS_HISTORIAL = 6;
 const MAX_CHARS_POR_TURNO = 400;
-const MAX_TOKENS_PLAN = 300;
+const MAX_TOKENS_PLAN = 400;
 
 export function planDeRespaldo(mensaje: string): PlanConsulta {
   return {
@@ -136,6 +145,7 @@ export function planDeRespaldo(mensaje: string): PlanConsulta {
       desde: null, hasta: null, actual: false,
     },
     continuaAnterior: false,
+    subconsultas: [],
   };
 }
 
@@ -179,6 +189,9 @@ Oficina de Asesoría Legal" → "Oficina de Asesoría Legal"; "lo que envió log
 oficios de…", "el último informe de…"). "El monto del contrato" habla de un tema: tipo_doc = null.
 - "filtros.desde"/"filtros.hasta": fechas AAAA-MM-DD si se pide un rango.
 - "filtros.actual": true si pide lo "actual", "vigente", "en curso", "actualmente".
+- "subconsultas": SOLO si la intención es "contenido" y la pregunta pide DOS O MÁS datos distintos \
+("¿cuál es el monto del contrato y quién firmó la adenda?"): una pregunta autónoma por cada dato, \
+máximo 3, cada una con la obra/lugar/expediente que corresponda. Si pide una sola cosa, [].
 - "continua_anterior": true si la pregunta se refiere a lo que se acaba de listar o conversar: \
 usa "esos", "ellos", "ahí", "de ellos", "en cuáles", "cuáles de", "y el último", o pregunta un \
 detalle (quiénes, cuándo, qué dicen, el último) sin nombrar otra obra o lugar. false si REEMPLAZA \
@@ -210,11 +223,13 @@ filtros.remitente "China Civil", continua_anterior true.
 "contenido", obligatorios ["resolución del contrato"], continua_anterior true.
 - (tras listar los expedientes de Junín) "¿y los de Huancavelica?" → "listar", obligatorios \
 ["Huancavelica"], continua_anterior false (otra obra).
+- "¿cuál es el plazo de la obra de Junín y qué penalidades se aplicaron?" → "contenido", subconsultas \
+["¿cuál es el plazo de ejecución de la obra de Junín?", "¿qué penalidades se aplicaron en la obra de Junín?"].
 
 Formato exacto:
 {"intencion":"…","consulta":"…","terminos":{"obligatorios":[],"opcionales":[],"sinonimos":{}},\
 "filtros":{"remitente":null,"emisor":null,"dependencia":null,"tipo_doc":null,"desde":null,"hasta":null,"actual":false},\
-"continua_anterior":false}`;
+"continua_anterior":false,"subconsultas":[]}`;
 
 const NOTA_MODO_EXPEDIENTE = `\n\nEl usuario está conversando dentro de UN expediente o documento \
 concreto: toda pregunta sobre documentos, estado o contenido se refiere a él. Usa "contenido" \
@@ -278,12 +293,18 @@ export function interpretarPlan(texto: string, mensajeOriginal: string): PlanCon
   if (!resultado.success) return null;
 
   const p = resultado.data;
+  const consulta = p.consulta ?? mensajeOriginal.trim();
+  // Solo tiene sentido descomponer una pregunta de contenido en 2+ partes distintas de la consulta.
+  const subconsultas = p.intencion === 'contenido'
+    ? [...new Set(p.subconsultas)].filter((q) => q.toLowerCase() !== consulta.toLowerCase()).slice(0, MAX_SUBCONSULTAS)
+    : [];
   return {
     intencion: p.intencion,
-    consulta: p.consulta ?? mensajeOriginal.trim(),
+    consulta,
     terminos: p.terminos,
     filtros: p.filtros,
     continuaAnterior: p.continua_anterior,
+    subconsultas: subconsultas.length >= 2 ? subconsultas : [],
   };
 }
 
@@ -291,15 +312,29 @@ export function interpretarPlan(texto: string, mensajeOriginal: string): PlanCon
  *  respaldo rápido en vez de esperar 2 reintentos con backoff (ver compartido/ai/http.ts). */
 const REINTENTOS_PLANIFICADOR = 1;
 
+/**
+ * `provider` es el modelo con el que se planifica (el rápido, Fase 4, si está configurado) y
+ * `respaldo`, el modelo de chat: si el rápido falla o no devuelve un plan, se reintenta UNA vez con él
+ * antes de caer al plan de respaldo — un modelo pequeño que no sigue el formato no debe dejar al chat
+ * sin reescritura ni intención.
+ */
 export async function planificar(
   provider: ChatProvider,
   mensaje: string,
   contexto: ContextoPlanificador,
+  respaldo?: ChatProvider,
 ): Promise<ResultadoPlanificador> {
   const r = await paso(
     'planificador',
-    { mensaje, modo: contexto.modo, turnosHistorial: contexto.historial.length },
-    () => conReintentos(REINTENTOS_PLANIFICADOR, () => planificarSinTraza(provider, mensaje, contexto)),
+    { mensaje, modo: contexto.modo, turnosHistorial: contexto.historial.length, modelo: provider.modelo },
+    async () => {
+      const primero = await conReintentos(REINTENTOS_PLANIFICADOR, () => planificarSinTraza(provider, mensaje, contexto));
+      if (!primero.respaldo || !respaldo || respaldo === provider) return primero;
+      const segundo = await conReintentos(REINTENTOS_PLANIFICADOR, () => planificarSinTraza(respaldo, mensaje, contexto));
+      const ms = primero.ms + segundo.ms;
+      // Si ninguno dio un plan, se informa el diagnóstico del primero (el que se quería usar).
+      return segundo.respaldo ? { ...primero, ms } : { ...segundo, ms };
+    },
     {
       resumir: (x) => ({
         salida: { plan: x.plan, respaldo: x.respaldo, diagnostico: x.diagnostico },
@@ -336,7 +371,7 @@ async function planificarSinTraza(
 
     const plan = interpretarPlan(respuesta.texto, mensaje);
     return plan
-      ? { plan, uso: respuesta.uso, respaldo: false, ms: Date.now() - inicio }
+      ? { plan, uso: respuesta.uso, respaldo: false, ms: Date.now() - inicio, modelo: provider.modelo }
       : {
         plan: planDeRespaldo(mensaje), uso: respuesta.uso, respaldo: true, ms: Date.now() - inicio,
         diagnostico: `salida no interpretable: ${respuesta.texto.slice(0, 600)}`,

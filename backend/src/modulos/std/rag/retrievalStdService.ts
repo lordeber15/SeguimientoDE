@@ -1,4 +1,5 @@
 import { QueryTypes } from 'sequelize';
+import type { OpcionesBusqueda } from '../../../compartido/rag/transformacionConsulta';
 import { stdRagSequelize } from '../config/stdRagDatabase';
 import { consultarStd } from '../config/stdDatabase';
 import { estimarTokens } from '../../../compartido/rag/chunkService';
@@ -29,8 +30,8 @@ import {
 
 const K_RRF = 60;
 const LIMITE_RAMA = 50;
-const LIMITE_RESULTADO = 20;
-const TOPE_POR_DOCUMENTO = 3;
+export const LIMITE_RESULTADO = 20;
+export const TOPE_POR_DOCUMENTO = 3;
 
 export interface ChunkRecuperadoStd {
   chunkId: number;
@@ -48,6 +49,8 @@ export interface ResultadoBusquedaStd {
   escaneoExacto: boolean;
   /** Ver `ResultadoBusqueda.degradacionVectorial` del SGD. */
   degradacionVectorial?: string | null;
+  /** Candidatos de la lista HyDE (Fase 4). */
+  candidatosHyde?: number;
 }
 
 interface FilaVec { chunk_id: number }
@@ -69,11 +72,16 @@ export async function buscarHibridoStd(
   /** Términos del planificador con sus alternativas ("a|b"): la rama FTS los busca en OR, porque la
    *  consulta reescrita completa es demasiado estricta para plainto_tsquery. */
   terminosFts?: string[],
+  /** Vocabulario y HyDE: ver `OpcionesBusqueda` del SGD. */
+  opciones: OpcionesBusqueda = {},
 ): Promise<ResultadoBusquedaStd> {
   return paso(
     'retrieval',
-    { consulta: consultaTexto, idDocumento: idDocumento ?? null, conjunto: conjunto?.length ?? 0, terminosFts: terminosFts ?? null },
-    () => buscarHibridoStdSinTraza(consultaTexto, idDocumento, conjunto, terminosFts),
+    {
+      consulta: consultaTexto, idDocumento: idDocumento ?? null, conjunto: conjunto?.length ?? 0, terminosFts: terminosFts ?? null,
+      consultaVectorial: opciones.consultaVectorial ?? null, hyde: opciones.textoHyde ?? null,
+    },
+    () => buscarHibridoStdSinTraza(consultaTexto, idDocumento, conjunto, terminosFts, opciones),
     { tipo: 'recuperacion', resumir: resumirBusqueda },
   );
 }
@@ -83,23 +91,26 @@ async function buscarHibridoStdSinTraza(
   idDocumento?: number,
   conjunto?: number[],
   terminosFts?: string[],
+  opciones: OpcionesBusqueda = {},
 ): Promise<ResultadoBusquedaStd> {
-  const { consulta: embebida, degradacion } = await embeberConsulta(
-    await modeloActivo(stdRagSequelize), consultaTexto, 'std',
-  );
-  const vecLiteral = embebida?.vecLiteral ?? null;
+  const modelo = await modeloActivo(stdRagSequelize);
+  const [{ consulta: embebida, degradacion }, hyde] = await Promise.all([
+    embeberConsulta(modelo, opciones.consultaVectorial ?? consultaTexto, 'std'),
+    opciones.textoHyde ? embeberConsulta(modelo, opciones.textoHyde, 'std') : Promise.resolve(null),
+  ]);
   const modeloId = embebida?.modeloId ?? null;
   const tabla = embebida?.tabla ?? null;
 
-  return stdRagSequelize.transaction(async (tx) => {
-    const filtroDocSql = (i: number) =>
-      `AND ($${i}::bigint IS NULL OR d.id_documento = $${i}) AND ($${i + 1}::bigint[] IS NULL OR d.id_documento = ANY($${i + 1}::bigint[]))`;
-    const idDoc = idDocumento ?? null;
-    const ids = conjunto && conjunto.length > 0 ? conjunto : null;
+  const filtroDocSql = (i: number) =>
+    `AND ($${i}::bigint IS NULL OR d.id_documento = $${i}) AND ($${i + 1}::bigint[] IS NULL OR d.id_documento = ANY($${i + 1}::bigint[]))`;
+  const idDoc = idDocumento ?? null;
+  const ids = conjunto && conjunto.length > 0 ? conjunto : null;
 
-    let filasVec: FilaVec[] = [];
-    let escaneoExacto = false;
-    if (vecLiteral && tabla) {
+  // Ramas en paralelo, cada una en su conexión — igual que el SGD (retrievalService.ts).
+  const ramaVectorial = async (vecLiteral: string | null): Promise<{ filasVec: FilaVec[]; escaneoExacto: boolean }> => {
+    if (!vecLiteral || !tabla) return { filasVec: [], escaneoExacto: false };
+    return stdRagSequelize.transaction(async (tx) => {
+      let escaneoExacto = false;
       // Mismo criterio que el SGD (ver ramaVectorial.ts): sin filtro, HNSW; con filtro, conteo con tope
       // ANTES de consultar y escaneo exacto bajo el umbral.
       if (idDoc !== null || ids !== null) {
@@ -115,7 +126,7 @@ async function buscarHibridoStdSinTraza(
         escaneoExacto = n <= UMBRAL_ESCANEO_EXACTO;
       }
 
-      filasVec = await conEscaneoVectorial(stdRagSequelize, tx, escaneoExacto, () => stdRagSequelize.query<FilaVec>(
+      const filasVec = await conEscaneoVectorial(stdRagSequelize, tx, escaneoExacto, () => stdRagSequelize.query<FilaVec>(
         sqlVecinosOrdenados(
           `SELECT c.id AS chunk_id, e.vec <=> $2::vector AS distancia
              FROM rag.${tabla} e
@@ -130,72 +141,83 @@ async function buscarHibridoStdSinTraza(
         ),
         { bind: [modeloId, vecLiteral, idDoc, ids], type: QueryTypes.SELECT, transaction: tx },
       ));
-    }
+      return { filasVec, escaneoExacto };
+    });
+  };
 
-    const filasFts = await stdRagSequelize.query<FilaFts>(
-      `SELECT c.id AS chunk_id
-         FROM rag.chunk c,
-              COALESCE(
-                (SELECT NULLIF(string_agg(NULLIF(rag.tsq_alternativas(t)::text, ''), ' | '), '')::tsquery
-                   FROM unnest($4::text[]) AS t),
-                plainto_tsquery('es_unaccent', $1)
-              ) AS consulta
-        WHERE c.tsv @@ consulta
-          AND EXISTS (
-            SELECT 1 FROM rag.documento d
-             WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${filtroDocSql(2)}
-          )
-        ORDER BY ts_rank_cd(c.tsv, consulta) DESC
-        LIMIT ${LIMITE_RAMA}`,
-      { bind: [consultaTexto, idDoc, ids, terminosFts && terminosFts.length > 0 ? terminosFts : null], type: QueryTypes.SELECT, transaction: tx },
-    );
+  const ramaFts = () => stdRagSequelize.query<FilaFts>(
+    `SELECT c.id AS chunk_id
+       FROM rag.chunk c,
+            COALESCE(
+              (SELECT NULLIF(string_agg(NULLIF(rag.tsq_alternativas(t)::text, ''), ' | '), '')::tsquery
+                 FROM unnest($4::text[]) AS t),
+              plainto_tsquery('es_unaccent', $1)
+            ) AS consulta
+      WHERE c.tsv @@ consulta
+        AND EXISTS (
+          SELECT 1 FROM rag.documento d
+           WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${filtroDocSql(2)}
+        )
+      ORDER BY ts_rank_cd(c.tsv, consulta) DESC
+      LIMIT ${LIMITE_RAMA}`,
+    { bind: [consultaTexto, idDoc, ids, terminosFts && terminosFts.length > 0 ? terminosFts : null], type: QueryTypes.SELECT },
+  );
 
-    const rangoVec = new Map(filasVec.map((f, i) => [f.chunk_id, i + 1]));
-    const rangoFts = new Map(filasFts.map((f, i) => [f.chunk_id, i + 1]));
-    const idsUnicos = [...new Set([...rangoVec.keys(), ...rangoFts.keys()])];
+  const [{ filasVec, escaneoExacto }, filasFts, { filasVec: filasHyde }] = await Promise.all([
+    ramaVectorial(embebida?.vecLiteral ?? null), ramaFts(), ramaVectorial(hyde?.consulta?.vecLiteral ?? null),
+  ]);
+  const rangoHyde = new Map(filasHyde.map((f, i) => [f.chunk_id, i + 1]));
+  const cifras = {
+    candidatosVec: filasVec.length, candidatosFts: filasFts.length, candidatosHyde: filasHyde.length,
+    escaneoExacto, degradacionVectorial: degradacion,
+  };
 
-    if (idsUnicos.length === 0) {
-      return { chunks: [], candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto, degradacionVectorial: degradacion };
-    }
+  const rangoVec = new Map(filasVec.map((f, i) => [f.chunk_id, i + 1]));
+  const rangoFts = new Map(filasFts.map((f, i) => [f.chunk_id, i + 1]));
+  const idsUnicos = [...new Set([...rangoVec.keys(), ...rangoFts.keys(), ...rangoHyde.keys()])];
 
-    const puntuados = idsUnicos
-      .map((chunkId) => ({
-        chunkId,
-        score:
-          (rangoVec.has(chunkId) ? 1 / (K_RRF + rangoVec.get(chunkId)!) : 0)
-          + (rangoFts.has(chunkId) ? 1 / (K_RRF + rangoFts.get(chunkId)!) : 0),
-      }))
-      .sort((a, b) => b.score - a.score);
+  if (idsUnicos.length === 0) {
+    return { chunks: [], ...cifras };
+  }
 
-    const filasChunk = await stdRagSequelize.query<FilaFusionada>(
-      `SELECT id AS chunk_id, texto, ruta_titulos, ord, sha256
-         FROM rag.chunk WHERE id = ANY($1::bigint[])`,
-      { bind: [puntuados.map((p) => p.chunkId)], type: QueryTypes.SELECT, transaction: tx },
-    );
-    const porId = new Map(filasChunk.map((f) => [f.chunk_id, f]));
+  const puntuados = idsUnicos
+    .map((chunkId) => ({
+      chunkId,
+      score:
+        (rangoVec.has(chunkId) ? 1 / (K_RRF + rangoVec.get(chunkId)!) : 0)
+        + (rangoFts.has(chunkId) ? 1 / (K_RRF + rangoFts.get(chunkId)!) : 0)
+        + (rangoHyde.has(chunkId) ? 1 / (K_RRF + rangoHyde.get(chunkId)!) : 0),
+    }))
+    .sort((a, b) => b.score - a.score);
 
-    const porSha = new Map<string, number>();
-    const chunks: ChunkRecuperadoStd[] = [];
-    for (const p of puntuados) {
-      const fila = porId.get(p.chunkId);
-      if (!fila) continue;
-      const usados = porSha.get(fila.sha256) ?? 0;
-      if (usados >= TOPE_POR_DOCUMENTO) continue;
-      porSha.set(fila.sha256, usados + 1);
+  const filasChunk = await stdRagSequelize.query<FilaFusionada>(
+    `SELECT id AS chunk_id, texto, ruta_titulos, ord, sha256
+       FROM rag.chunk WHERE id = ANY($1::bigint[])`,
+    { bind: [puntuados.map((p) => p.chunkId)], type: QueryTypes.SELECT },
+  );
+  const porId = new Map(filasChunk.map((f) => [f.chunk_id, f]));
 
-      chunks.push({
-        chunkId: fila.chunk_id,
-        texto: fila.texto,
-        rutaTitulos: fila.ruta_titulos,
-        ord: fila.ord,
-        sha256: fila.sha256,
-        score: p.score,
-      });
-      if (chunks.length >= LIMITE_RESULTADO) break;
-    }
+  const porSha = new Map<string, number>();
+  const chunks: ChunkRecuperadoStd[] = [];
+  for (const p of puntuados) {
+    const fila = porId.get(p.chunkId);
+    if (!fila) continue;
+    const usados = porSha.get(fila.sha256) ?? 0;
+    if (usados >= TOPE_POR_DOCUMENTO) continue;
+    porSha.set(fila.sha256, usados + 1);
 
-    return { chunks, candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto, degradacionVectorial: degradacion };
-  });
+    chunks.push({
+      chunkId: fila.chunk_id,
+      texto: fila.texto,
+      rutaTitulos: fila.ruta_titulos,
+      ord: fila.ord,
+      sha256: fila.sha256,
+      score: p.score,
+    });
+    if (chunks.length >= LIMITE_RESULTADO) break;
+  }
+
+  return { chunks, ...cifras };
 }
 
 export interface DocumentoCitadoStd {

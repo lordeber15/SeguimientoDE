@@ -3,6 +3,7 @@ import toast, { Toaster } from 'react-hot-toast';
 import { ListaDocumentosRag } from '../components/ListaDocumentosRag';
 import { ModalContinuarLote, type TipoCadena } from '../components/ModalContinuarLote';
 import { PanelJobIngesta } from '../components/PanelJobIngesta';
+import { ConfigChatRag } from '../components/ConfigChatRag';
 import { ApiError } from '../api/cliente';
 import {
   activarBarrido,
@@ -835,6 +836,11 @@ export function RagPanelPage() {
         </section>
 
         {/* Mantenimiento: retención de logs y recolector de basura (Fase 6) */}
+        <section className="rag-tarjeta rag-tarjeta--ancha">
+          <h2>Chat: transformación de consultas</h2>
+          <ConfigChatRag base="/api/rag" />
+        </section>
+
         <section className="rag-tarjeta rag-tarjeta--ancha">
           <h2>Mantenimiento</h2>
           <div className="rag-acciones">

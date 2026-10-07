@@ -2,7 +2,8 @@ import { AnthropicChat } from './providers/anthropic';
 import { OllamaChat, OllamaEmbedding } from './providers/ollama';
 import { OpenAiChat, OpenAiEmbedding } from './providers/openai';
 import { OpenAiVision } from './providers/openaiVision';
-import type { ChatProvider, EmbeddingProvider, NombreProveedor, VisionProvider } from './types';
+import { CohereRerank, TeiRerank } from './providers/rerank';
+import type { ChatProvider, EmbeddingProvider, NombreProveedor, RerankProvider, VisionProvider } from './types';
 import { paso } from '../observabilidad/traza';
 
 /**
@@ -68,6 +69,60 @@ export function crearChatProvider(nombre = proveedorChatConfigurado()): ChatProv
 }
 
 /**
+ * Modelo RÁPIDO para las transformaciones de la consulta (docs/PLAN-RAG-AVANZADO.md, Fase 4):
+ * planificador e HyDE son llamadas cortas que no necesitan el modelo de la respuesta y suman latencia
+ * antes de buscar. `CHAT_PLANIFICADOR_PROVIDER` (por defecto el de chat) + `CHAT_PLANIFICADOR_MODEL`.
+ * Sin ninguna de las dos devuelve `null`: quien llama usa el proveedor de chat, como antes.
+ */
+export function crearChatProviderRapido(): ChatProvider | null {
+  const proveedor = (leer('CHAT_PLANIFICADOR_PROVIDER') || '') as NombreProveedor | '';
+  const modelo = leer('CHAT_PLANIFICADOR_MODEL');
+  if (!proveedor && !modelo) return null;
+  const nombre = (proveedor || proveedorChatConfigurado()) as NombreProveedor;
+  switch (nombre) {
+    case 'ollama':
+      return instrumentarChat(new OllamaChat(modelo || undefined));
+    case 'openai':
+      return instrumentarChat(new OpenAiChat(false, modelo || undefined));
+    case 'azure':
+      return instrumentarChat(new OpenAiChat(true, modelo || undefined));
+    case 'anthropic':
+      return instrumentarChat(new AnthropicChat(modelo || undefined));
+    default:
+      throw new Error(
+        `CHAT_PLANIFICADOR_PROVIDER="${nombre}" no es válido. Opciones: ${PROVEEDORES_CHAT.join(', ')}.`,
+      );
+  }
+}
+
+/**
+ * Cómo se reordenan los candidatos de RRF antes de armar el contexto (docs/PLAN-RAG-AVANZADO.md,
+ * Fase 3): `local` = cross-encoder en TEI (recomendado, nada sale del servidor), `cohere` = API de
+ * Cohere, `llm` = el modelo de chat ordena una lista (el comportamiento anterior a la Fase 3, y el
+ * valor por defecto para que actualizar no rompa una instalación sin el servicio `reranker`),
+ * `ninguno` = se conserva el orden de RRF.
+ */
+export const METODOS_RERANK = ['local', 'cohere', 'llm', 'ninguno'] as const;
+export type MetodoRerank = (typeof METODOS_RERANK)[number];
+
+export function metodoRerankConfigurado(): MetodoRerank {
+  const valor = leer('RAG_RERANK_PROVIDER') || 'llm';
+  return (METODOS_RERANK as readonly string[]).includes(valor) ? (valor as MetodoRerank) : 'llm';
+}
+
+/** Cross-encoder del método dado; `null` para `llm`/`ninguno`, que no usan uno. */
+export function crearRerankProvider(metodo: MetodoRerank = metodoRerankConfigurado()): RerankProvider | null {
+  switch (metodo) {
+    case 'local':
+      return instrumentarRerank(new TeiRerank());
+    case 'cohere':
+      return instrumentarRerank(new CohereRerank());
+    default:
+      return null;
+  }
+}
+
+/**
  * Cada llamada al modelo queda como paso `generacion` de la traza en curso (modelo, mensajes,
  * respuesta y tokens), sin que planificador, rerank o respuesta tengan que registrarlo. Fuera de una
  * traza (ingesta, scripts) `paso` es un no-op. Ver compartido/observabilidad/traza.ts.
@@ -101,6 +156,20 @@ export function instrumentarEmbedding(p: EmbeddingProvider): EmbeddingProvider {
       { textos: textos.map((t) => t.slice(0, 300)), cantidad: textos.length },
       () => p.embeber(textos),
       { tipo: 'embedding', resumir: (r) => ({ modelo: p.modelo, tokensIn: r.uso.tokensIn, salida: { vectores: r.vectores.length } }) },
+    ),
+  };
+}
+
+export function instrumentarRerank(p: RerankProvider): RerankProvider {
+  return {
+    nombre: p.nombre,
+    modelo: p.modelo,
+    comprobar: () => p.comprobar(),
+    puntuar: (consulta, textos) => paso(
+      `cross-encoder ${p.nombre}/${p.modelo}`,
+      { consulta, textos: textos.length },
+      () => p.puntuar(consulta, textos),
+      { resumir: (puntajes) => ({ modelo: p.modelo, salida: { puntajes: puntajes.map((x) => Math.round(x * 1000) / 1000) } }) },
     ),
   };
 }
@@ -139,6 +208,35 @@ export function revisarConfiguracionIA(): ProblemaConfiguracion[] {
     problemas.push(...revisarProveedor(proveedor));
   }
 
+  // Modelo rápido: si apunta a otro proveedor, ese proveedor también necesita sus claves.
+  const rapido = leer('CHAT_PLANIFICADOR_PROVIDER') as NombreProveedor;
+  if (rapido) {
+    if (!PROVEEDORES_CHAT.includes(rapido)) {
+      problemas.push({
+        variable: 'CHAT_PLANIFICADOR_PROVIDER',
+        mensaje: `Valor "${rapido}" no válido. Opciones: ${PROVEEDORES_CHAT.join(', ')}.`,
+      });
+    } else if (rapido !== chat && rapido !== embedding) {
+      problemas.push(...revisarProveedor(rapido).map((p) => ({
+        variable: 'CHAT_PLANIFICADOR_PROVIDER',
+        mensaje: `${p.variable}: ${p.mensaje} Sin ella el planificador usa el modelo de chat.`,
+      })));
+    }
+  }
+
+  // Rerank: un valor inválido o cohere sin clave no impiden responder (se degrada al orden de RRF),
+  // pero sin este aviso solo se notaría por respuestas peores.
+  const rerank = leer('RAG_RERANK_PROVIDER');
+  if (rerank && !(METODOS_RERANK as readonly string[]).includes(rerank)) {
+    problemas.push({
+      variable: 'RAG_RERANK_PROVIDER',
+      mensaje: `Valor "${rerank}" no válido (se usa llm). Opciones: ${METODOS_RERANK.join(', ')}.`,
+    });
+  }
+  if (rerank === 'cohere' && !leer('COHERE_API_KEY')) {
+    problemas.push({ variable: 'COHERE_API_KEY', mensaje: 'Necesaria para RAG_RERANK_PROVIDER=cohere (sin ella se usa el orden de RRF).' });
+  }
+
   return problemas;
 }
 
@@ -174,10 +272,16 @@ function revisarProveedor(proveedor: NombreProveedor): ProblemaConfiguracion[] {
   return faltan;
 }
 
+/** Rerank y modelo rápido degradan solos (orden de RRF / modelo de chat): sus avisos se muestran,
+ *  pero no apagan el chat ni los embeddings. */
+function esAvisoNoBloqueante(p: ProblemaConfiguracion): boolean {
+  return ['RAG_RERANK_PROVIDER', 'COHERE_API_KEY', 'CHAT_PLANIFICADOR_PROVIDER'].includes(p.variable);
+}
+
 /** ¿Se puede embeber ahora mismo, o falta configuración? */
 export function embeddingsDisponibles(): { disponible: boolean; motivo: string | null } {
   const problemas = revisarConfiguracionIA().filter(
-    (p) => p.variable !== 'CHAT_PROVIDER' && !p.variable.includes('CHAT'),
+    (p) => p.variable !== 'CHAT_PROVIDER' && !p.variable.includes('CHAT') && !esAvisoNoBloqueante(p),
   );
 
   if (problemas.length > 0) {
@@ -193,7 +297,7 @@ export function embeddingsDisponibles(): { disponible: boolean; motivo: string |
 /** Simétrico a `embeddingsDisponibles()`, para el chat (Fase 5). */
 export function chatDisponible(): { disponible: boolean; motivo: string | null } {
   const problemas = revisarConfiguracionIA().filter(
-    (p) => p.variable !== 'EMBEDDING_PROVIDER' && p.variable !== 'AZURE_EMBED_DEPLOYMENT',
+    (p) => p.variable !== 'EMBEDDING_PROVIDER' && p.variable !== 'AZURE_EMBED_DEPLOYMENT' && !esAvisoNoBloqueante(p),
   );
 
   if (problemas.length > 0) {

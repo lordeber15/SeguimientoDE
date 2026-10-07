@@ -1,4 +1,5 @@
 import { QueryTypes } from 'sequelize';
+import type { OpcionesBusqueda } from '../../../compartido/rag/transformacionConsulta';
 import { appSequelize } from '../../../compartido/config/appDatabase';
 import { estimarTokens } from '../../../compartido/rag/chunkService';
 import { modeloActivo } from '../../../compartido/rag/embeddingModelService';
@@ -24,8 +25,8 @@ import { getDocumentosExpediente } from '../services/documentoService';
 
 const K_RRF = 60;
 const LIMITE_RAMA = 50;
-const LIMITE_RESULTADO = 20;
-const TOPE_POR_DOCUMENTO = 3;
+export const LIMITE_RESULTADO = 20;
+export const TOPE_POR_DOCUMENTO = 3;
 
 export interface FiltroAcceso {
   /** `null` = sin restricción (admin/jefe ven todo). Si no, `co_dep_emi` exigido en `rag.documento`. */
@@ -49,6 +50,8 @@ export interface ResultadoBusqueda {
   escaneoExacto: boolean;
   /** Motivo por el que la rama vectorial NO corrió habiendo modelo activo (FTS puro). `null` = normal. */
   degradacionVectorial?: string | null;
+  /** Candidatos de la lista HyDE (Fase 4); 0 si no se pidió o no se pudo embeber. */
+  candidatosHyde?: number;
 }
 
 interface FilaVec { chunk_id: number }
@@ -85,14 +88,16 @@ export async function buscarHibrido(
    *  contrato de la obra de Junín" encontraba 3 fragmentos. La rama vectorial sigue usando la
    *  consulta completa, que es donde la paráfrasis sí ayuda. */
   terminosFts?: string[],
+  opciones: OpcionesBusqueda = {},
 ): Promise<ResultadoBusqueda> {
   return paso(
     'retrieval',
     {
       consulta: consultaTexto, coDependencia: filtro.coDependencia, expediente: expediente ?? null,
       conjunto: conjunto?.length ?? 0, terminosFts: terminosFts ?? null,
+      consultaVectorial: opciones.consultaVectorial ?? null, hyde: opciones.textoHyde ?? null,
     },
-    () => buscarHibridoSinTraza(consultaTexto, filtro, expediente, conjunto, terminosFts),
+    () => buscarHibridoSinTraza(consultaTexto, filtro, expediente, conjunto, terminosFts, opciones),
     { tipo: 'recuperacion', resumir: resumirBusqueda },
   );
 }
@@ -103,27 +108,33 @@ async function buscarHibridoSinTraza(
   expediente?: { nuAnnExp: string; nuSecExp: string },
   conjunto?: { nuAnnExp: string; nuSecExp: string }[],
   terminosFts?: string[],
+  opciones: OpcionesBusqueda = {},
 ): Promise<ResultadoBusqueda> {
-  const { consulta: embebida, degradacion } = await embeberConsulta(await modeloActivo(), consultaTexto, 'sgd');
-  const vecLiteral = embebida?.vecLiteral ?? null;
+  const modelo = await modeloActivo();
+  const [{ consulta: embebida, degradacion }, hyde] = await Promise.all([
+    embeberConsulta(modelo, opciones.consultaVectorial ?? consultaTexto, 'sgd'),
+    opciones.textoHyde ? embeberConsulta(modelo, opciones.textoHyde, 'sgd') : Promise.resolve(null),
+  ]);
   const modeloId = embebida?.modeloId ?? null;
   const tabla = embebida?.tabla ?? null;
 
-  return appSequelize.transaction(async (tx) => {
-    const permisoSql = 'AND ($1::text IS NULL OR d.co_dep_emi = $1)';
-    const expAnn = expediente?.nuAnnExp ?? null;
-    const expSec = expediente?.nuSecExp ?? null;
-    // Los índices de bind cambian por rama (la vectorial usa $2/$3), de ahí que se arme por rama.
-    const expedienteSql = (i: number) =>
-      `AND ($${i}::text IS NULL OR (d.nu_ann_exp = $${i} AND d.nu_sec_exp = $${i + 1}))`;
-    const conjAnn = conjunto && conjunto.length > 0 ? conjunto.map((c) => c.nuAnnExp) : null;
-    const conjSec = conjunto && conjunto.length > 0 ? conjunto.map((c) => c.nuSecExp) : null;
-    const conjuntoSql = (i: number) =>
-      `AND ($${i}::text[] IS NULL OR (d.nu_ann_exp, d.nu_sec_exp) IN (SELECT unnest($${i}::text[]), unnest($${i + 1}::text[])))`;
+  const permisoSql = 'AND ($1::text IS NULL OR d.co_dep_emi = $1)';
+  const expAnn = expediente?.nuAnnExp ?? null;
+  const expSec = expediente?.nuSecExp ?? null;
+  // Los índices de bind cambian por rama (la vectorial usa $2/$3), de ahí que se arme por rama.
+  const expedienteSql = (i: number) =>
+    `AND ($${i}::text IS NULL OR (d.nu_ann_exp = $${i} AND d.nu_sec_exp = $${i + 1}))`;
+  const conjAnn = conjunto && conjunto.length > 0 ? conjunto.map((c) => c.nuAnnExp) : null;
+  const conjSec = conjunto && conjunto.length > 0 ? conjunto.map((c) => c.nuSecExp) : null;
+  const conjuntoSql = (i: number) =>
+    `AND ($${i}::text[] IS NULL OR (d.nu_ann_exp, d.nu_sec_exp) IN (SELECT unnest($${i}::text[]), unnest($${i + 1}::text[])))`;
 
-    let filasVec: FilaVec[] = [];
-    let escaneoExacto = false;
-    if (vecLiteral && tabla) {
+  // Las dos ramas corren EN PARALELO, cada una en su conexión (docs/PLAN-RAG-AVANZADO.md, Fase 3):
+  // la vectorial necesita su transacción por los `SET LOCAL` de ramaVectorial.ts; la FTS no.
+  const ramaVectorial = async (vecLiteral: string | null): Promise<{ filasVec: FilaVec[]; escaneoExacto: boolean }> => {
+    if (!vecLiteral || !tabla) return { filasVec: [], escaneoExacto: false };
+    return appSequelize.transaction(async (tx) => {
+      let escaneoExacto = false;
       // Sin ningún filtro (admin/jefe, búsqueda general) siempre se usa HNSW: el corpus entero nunca
       // queda bajo el umbral. Con filtro, se cuentan los chunks que deja pasar — con tope, para que el
       // conteo no cueste más que la búsqueda — y bajo el umbral se escanea exacto (ver ramaVectorial.ts).
@@ -141,7 +152,7 @@ async function buscarHibridoSinTraza(
         escaneoExacto = n <= UMBRAL_ESCANEO_EXACTO;
       }
 
-      filasVec = await conEscaneoVectorial(appSequelize, tx, escaneoExacto, () => appSequelize.query<FilaVec>(
+      const filasVec = await conEscaneoVectorial(appSequelize, tx, escaneoExacto, () => appSequelize.query<FilaVec>(
         sqlVecinosOrdenados(
           `SELECT c.id AS chunk_id, e.vec <=> $3::vector AS distancia
              FROM rag.${tabla} e
@@ -161,82 +172,90 @@ async function buscarHibridoSinTraza(
           transaction: tx,
         },
       ));
-    }
+      return { filasVec, escaneoExacto };
+    });
+  };
 
-    const filasFts = await appSequelize.query<FilaFts>(
-      `SELECT c.id AS chunk_id
-         FROM rag.chunk c,
-              COALESCE(
-                (SELECT NULLIF(string_agg(NULLIF(rag.tsq_alternativas(t)::text, ''), ' | '), '')::tsquery
-                   FROM unnest($7::text[]) AS t),
-                plainto_tsquery('es_unaccent', $2)
-              ) AS consulta
-        WHERE c.tsv @@ consulta
-          AND EXISTS (
-            SELECT 1 FROM rag.documento d
-             WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(3)}
-               ${conjuntoSql(5)}
-          )
-        ORDER BY ts_rank_cd(c.tsv, consulta) DESC
-        LIMIT ${LIMITE_RAMA}`,
-      {
-        bind: [
-          filtro.coDependencia, consultaTexto, expAnn, expSec, conjAnn, conjSec,
-          terminosFts && terminosFts.length > 0 ? terminosFts : null,
-        ],
-        type: QueryTypes.SELECT,
-        transaction: tx,
-      },
-    );
+  const ramaFts = () => appSequelize.query<FilaFts>(
+    `SELECT c.id AS chunk_id
+       FROM rag.chunk c,
+            COALESCE(
+              (SELECT NULLIF(string_agg(NULLIF(rag.tsq_alternativas(t)::text, ''), ' | '), '')::tsquery
+                 FROM unnest($7::text[]) AS t),
+              plainto_tsquery('es_unaccent', $2)
+            ) AS consulta
+      WHERE c.tsv @@ consulta
+        AND EXISTS (
+          SELECT 1 FROM rag.documento d
+           WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(3)}
+             ${conjuntoSql(5)}
+        )
+      ORDER BY ts_rank_cd(c.tsv, consulta) DESC
+      LIMIT ${LIMITE_RAMA}`,
+    {
+      bind: [
+        filtro.coDependencia, consultaTexto, expAnn, expSec, conjAnn, conjSec,
+        terminosFts && terminosFts.length > 0 ? terminosFts : null,
+      ],
+      type: QueryTypes.SELECT,
+    },
+  );
 
-    const rangoVec = new Map(filasVec.map((f, i) => [f.chunk_id, i + 1]));
-    const rangoFts = new Map(filasFts.map((f, i) => [f.chunk_id, i + 1]));
-    const idsUnicos = [...new Set([...rangoVec.keys(), ...rangoFts.keys()])];
+  const [{ filasVec, escaneoExacto }, filasFts, { filasVec: filasHyde }] = await Promise.all([
+    ramaVectorial(embebida?.vecLiteral ?? null), ramaFts(), ramaVectorial(hyde?.consulta?.vecLiteral ?? null),
+  ]);
 
-    if (idsUnicos.length === 0) {
-      return { chunks: [], candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto, degradacionVectorial: degradacion };
-    }
+  const rangoVec = new Map(filasVec.map((f, i) => [f.chunk_id, i + 1]));
+  const rangoFts = new Map(filasFts.map((f, i) => [f.chunk_id, i + 1]));
+  const rangoHyde = new Map(filasHyde.map((f, i) => [f.chunk_id, i + 1]));
+  const idsUnicos = [...new Set([...rangoVec.keys(), ...rangoFts.keys(), ...rangoHyde.keys()])];
+  const cifras = {
+    candidatosVec: filasVec.length, candidatosFts: filasFts.length, candidatosHyde: filasHyde.length,
+    escaneoExacto, degradacionVectorial: degradacion,
+  };
 
-    const puntuados = idsUnicos
-      .map((chunkId) => ({
-        chunkId,
-        score:
-          (rangoVec.has(chunkId) ? 1 / (K_RRF + rangoVec.get(chunkId)!) : 0)
-          + (rangoFts.has(chunkId) ? 1 / (K_RRF + rangoFts.get(chunkId)!) : 0),
-      }))
-      .sort((a, b) => b.score - a.score);
+  if (idsUnicos.length === 0) return { chunks: [], ...cifras };
 
-    const filasChunk = await appSequelize.query<FilaFusionada>(
-      `SELECT id AS chunk_id, texto, ruta_titulos, ord, sha256
-         FROM rag.chunk WHERE id = ANY($1::bigint[])`,
-      { bind: [puntuados.map((p) => p.chunkId)], type: QueryTypes.SELECT, transaction: tx },
-    );
-    const porId = new Map(filasChunk.map((f) => [f.chunk_id, f]));
+  const puntuados = idsUnicos
+    .map((chunkId) => ({
+      chunkId,
+      score:
+        (rangoVec.has(chunkId) ? 1 / (K_RRF + rangoVec.get(chunkId)!) : 0)
+        + (rangoFts.has(chunkId) ? 1 / (K_RRF + rangoFts.get(chunkId)!) : 0)
+        + (rangoHyde.has(chunkId) ? 1 / (K_RRF + rangoHyde.get(chunkId)!) : 0),
+    }))
+    .sort((a, b) => b.score - a.score);
 
-    // Tope de 3 chunks por documento de origen (sha256): un expediente de 80 páginas no debe
-    // llenar el contexto entero con fragmentos del mismo documento.
-    const porSha = new Map<string, number>();
-    const chunks: ChunkRecuperado[] = [];
-    for (const p of puntuados) {
-      const fila = porId.get(p.chunkId);
-      if (!fila) continue;
-      const usados = porSha.get(fila.sha256) ?? 0;
-      if (usados >= TOPE_POR_DOCUMENTO) continue;
-      porSha.set(fila.sha256, usados + 1);
+  const filasChunk = await appSequelize.query<FilaFusionada>(
+    `SELECT id AS chunk_id, texto, ruta_titulos, ord, sha256
+       FROM rag.chunk WHERE id = ANY($1::bigint[])`,
+    { bind: [puntuados.map((p) => p.chunkId)], type: QueryTypes.SELECT },
+  );
+  const porId = new Map(filasChunk.map((f) => [f.chunk_id, f]));
 
-      chunks.push({
-        chunkId: fila.chunk_id,
-        texto: fila.texto,
-        rutaTitulos: fila.ruta_titulos,
-        ord: fila.ord,
-        sha256: fila.sha256,
-        score: p.score,
-      });
-      if (chunks.length >= LIMITE_RESULTADO) break;
-    }
+  // Tope de 3 chunks por documento de origen (sha256): un expediente de 80 páginas no debe
+  // llenar el contexto entero con fragmentos del mismo documento.
+  const porSha = new Map<string, number>();
+  const chunks: ChunkRecuperado[] = [];
+  for (const p of puntuados) {
+    const fila = porId.get(p.chunkId);
+    if (!fila) continue;
+    const usados = porSha.get(fila.sha256) ?? 0;
+    if (usados >= TOPE_POR_DOCUMENTO) continue;
+    porSha.set(fila.sha256, usados + 1);
 
-    return { chunks, candidatosVec: filasVec.length, candidatosFts: filasFts.length, escaneoExacto, degradacionVectorial: degradacion };
-  });
+    chunks.push({
+      chunkId: fila.chunk_id,
+      texto: fila.texto,
+      rutaTitulos: fila.ruta_titulos,
+      ord: fila.ord,
+      sha256: fila.sha256,
+      score: p.score,
+    });
+    if (chunks.length >= LIMITE_RESULTADO) break;
+  }
+
+  return { chunks, ...cifras };
 }
 
 export interface DocumentoCitado {

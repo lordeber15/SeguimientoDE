@@ -24,6 +24,10 @@ const ordenLlamadas: string[] = [];
 jest.mock('../../../../src/compartido/ai/providerFactory', () => ({
   chatDisponible: (...a: unknown[]) => chatDisponible(...a),
   crearChatProvider: () => ({ nombre: 'ollama', modelo: 'llama3', responder: (...a: unknown[]) => responder(...a) }),
+  // Rerank por LLM (el valor por defecto): usa el mismo `responder` mockeado.
+  metodoRerankConfigurado: () => 'llm',
+  crearRerankProvider: () => null,
+  crearChatProviderRapido: () => null,
 }));
 
 jest.mock('../../../../src/modulos/sgd/rag/retrievalService', () => ({
@@ -31,6 +35,8 @@ jest.mock('../../../../src/modulos/sgd/rag/retrievalService', () => ({
   elegirDocumentoParaCita: (...a: unknown[]) => elegirDocumentoParaCita(...a),
   estadoExpediente: (...a: unknown[]) => estadoExpediente(...a),
   recortarPorPresupuesto: (chunks: unknown[]) => chunks, // sin recorte: se prueba aparte, es pura
+  LIMITE_RESULTADO: 20,
+  TOPE_POR_DOCUMENTO: 3,
 }));
 
 // El planificador se prueba aparte (planificadorService.test.ts); aquí solo importa qué hace el
@@ -130,7 +136,8 @@ beforeEach(() => {
   elegirDocumentoParaCita.mockResolvedValue(null);
   estadoExpediente.mockResolvedValue([]);
   responder.mockReset().mockResolvedValue({ texto: 'respuesta', uso: { tokensIn: 10, tokensOut: 5, estimado: false } });
-  leerBooleano.mockReset().mockResolvedValue(true);
+  // Todo encendido salvo HyDE, que arranca apagado (migración 026): sumaría una llamada al modelo.
+  leerBooleano.mockReset().mockImplementation((clave: string) => Promise.resolve(clave !== 'chat.hyde.activo'));
   ejecutarListado.mockReset();
   ejecutarUltimoDocumento.mockReset();
   ejecutarParticipantes.mockReset();
@@ -543,7 +550,11 @@ describe('responderChat — contexto de la conversación', () => {
     planificar.mockResolvedValue({ ...plan({ consulta: 'otra cosa', continuaAnterior: true }), respaldo: true });
 
     await chat.responderChat(peticionBase({ mensaje: 'texto original' }));
-    expect(buscarHibrido.mock.calls[0]).toEqual(['texto original', { coDependencia: null }, undefined, undefined, undefined]);
+    // Sin plan confiable no hay subconsultas ni HyDE; el vocabulario sí (no depende del modelo).
+    expect(buscarHibrido.mock.calls[0]).toEqual([
+      'texto original', { coDependencia: null }, undefined, undefined, undefined,
+      { consultaVectorial: 'texto original', textoHyde: null },
+    ]);
   });
 
   it('la rama FTS recibe los términos del plan, no la consulta reescrita entera', async () => {
@@ -554,6 +565,53 @@ describe('responderChat — contexto de la conversación', () => {
 
     await chat.responderChat(peticionBase({ mensaje: '¿qué dicen sobre la resolución del contrato?' }));
     expect(buscarHibrido.mock.calls[0][4]).toEqual(['resolución', 'contrato', 'Junín']);
+  });
+
+  it('pregunta compuesta: busca la consulta completa y cada subconsulta, y fusiona lo encontrado', async () => {
+    planificar.mockResolvedValue(plan({
+      consulta: 'plazo y penalidades de la obra de Junín',
+      subconsultas: ['plazo de ejecución de la obra de Junín', 'penalidades aplicadas en la obra de Junín'],
+    }));
+    const chunkDe = (id: number) => ({ chunkId: id, texto: `t${id}`, rutaTitulos: null, ord: 0, sha256: `s${id}`, score: 1 });
+    buscarHibrido.mockImplementation((q: string) => Promise.resolve({
+      chunks: q.startsWith('plazo de') ? [chunkDe(2)] : q.startsWith('penalidades') ? [chunkDe(3)] : [chunkDe(1)],
+      candidatosVec: 1, candidatosFts: 1, escaneoExacto: false,
+    }));
+    elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
+
+    const r = await chat.responderChat(peticionBase({ mensaje: '¿plazo y penalidades de Junín?' }));
+
+    expect(buscarHibrido.mock.calls.map((c) => c[0])).toEqual([
+      'plazo y penalidades de la obra de Junín', 'plazo de ejecución de la obra de Junín', 'penalidades aplicadas en la obra de Junín',
+    ]);
+    // Cada subconsulta busca en la FTS con sus propias palabras, no con los términos de toda la pregunta.
+    expect(buscarHibrido.mock.calls[1][4]).toEqual(['plazo', 'ejecucion', 'junin']);
+    expect(r.citas.map((c) => c.chunkId).sort()).toEqual([1, 2, 3]);
+  });
+
+  it('con chat.descomposicion.activa apagado se ignoran las subconsultas', async () => {
+    leerBooleano.mockImplementation((clave: string) => Promise.resolve(clave === 'chat.planificador.activo'));
+    planificar.mockResolvedValue(plan({ consulta: 'q', subconsultas: ['a', 'b'] }));
+
+    await chat.responderChat(peticionBase());
+
+    expect(buscarHibrido).toHaveBeenCalledTimes(1);
+  });
+
+  it('con chat.hyde.activo, el párrafo hipotético va a la búsqueda y sus tokens a uso_token', async () => {
+    leerBooleano.mockResolvedValue(true);
+    planificar.mockResolvedValue(plan({ consulta: 'penalidad por atraso en la obra de Junín' }));
+    const parrafo = 'Se aplica la penalidad por mora de S/ 15 000,00 equivalente a diez días calendario de atraso en la obra.';
+    responder.mockImplementation((mensajes: { rol: string; contenido: string }[]) => Promise.resolve({
+      texto: mensajes[0].contenido.startsWith('Escribes UN párrafo') ? parrafo : 'respuesta',
+      uso: { tokensIn: 10, tokensOut: 5, estimado: false },
+    }));
+
+    await chat.responderChat(peticionBase());
+
+    expect(buscarHibrido.mock.calls[0][5]).toEqual({ consultaVectorial: 'penalidad por atraso en la obra de Junín', textoHyde: parrafo });
+    const usos = query.mock.calls.filter(([sql]) => String(sql).includes('rag.uso_token'));
+    expect(usos.some(([, o]) => (o as { bind: unknown[] }).bind.includes('chat_hyde'))).toBe(true);
   });
 
   it('recorta las respuestas largas del asistente al reenviarlas como historial', async () => {

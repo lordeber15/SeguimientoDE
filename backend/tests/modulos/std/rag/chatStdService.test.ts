@@ -7,6 +7,11 @@
 
 const chatDisponible = jest.fn();
 const responder = jest.fn();
+const programarJuicio = jest.fn();
+// El juez corre en segundo plano y se prueba aparte (juezService.test.ts): aquí, solo que se programe.
+jest.mock('../../../../src/compartido/rag/juezService', () => ({
+  programarJuicio: (...a: unknown[]) => programarJuicio(...a),
+}));
 const buscarHibridoStd = jest.fn();
 const elegirDocumentoParaCitaStd = jest.fn();
 const lineaTiempoStd = jest.fn();

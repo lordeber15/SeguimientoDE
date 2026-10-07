@@ -8,7 +8,9 @@ import {
   responderChatStd,
   sesionParaDocumentoStd,
   textoChunkCitadoStd,
+  valorarMensajeStd,
 } from '../rag/chatStdService';
+import { leerCuerpoValoracion } from '../../../compartido/rag/valoracionService';
 import { estadoIngestaDocumentoStd, estadoIngestaDocumentosStd } from '../rag/retrievalStdService';
 import { alertar } from '../../../compartido/observabilidad/alertas';
 
@@ -36,6 +38,19 @@ export async function postReintentarMensajeStd(req: Request, res: Response) {
     res.json(await reintentarRespuestaStd(id, req.usuario!.codUser));
   } catch (error) {
     manejar(res, error, `Error al reintentar el mensaje ${id}`);
+  }
+}
+
+export async function postValorarMensajeStd(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ message: 'id inválido' });
+  const datos = leerCuerpoValoracion(req.body);
+  if (!datos) return res.status(400).json({ message: 'Se espera { valor: 1 | -1 | 0, comentario?: texto }' });
+
+  try {
+    res.json(await valorarMensajeStd(id, req.usuario!.codUser, datos));
+  } catch (error) {
+    manejar(res, error, `Error al valorar el mensaje ${id}`);
   }
 }
 

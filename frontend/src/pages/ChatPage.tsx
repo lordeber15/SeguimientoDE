@@ -34,6 +34,8 @@ interface MensajeUI<C extends CitaBasica> {
   marcadoresAlucinados?: number;
   /** El modelo no respondió: la búsqueda quedó guardada en el backend y se puede reintentar. */
   fallido?: boolean;
+  /** 👍 (1) / 👎 (-1) del usuario. */
+  valoracion?: 1 | -1 | null;
 }
 
 /** `mensajeFallidoId` / `sesionId` del cuerpo de un error reintentable (HTTP 502 del chat). */
@@ -154,6 +156,7 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
               id: String(m.id), rol: m.rol, tipo: m.tipo, texto: m.texto, citas: m.citas,
               tabla: m.tabla, documento: m.documento, participantes: m.participantes,
               fallido: m.estado === 'fallido',
+              valoracion: m.valoracion ?? null,
             })),
           );
         }
@@ -360,6 +363,24 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
     }
   }
 
+  /**
+   * 👍/👎 (Fase 5 del RAG avanzado): optimista — se marca al instante y se revierte si el backend lo
+   * rechaza. Repetir el mismo voto lo retira.
+   */
+  async function valorar(mensajeId: string, voto: 1 | -1) {
+    const previo = mensajes.find((x) => x.id === mensajeId)?.valoracion ?? null;
+    const nuevo = previo === voto ? null : voto;
+    const fijar = (v: 1 | -1 | null) =>
+      setMensajes((m) => m.map((x) => (x.id === mensajeId ? { ...x, valoracion: v } : x)));
+    fijar(nuevo);
+    try {
+      await adaptador.valorar(Number(mensajeId), nuevo ?? 0);
+    } catch (err) {
+      fijar(previo);
+      setError(err instanceof Error ? err.message : 'No se pudo guardar la valoración');
+    }
+  }
+
   async function reintentar(mensajeId: string) {
     if (reintentando || enviando) return;
     setError(null);
@@ -563,6 +584,29 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
                     El modelo mencionó {m.marcadoresAlucinados} cita(s) que no corresponden a ningún
                     fragmento real; se quitaron de la respuesta.
                   </p>
+                )}
+
+                {m.rol === 'assistant' && !m.fallido && /^\d+$/.test(m.id) && (
+                  <div className="chat-valoracion" role="group" aria-label="Valorar la respuesta">
+                    <button
+                      type="button"
+                      className={`chat-valoracion-boton${m.valoracion === 1 ? ' is-activo' : ''}`}
+                      aria-pressed={m.valoracion === 1}
+                      title="Respuesta útil"
+                      onClick={() => void valorar(m.id, 1)}
+                    >
+                      👍
+                    </button>
+                    <button
+                      type="button"
+                      className={`chat-valoracion-boton${m.valoracion === -1 ? ' is-activo' : ''}`}
+                      aria-pressed={m.valoracion === -1}
+                      title="Respuesta incorrecta o inútil"
+                      onClick={() => void valorar(m.id, -1)}
+                    >
+                      👎
+                    </button>
+                  </div>
                 )}
               </li>
             ))}

@@ -50,13 +50,19 @@ export async function leerNumero(
   return Number.isFinite(valor) ? valor : porDefecto;
 }
 
-/** Claves del chat editables desde el panel de cada módulo (docs/PLAN-RAG-AVANZADO.md, Fase 4). */
+/** Claves del chat editables desde el panel de cada módulo (docs/PLAN-RAG-AVANZADO.md, Fases 4 y 5). */
 export const CLAVES_CHAT_EDITABLES = [
   'chat.planificador.activo',
   'chat.descomposicion.activa',
   'chat.hyde.activo',
   'chat.sinonimos',
+  'chat.juez.activo',
+  'chat.juez.muestreo',
+  'chat.juez.umbral_fidelidad',
 ] as const;
+
+/** Claves numéricas que son una fracción o un puntaje en [0, 1]. */
+const CLAVES_FRACCION = new Set(['chat.juez.muestreo', 'chat.juez.umbral_fidelidad']);
 
 /**
  * Valida el valor de una clave con formato propio antes de guardarlo. `null` = válido. Un JSON roto en
@@ -75,6 +81,10 @@ export function validarValorConfig(clave: string, valor: string): string | null 
       && Object.entries(v).every(([k, lista]) => k.trim() !== ''
         && Array.isArray(lista) && lista.every((x) => typeof x === 'string' && x.trim() !== ''));
     return valido ? null : 'chat.sinonimos: cada término debe tener una lista de textos no vacíos';
+  }
+  if (CLAVES_FRACCION.has(clave)) {
+    const n = Number(valor);
+    return valor.trim() !== '' && Number.isFinite(n) && n >= 0 && n <= 1 ? null : `${clave} debe ser un número entre 0 y 1`;
   }
   if (clave.endsWith('.activo') || clave.endsWith('.activa')) {
     return valor === 'true' || valor === 'false' ? null : `${clave} debe ser true o false`;

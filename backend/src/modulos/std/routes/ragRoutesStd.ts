@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  getCalidadChat,
   getConfig,
   getDocumentos,
   getDocumentosStdCobertura,
@@ -39,6 +40,7 @@ router.get('/documentos-std', requierePermiso('std.gestionar'), getDocumentosStd
 router.post('/barrer', requierePermiso('std.gestionar'), postBarrer);
 
 router.get('/config', requierePermiso('std.gestionar'), getConfig);
+router.get('/calidad-chat', requierePermiso('std.gestionar'), getCalidadChat);
 router.put('/config/:clave', requierePermiso('std.gestionar'), putConfig);
 
 router.post('/ingesta/conversion', requierePermiso('std.gestionar'), postIngestaConversion);

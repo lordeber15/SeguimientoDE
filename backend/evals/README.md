@@ -121,3 +121,18 @@ Casos compuestos: `npm run eval:rag:semilla -- --modulo sgd --sinteticos 0 --com
 casos sintéticos en una sola pregunta de dos partes; su "Recall de evidencias" dice si llegaron AMBAS.
 Los casos de jerga no se pueden sintetizar bien: escríbalos a mano (`"tipo": "jerga"`) con la palabra
 que usan los usuarios y no los documentos.
+
+## Del chat en producción al dataset (Fase 5)
+
+El juez LLM (panel del RAG → "Calidad del chat") evalúa una muestra de las respuestas reales y los
+usuarios pueden marcarlas 👍/👎. Las que fallaron se traen como borradores:
+
+```bash
+npm run eval:rag:semilla -- --modulo sgd --sinteticos 0 --valorados
+```
+
+Trae los turnos con 👎 o con fidelidad bajo `chat.juez.umbral_fidelidad`, con el historial previo de la
+conversación (y el expediente/documento si era un chat acotado). El `ground_truth` queda en
+"PENDIENTE…" — hay que escribir la respuesta correcta y etiquetar los documentos relevantes antes de
+marcar `"revisado": true`; mientras tanto no se exportan a Ragas. En `nota` va el motivo (👎 y su
+comentario, o el comentario del juez) y la respuesta que dio el chat.

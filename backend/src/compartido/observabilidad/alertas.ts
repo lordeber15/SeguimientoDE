@@ -20,7 +20,8 @@ export type TipoAlerta =
   | 'vectorial_degradada'   // sin embedding de la consulta: el retrieval cayó a FTS puro
   | 'rerank_degradado'      // el cross-encoder no respondió: se usó el orden de RRF
   | 'marcadores_alucinados' // el modelo citó [Dn] que no se le ofrecieron
-  | 'chat_error';           // error no controlado en el chat (HTTP 500)
+  | 'chat_error'            // error no controlado en el chat (HTTP 500)
+  | 'calidad_baja';         // la fidelidad media del juez LLM cayó bajo el umbral (Fase 5)
 
 /** Una alerta del mismo tipo (y clave) como máximo cada este intervalo; las demás se cuentan. */
 const intervaloMs = () => Math.max(0, Number(process.env.ALERTA_INTERVALO_MIN ?? 10)) * 60_000;

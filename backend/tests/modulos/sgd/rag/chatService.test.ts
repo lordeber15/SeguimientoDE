@@ -7,6 +7,11 @@
 
 const chatDisponible = jest.fn();
 const responder = jest.fn();
+const programarJuicio = jest.fn();
+// El juez corre en segundo plano y se prueba aparte (juezService.test.ts): aquí, solo que se programe.
+jest.mock('../../../../src/compartido/rag/juezService', () => ({
+  programarJuicio: (...a: unknown[]) => programarJuicio(...a),
+}));
 const buscarHibrido = jest.fn();
 const elegirDocumentoParaCita = jest.fn();
 const estadoExpediente = jest.fn();
@@ -215,6 +220,22 @@ describe('responderChat', () => {
     await chat.responderChat(peticionBase());
 
     expect(ordenLlamadas).toEqual(['crear-mensaje-pendiente', 'insert-cita', 'llamar-proveedor']);
+  });
+
+  it('programa el juicio del turno con la pregunta, la respuesta y los fragmentos que vio el modelo', async () => {
+    programarJuicio.mockReset();
+    buscarHibrido.mockResolvedValue(UN_CHUNK);
+    elegirDocumentoParaCita.mockResolvedValue({ id: 501, nuAnn: '2026', nuEmi: '0000000123', nuAne: 0 });
+    responder.mockResolvedValue({ texto: 'la respuesta [D1]', uso: { tokensIn: 1, tokensOut: 1, estimado: false } });
+
+    const r = await chat.responderChat(peticionBase({ mensaje: '¿cuál es el monto?' }));
+
+    expect(programarJuicio).toHaveBeenCalledTimes(1);
+    expect(programarJuicio.mock.calls[0][0]).toMatchObject({
+      modulo: 'sgd', mensajeId: r.mensajeId, sesionId: r.sesionId, pregunta: '¿cuál es el monto?',
+      respuesta: 'la respuesta [D1]', fragmentos: [{ numero: 1, texto: 'texto A' }],
+    });
+    expect(programarJuicio.mock.calls[0][0].trazaId).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it('limpia marcadores [Dn] inventados y cuenta la métrica de alucinación, conservando los reales', async () => {

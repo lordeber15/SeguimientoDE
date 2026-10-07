@@ -2902,3 +2902,118 @@ tbody tr.fila-destacada > td {
   color: inherit;
   resize: vertical;
 }
+
+/* 👍/👎 bajo cada respuesta del asistente (Fase 5 del RAG avanzado). Discretos hasta el hover o el voto. */
+.chat-valoracion {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.chat-valoracion-boton {
+  min-width: 44px;
+  min-height: 32px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 0.95rem;
+  line-height: 1;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.chat-valoracion-boton:hover,
+.chat-valoracion-boton:focus-visible {
+  opacity: 1;
+  border-color: var(--color-border);
+}
+
+.chat-valoracion-boton.is-activo {
+  opacity: 1;
+  border-color: var(--color-primary);
+  background: var(--color-muted);
+}
+
+/* Calidad del chat (components/CalidadChatRag.tsx). */
+.calidad-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.calidad-chat-campos {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.calidad-chat-campos label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9rem;
+}
+
+.calidad-chat-campos input {
+  max-width: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-card);
+  color: inherit;
+}
+
+.calidad-chat-subtitulo {
+  margin: 8px 0 0;
+  font-size: 1rem;
+}
+
+.calidad-chat-tabla-envoltura {
+  overflow-x: auto;
+}
+
+.calidad-chat-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.calidad-chat-tabla th,
+.calidad-chat-tabla td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-border);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.calidad-chat-tabla th:first-child,
+.calidad-chat-tabla td:first-child {
+  text-align: left;
+}
+
+.calidad-chat-tabla td.is-error {
+  color: var(--color-destructive);
+  font-weight: 600;
+}
+
+.calidad-chat-peores {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.calidad-chat-peores li {
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.calidad-chat-pregunta {
+  margin: 0 0 4px;
+  font-weight: 600;
+}

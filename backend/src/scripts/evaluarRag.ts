@@ -411,13 +411,15 @@ async function guardarCorrida(datos: {
   });
 }
 
-/** Exporta para Ragas: los casos `sin_respuesta` y los fallidos no entran (no tienen contexto que juzgar). */
+/** Exporta para Ragas: los casos `sin_respuesta` y los fallidos no entran (no tienen contexto que juzgar), ni
+ *  los de `--valorados` aún sin ground_truth escrito (Ragas mediría contra el texto "PENDIENTE…"). */
 function exportarParaRagas(corridaId: number, modulo: ModuloEval, resultados: ResultadoCaso[]): string {
   const dir = path.join(DIR_EVALS, 'salidas');
   fs.mkdirSync(dir, { recursive: true });
   const archivo = path.join(dir, `${modulo}-${corridaId}.json`);
   const muestras = resultados
-    .filter((r) => r.error === null && r.respuesta !== null && !r.caso.sin_respuesta && r.contextos.length > 0)
+    .filter((r) => r.error === null && r.respuesta !== null && !r.caso.sin_respuesta && r.contextos.length > 0
+      && !r.caso.ground_truth.startsWith('PENDIENTE'))
     .map((r) => ({
       caso_id: r.caso.id,
       question: r.caso.pregunta,

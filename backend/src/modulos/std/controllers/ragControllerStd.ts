@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { crearEmbeddingProvider } from '../../../compartido/ai/providerFactory';
 import { ErrorIA } from '../../../compartido/ai/types';
 import { barrerStd, BarridoStdOcupado } from '../rag/barridoStdService';
+import { resumenCalidad } from '../../../compartido/rag/calidadChatService';
 import { CLAVES_CHAT_EDITABLES, escribirConfig, listarConfig, validarValorConfig } from '../../../compartido/rag/configService';
 import {
   activarModelo,
@@ -256,6 +257,15 @@ const CLAVES_EDITABLES = new Set([
   'rag.gc.gracia_dias',
   ...CLAVES_CHAT_EDITABLES,
 ]);
+
+/** Panel de calidad del chat (Fase 5): juez LLM, valoraciones y última evaluación offline. */
+export async function getCalidadChat(_req: Request, res: Response) {
+  try {
+    res.json(await resumenCalidad(stdRagSequelize, 'std'));
+  } catch (error) {
+    manejar(res, error, 'Error al leer la calidad del chat');
+  }
+}
 
 export async function getConfig(_req: Request, res: Response) {
   try {

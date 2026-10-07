@@ -11,6 +11,7 @@ import {
   postChatExpediente,
   postChatGeneral,
   postReintentarMensaje,
+  postValorarMensaje,
 } from '../controllers/chatController';
 import { requiereAuth, requierePermiso } from '../../../compartido/middlewares/authMiddleware';
 
@@ -32,5 +33,7 @@ router.get('/chunks/:id', getChunkCitado);
 router.get('/mensajes/:id/resultados', getResultadosMensaje);
 // Reintento de un turno 'fallido': la respuesta del modelo, sobre las citas que ese turno ya guardó.
 router.post('/mensajes/:id/reintentar', postReintentarMensaje);
+// 👍/👎 sobre una respuesta (Fase 5). Solo el dueño de la conversación.
+router.post('/mensajes/:id/valoracion', postValorarMensaje);
 
 export default router;

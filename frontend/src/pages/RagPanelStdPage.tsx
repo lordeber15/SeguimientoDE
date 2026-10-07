@@ -29,6 +29,7 @@ import { rutaAdjuntoStd } from '../api/std';
 import { ApiError } from '../api/cliente';
 import { ModalContinuarLote, type TipoCadena } from '../components/ModalContinuarLote';
 import { PanelJobIngesta } from '../components/PanelJobIngesta';
+import { CalidadChatRag } from '../components/CalidadChatRag';
 import { ConfigChatRag } from '../components/ConfigChatRag';
 import { VisorDocumento } from '../components/VisorDocumento';
 
@@ -952,6 +953,11 @@ export function RagPanelStdPage() {
         <section className="rag-tarjeta rag-tarjeta--ancha">
           <h2>Chat: transformación de consultas</h2>
           <ConfigChatRag base="/api/std/rag" />
+        </section>
+
+        <section className="rag-tarjeta rag-tarjeta--ancha">
+          <h2>Calidad del chat</h2>
+          <CalidadChatRag base="/api/std/rag" />
         </section>
 
         <section className="rag-tarjeta rag-tarjeta--ancha">

@@ -143,6 +143,8 @@ export interface MensajeHistorialBase<C extends CitaBasica> {
   tipo?: TipoRespuestaChat;
   /** 'fallido' = el modelo no respondió; se puede reintentar sin volver a escribir la pregunta. */
   estado?: 'ok' | 'fallido';
+  /** 👍 (1) / 👎 (-1) que el usuario dio a la respuesta; null o ausente si no la valoró. */
+  valoracion?: 1 | -1 | null;
   texto: string;
   citas: C[];
   tabla?: TablaResultadosChat;
@@ -183,6 +185,8 @@ export interface AdaptadorChat<E, C extends CitaBasica> {
   enviarContexto(e: E, mensaje: string, sesionId?: number): Promise<RespuestaChatBase<C>>;
   /** Reintenta la respuesta de un turno 'fallido' sobre las citas que ese turno ya guardó. */
   reintentar(mensajeId: number): Promise<RespuestaChatBase<C>>;
+  /** 👍/👎 sobre una respuesta del asistente; `0` retira la valoración. */
+  valorar(mensajeId: number, valor: 1 | -1 | 0): Promise<{ ok: true }>;
   fetchTexto(chunkId: number): Promise<{ texto: string }>;
   abrirCita(cita: C): { url: string; titulo: string; visualizable: boolean };
 

@@ -195,3 +195,40 @@ async function exportarALangfuse(traza: Traza): Promise<void> {
     clearTimeout(temporizador);
   }
 }
+
+export interface PuntajeTraza {
+  nombre: string;
+  valor: number;
+  comentario?: string;
+}
+
+/**
+ * Puntajes del juez LLM (Fase 5) sobre una traza ya exportada, con la API pública de scores
+ * (`POST /api/public/scores`, NUMERIC). Uno por petición: la API no acepta lotes. Sin Langfuse
+ * configurado no hace nada; un fallo solo se registra (el veredicto ya quedó en `rag.juicio_turno`).
+ */
+export async function exportarPuntajesALangfuse(trazaId: string, puntajes: PuntajeTraza[]): Promise<void> {
+  if (!langfuseConfigurado()) return;
+  const host = process.env.LANGFUSE_HOST!.replace(/\/+$/, '');
+  const credencial = Buffer.from(`${process.env.LANGFUSE_PUBLIC_KEY}:${process.env.LANGFUSE_SECRET_KEY}`).toString('base64');
+  for (const p of puntajes) {
+    const abortador = new AbortController();
+    const temporizador = setTimeout(() => abortador.abort(), 5000);
+    try {
+      const r = await fetch(`${host}/api/public/scores`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Basic ${credencial}` },
+        body: JSON.stringify({
+          traceId: trazaId, name: `juez.${p.nombre}`, value: p.valor, dataType: 'NUMERIC',
+          ...(p.comentario ? { comment: p.comentario.slice(0, 500) } : {}),
+        }),
+        signal: abortador.signal,
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text().catch(() => '')).slice(0, 200)}`);
+    } catch (e) {
+      console.warn(`No se pudo exportar el puntaje ${p.nombre} de la traza ${trazaId} a Langfuse: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      clearTimeout(temporizador);
+    }
+  }
+}

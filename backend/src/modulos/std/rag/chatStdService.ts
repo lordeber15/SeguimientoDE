@@ -6,6 +6,8 @@ import { leerParametros, prepararTerminos, terminosDeConsulta, terminosDelPlan }
 import { filtroGratis, mensajeFijo, type MotivoFijo } from '../../../compartido/rag/cierreChat';
 import { leerBooleano } from '../../../compartido/rag/configService';
 import { planDeRespaldo, planificar, type ResultadoPlanificador } from '../../../compartido/rag/planificadorService';
+import { programarJuicio } from '../../../compartido/rag/juezService';
+import { ERRORES_VALORACION, guardarValoracion } from '../../../compartido/rag/valoracionService';
 import { rerankear, type ResultadoRerank } from '../../../compartido/rag/rerankService';
 import {
   combinarBusquedas,
@@ -782,6 +784,13 @@ async function completarTurnoStd(d: {
     planificador: d.planificador,
     respuestaFija: null,
   });
+  // Fase 5: una muestra de los turnos la evalúa el juez LLM, después de responder (no espera).
+  const traza = trazaActual();
+  programarJuicio({
+    modulo: 'std', db: stdRagSequelize, usuarioId: traza?.usuarioId ?? '', sesionId: d.sesionId, mensajeId: d.mensajeId,
+    trazaId: traza?.id ?? null, pregunta: d.pregunta, respuesta: texto,
+    fragmentos: d.citas.map((c) => ({ numero: c.numero, texto: c.texto })), lineaTiempo: d.timeline,
+  });
 
   return {
     sesionId: d.sesionId,
@@ -905,6 +914,7 @@ interface FilaMensajeHistorial {
   fe_alta: string;
   meta: unknown;
   estado: 'ok' | 'fallido';
+  valoracion: 1 | -1 | null;
 }
 
 interface FilaCitaHistorial {
@@ -930,6 +940,8 @@ export interface MensajeHistorialStd {
   feAlta: string;
   /** 'fallido' = la respuesta no se pudo generar; el frontend ofrece reintentarla. */
   estado: 'ok' | 'fallido';
+  /** 👍 (1) / 👎 (-1) que dio el usuario a esta respuesta; null si no la valoró (Fase 5). */
+  valoracion: 1 | -1 | null;
   citas: CitaRespuestaStd[];
   /** En `tipo='tabla'`: totales sin filas; el frontend pide la página 1 al pintarla. */
   tabla?: TablaDocumentosStd;
@@ -997,9 +1009,11 @@ export async function obtenerHistorialSesionStd(
   if (sesiones[0].usuario_id !== usuarioId) throw new ChatStdError('Esa sesión no le pertenece', 403);
 
   const filas = await stdRagSequelize.query<FilaMensajeHistorial>(
-    `SELECT id, rol, tipo, texto, fe_alta::text, estado,
-            CASE WHEN tipo IN ('tabla', 'documento', 'participantes') THEN meta END AS meta
-       FROM rag.chat_mensaje WHERE sesion_id = $1 ORDER BY id ASC`,
+    `SELECT m.id, m.rol, m.tipo, m.texto, m.fe_alta::text, m.estado, v.valor AS valoracion,
+            CASE WHEN m.tipo IN ('tabla', 'documento', 'participantes') THEN m.meta END AS meta
+       FROM rag.chat_mensaje m
+       LEFT JOIN rag.valoracion_mensaje v ON v.mensaje_id = m.id
+      WHERE m.sesion_id = $1 ORDER BY m.id ASC`,
     { bind: [sesionId], type: QueryTypes.SELECT },
   );
 
@@ -1013,6 +1027,7 @@ export async function obtenerHistorialSesionStd(
     texto: f.texto,
     feAlta: f.fe_alta,
     estado: f.estado ?? 'ok',
+    valoracion: f.valoracion ?? null,
     citas: citasPorMensaje.get(f.id) ?? [],
     ...(f.tipo === 'tabla' && esMetaListadoStd(f.meta) ? { tabla: resumenTablaStd(f.meta) } : {}),
     ...(f.tipo === 'documento' && metaConCampo(f.meta, 'documento') ? { documento: f.meta.documento as TarjetaDocumentoStd } : {}),
@@ -1061,4 +1076,18 @@ export async function textoChunkCitadoStd(chunkId: number, usuarioId: string): P
   );
   if (!filas[0]) throw new ChatStdError('Ese fragmento no está disponible', 404);
   return filas[0].texto;
+}
+
+/**
+ * 👍/👎 del usuario sobre una respuesta (docs/PLAN-RAG-AVANZADO.md, Fase 5): alimenta el panel de calidad y,
+ * los negativos, el dataset de evaluación (`eval:rag:semilla --valorados`). `valor = 0` la retira.
+ */
+export async function valorarMensajeStd(
+  mensajeId: number,
+  usuarioId: string,
+  datos: { valor: -1 | 0 | 1; comentario: string | null },
+): Promise<{ ok: true }> {
+  const r = await guardarValoracion(stdRagSequelize, { mensajeId, usuarioId, ...datos });
+  if (r !== 'ok') throw new ChatStdError(ERRORES_VALORACION[r].mensaje, ERRORES_VALORACION[r].status);
+  return { ok: true };
 }

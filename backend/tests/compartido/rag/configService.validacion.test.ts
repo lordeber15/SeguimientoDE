@@ -28,3 +28,13 @@ describe('validarValorConfig', () => {
     expect(validarValorConfig('rag.retencion.dias', '90')).toBeNull();
   });
 });
+
+describe('validarValorConfig — juez (Fase 5)', () => {
+  it('muestreo y umbral: números entre 0 y 1', () => {
+    expect(validarValorConfig('chat.juez.muestreo', '0.1')).toBeNull();
+    expect(validarValorConfig('chat.juez.umbral_fidelidad', '1')).toBeNull();
+    expect(validarValorConfig('chat.juez.muestreo', '1.5')).toMatch(/entre 0 y 1/);
+    expect(validarValorConfig('chat.juez.muestreo', '')).toMatch(/entre 0 y 1/);
+    expect(validarValorConfig('chat.juez.umbral_fidelidad', 'alto')).toMatch(/entre 0 y 1/);
+  });
+});

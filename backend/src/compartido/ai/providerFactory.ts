@@ -75,8 +75,22 @@ export function crearChatProvider(nombre = proveedorChatConfigurado()): ChatProv
  * Sin ninguna de las dos devuelve `null`: quien llama usa el proveedor de chat, como antes.
  */
 export function crearChatProviderRapido(): ChatProvider | null {
-  const proveedor = (leer('CHAT_PLANIFICADOR_PROVIDER') || '') as NombreProveedor | '';
-  const modelo = leer('CHAT_PLANIFICADOR_MODEL');
+  return crearChatProviderAparte('CHAT_PLANIFICADOR');
+}
+
+/**
+ * Modelo del JUEZ de calidad (Fase 5): `CHAT_JUEZ_PROVIDER` + `CHAT_JUEZ_MODEL`. Conviene que sea uno
+ * igual o más capaz que el de chat (un juez más débil que el juzgado no detecta sus errores). Sin
+ * configurar, el de chat.
+ */
+export function crearChatProviderJuez(): ChatProvider {
+  return crearChatProviderAparte('CHAT_JUEZ') ?? crearChatProvider();
+}
+
+/** `<prefijo>_PROVIDER` / `<prefijo>_MODEL`: un proveedor de chat distinto del principal, o `null`. */
+function crearChatProviderAparte(prefijo: string): ChatProvider | null {
+  const proveedor = (leer(`${prefijo}_PROVIDER`) || '') as NombreProveedor | '';
+  const modelo = leer(`${prefijo}_MODEL`);
   if (!proveedor && !modelo) return null;
   const nombre = (proveedor || proveedorChatConfigurado()) as NombreProveedor;
   switch (nombre) {
@@ -90,7 +104,7 @@ export function crearChatProviderRapido(): ChatProvider | null {
       return instrumentarChat(new AnthropicChat(modelo || undefined));
     default:
       throw new Error(
-        `CHAT_PLANIFICADOR_PROVIDER="${nombre}" no es válido. Opciones: ${PROVEEDORES_CHAT.join(', ')}.`,
+        `${prefijo}_PROVIDER="${nombre}" no es válido. Opciones: ${PROVEEDORES_CHAT.join(', ')}.`,
       );
   }
 }
@@ -208,19 +222,18 @@ export function revisarConfiguracionIA(): ProblemaConfiguracion[] {
     problemas.push(...revisarProveedor(proveedor));
   }
 
-  // Modelo rápido: si apunta a otro proveedor, ese proveedor también necesita sus claves.
-  const rapido = leer('CHAT_PLANIFICADOR_PROVIDER') as NombreProveedor;
-  if (rapido) {
-    if (!PROVEEDORES_CHAT.includes(rapido)) {
-      problemas.push({
-        variable: 'CHAT_PLANIFICADOR_PROVIDER',
-        mensaje: `Valor "${rapido}" no válido. Opciones: ${PROVEEDORES_CHAT.join(', ')}.`,
-      });
-    } else if (rapido !== chat && rapido !== embedding) {
-      problemas.push(...revisarProveedor(rapido).map((p) => ({
-        variable: 'CHAT_PLANIFICADOR_PROVIDER',
-        mensaje: `${p.variable}: ${p.mensaje} Sin ella el planificador usa el modelo de chat.`,
-      })));
+  // Modelo rápido y juez: si apuntan a otro proveedor, ese proveedor también necesita sus claves.
+  const aparte: [string, string][] = [
+    ['CHAT_PLANIFICADOR_PROVIDER', 'Sin ella el planificador reintenta con el modelo de chat.'],
+    ['CHAT_JUEZ_PROVIDER', 'Sin ella los juicios de calidad quedan con error.'],
+  ];
+  for (const [variable, consecuencia] of aparte) {
+    const otro = leer(variable) as NombreProveedor;
+    if (!otro) continue;
+    if (!PROVEEDORES_CHAT.includes(otro)) {
+      problemas.push({ variable, mensaje: `Valor "${otro}" no válido. Opciones: ${PROVEEDORES_CHAT.join(', ')}.` });
+    } else if (otro !== chat && otro !== embedding) {
+      problemas.push(...revisarProveedor(otro).map((p) => ({ variable, mensaje: `${p.variable}: ${p.mensaje} ${consecuencia}` })));
     }
   }
 
@@ -275,7 +288,7 @@ function revisarProveedor(proveedor: NombreProveedor): ProblemaConfiguracion[] {
 /** Rerank y modelo rápido degradan solos (orden de RRF / modelo de chat): sus avisos se muestran,
  *  pero no apagan el chat ni los embeddings. */
 function esAvisoNoBloqueante(p: ProblemaConfiguracion): boolean {
-  return ['RAG_RERANK_PROVIDER', 'COHERE_API_KEY', 'CHAT_PLANIFICADOR_PROVIDER'].includes(p.variable);
+  return ['RAG_RERANK_PROVIDER', 'COHERE_API_KEY', 'CHAT_PLANIFICADOR_PROVIDER', 'CHAT_JUEZ_PROVIDER'].includes(p.variable);
 }
 
 /** ¿Se puede embeber ahora mismo, o falta configuración? */

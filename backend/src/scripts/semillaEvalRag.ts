@@ -15,6 +15,7 @@ import {
   type CasoRag,
   type ModuloEval,
 } from '../compartido/rag/evaluacionRag';
+import { leerNumero } from '../compartido/rag/configService';
 import { extraerJson } from '../compartido/rag/planificadorService';
 import { stdRagSequelize } from '../modulos/std/config/stdRagDatabase';
 
@@ -26,6 +27,7 @@ import { stdRagSequelize } from '../modulos/std/config/stdRagDatabase';
  *   npm run eval:rag:semilla -- --modulo sgd --sinteticos 40
  *   npm run eval:rag:semilla -- --modulo sgd --sinteticos 0 --historial
  *   npm run eval:rag:semilla -- --modulo sgd --sinteticos 0 --compuestos 10
+ *   npm run eval:rag:semilla -- --modulo std --sinteticos 0 --valorados
  *
  * Dos fuentes:
  * - `--sinteticos N`: N fragmentos reales al azar (uno por documento); el modelo de chat escribe una
@@ -38,6 +40,9 @@ import { stdRagSequelize } from '../modulos/std/config/stdRagDatabase';
  * - `--compuestos N` (Fase 4, decomposition): une pares de casos sintéticos de documentos DISTINTOS en
  *   una sola pregunta con dos partes ("¿…? y además, ¿…?"). Relevantes, evidencias y ground_truth son la
  *   unión de los dos: el "Recall de evidencias" mide si el retrieval trae AMBAS partes.
+ * - `--valorados` (Fase 5): turnos reales que el usuario marcó 👎 o que el juez LLM puntuó bajo el umbral
+ *   de fidelidad, con su historial previo de la conversación. Son los casos donde el chat FALLÓ: el
+ *   `ground_truth` queda pendiente de escribir (la respuesta que se dio es justamente la mala).
  *
  * No toca los casos que ya existen (mismo id = se salta).
  */
@@ -186,6 +191,66 @@ async function desdeHistorial(limite: number): Promise<CasoRag[]> {
   }));
 }
 
+const MAX_TURNOS_HISTORIAL_CASO = 6;
+
+/** Turnos 👎 o mal juzgados (Fase 5), del más reciente al más antiguo. */
+async function desdeValorados(modulo: ModuloEval, limite: number): Promise<CasoRag[]> {
+  const db: Sequelize = modulo === 'sgd' ? appSequelize : stdRagSequelize;
+  const umbral = await leerNumero('chat.juez.umbral_fidelidad', 0.7, db);
+  const columnasSesion = modulo === 'sgd' ? 's.nu_ann_exp, s.nu_sec_exp' : 's.id_documento';
+  const filas = await db.query<{
+    mensaje_id: number; sesion_id: number; modo: string; pregunta: string; pregunta_id: number; respuesta: string;
+    valor: number | null; comentario_usuario: string | null; fidelidad: number | null; comentario_juez: string | null;
+    nu_ann_exp?: string | null; nu_sec_exp?: string | null; id_documento?: number | null;
+  }>(
+    `SELECT a.id AS mensaje_id, a.sesion_id, s.modo, u.texto AS pregunta, u.id AS pregunta_id, a.texto AS respuesta,
+            v.valor, v.comentario AS comentario_usuario, j.fidelidad, j.comentario AS comentario_juez, ${columnasSesion}
+       FROM rag.chat_mensaje a
+       JOIN rag.chat_sesion s ON s.id = a.sesion_id
+       JOIN LATERAL (
+         SELECT id, texto FROM rag.chat_mensaje u
+          WHERE u.sesion_id = a.sesion_id AND u.rol = 'user' AND u.id < a.id
+          ORDER BY u.id DESC LIMIT 1
+       ) u ON true
+       LEFT JOIN rag.valoracion_mensaje v ON v.mensaje_id = a.id
+       LEFT JOIN rag.juicio_turno j ON j.mensaje_id = a.id AND j.error IS NULL
+      WHERE a.rol = 'assistant' AND a.tipo = 'texto' AND (v.valor = -1 OR j.fidelidad < $1)
+      ORDER BY a.id DESC
+      LIMIT $2`,
+    { bind: [umbral, limite], type: QueryTypes.SELECT },
+  );
+
+  const casos: CasoRag[] = [];
+  for (const f of filas) {
+    const previos = await db.query<{ rol: 'user' | 'assistant'; texto: string }>(
+      `SELECT rol, texto FROM rag.chat_mensaje
+        WHERE sesion_id = $1 AND id < $2 AND estado = 'ok' AND texto <> ''
+        ORDER BY id DESC LIMIT ${MAX_TURNOS_HISTORIAL_CASO}`,
+      { bind: [f.sesion_id, f.pregunta_id], type: QueryTypes.SELECT },
+    );
+    const motivos = [
+      f.valor === -1 ? `👎 del usuario${f.comentario_usuario ? `: "${f.comentario_usuario}"` : ''}` : null,
+      f.fidelidad !== null && f.fidelidad < umbral ? `juez: fidelidad ${f.fidelidad.toFixed(2)} — ${f.comentario_juez ?? ''}` : null,
+    ].filter(Boolean).join(' · ');
+    casos.push({
+      id: `val-${modulo}-${f.mensaje_id}`,
+      pregunta: f.pregunta.trim(),
+      historial: previos.reverse().map((p) => ({ rol: p.rol, contenido: p.texto })),
+      ...(modulo === 'sgd' && f.modo === 'expediente' && f.nu_ann_exp && f.nu_sec_exp
+        ? { expediente: { nuAnnExp: f.nu_ann_exp, nuSecExp: f.nu_sec_exp } } : {}),
+      ...(modulo === 'std' && f.modo === 'documento' && f.id_documento ? { idDocumento: Number(f.id_documento) } : {}),
+      ground_truth: 'PENDIENTE: escribir la respuesta correcta (la del chat fue marcada como mala).',
+      relevantes: { documentos: [], evidencias: [] },
+      sin_respuesta: false,
+      tipo: previos.length > 0 ? 'seguimiento' : 'factual',
+      origen: 'historial',
+      revisado: false,
+      nota: `${motivos}. Respuesta que dio el chat: ${f.respuesta.replace(/\s+/g, ' ').slice(0, 300)}`,
+    });
+  }
+  return casos;
+}
+
 /** Id estable del par: el mismo par no se agrega dos veces aunque se corra la semilla de nuevo. */
 const idCompuesto = (a: CasoRag, b: CasoRag) =>
   `comp-${createHash('sha256').update(`${a.id}|${b.id}`).digest('hex').slice(0, 10)}`;
@@ -240,6 +305,7 @@ async function main(): Promise<void> {
   const sinteticos = Math.max(0, Number(valor('--sinteticos') ?? 20) || 0);
   const conHistorial = argv.includes('--historial');
   const compuestos = Math.max(0, Number(valor('--compuestos') ?? 0) || 0);
+  const conValorados = argv.includes('--valorados');
   if (conHistorial && modulo !== 'sgd') throw new Error('--historial solo aplica al SGD (el chat del STD aún no tiene historial útil)');
 
   const archivo = rutaCasos(modulo);
@@ -257,6 +323,12 @@ async function main(): Promise<void> {
     const hist = await desdeHistorial(50);
     const agregados = hist.filter(agregar).length;
     console.log(`Historial: ${agregados} casos nuevos (de ${hist.length} preguntas con citas).`);
+  }
+
+  if (conValorados) {
+    const valorados = await desdeValorados(modulo, 50);
+    const agregados = valorados.filter(agregar).length;
+    console.log(`Valorados/juzgados: ${agregados} casos nuevos (de ${valorados.length} turnos 👎 o con fidelidad baja).`);
   }
 
   if (sinteticos > 0) {

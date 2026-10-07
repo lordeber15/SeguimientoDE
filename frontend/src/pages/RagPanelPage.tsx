@@ -3,6 +3,7 @@ import toast, { Toaster } from 'react-hot-toast';
 import { ListaDocumentosRag } from '../components/ListaDocumentosRag';
 import { ModalContinuarLote, type TipoCadena } from '../components/ModalContinuarLote';
 import { PanelJobIngesta } from '../components/PanelJobIngesta';
+import { CalidadChatRag } from '../components/CalidadChatRag';
 import { ConfigChatRag } from '../components/ConfigChatRag';
 import { ApiError } from '../api/cliente';
 import {
@@ -839,6 +840,11 @@ export function RagPanelPage() {
         <section className="rag-tarjeta rag-tarjeta--ancha">
           <h2>Chat: transformación de consultas</h2>
           <ConfigChatRag base="/api/rag" />
+        </section>
+
+        <section className="rag-tarjeta rag-tarjeta--ancha">
+          <h2>Calidad del chat</h2>
+          <CalidadChatRag base="/api/rag" />
         </section>
 
         <section className="rag-tarjeta rag-tarjeta--ancha">

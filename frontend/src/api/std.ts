@@ -65,6 +65,7 @@ export interface MensajeHistorialStd {
   rol: 'user' | 'assistant';
   tipo?: TipoRespuestaChat;
   estado?: 'ok' | 'fallido';
+  valoracion?: 1 | -1 | null;
   texto: string;
   feAlta: string;
   citas: CitaChatStd[];
@@ -115,6 +116,15 @@ export function enviarMensajeDocumentoStd(
 /** Reintenta la respuesta de un turno que quedó 'fallido' (el modelo no respondió). */
 export function reintentarMensajeStd(mensajeId: number): Promise<RespuestaChatStd> {
   return apiJson(`/api/std/chat/mensajes/${mensajeId}/reintentar`, 'reintentar la respuesta', { method: 'POST' });
+}
+
+/** 👍 (1) / 👎 (-1) sobre una respuesta; 0 la retira. Solo el dueño de la conversación. */
+export function valorarMensajeStd(mensajeId: number, valor: 1 | -1 | 0): Promise<{ ok: true }> {
+  return apiJson(`/api/std/chat/mensajes/${mensajeId}/valoracion`, 'guardar la valoración', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ valor }),
+  });
 }
 
 /** Texto completo del fragmento citado. Se pide al desplegar la cita, nunca antes. */
@@ -196,6 +206,7 @@ export const adaptadorChatStd: AdaptadorChat<DocumentoChatStd, CitaChatStd> = {
   enviarGeneral: enviarMensajeGeneralStd,
   enviarContexto: (d, mensaje, sesionId) => enviarMensajeDocumentoStd(d.idDocumento, mensaje, sesionId),
   reintentar: reintentarMensajeStd,
+  valorar: valorarMensajeStd,
   fetchTexto: fetchTextoChunkStd,
   abrirCita: (cita) => ({
     url: rutaAdjuntoStd(cita.idAdjunto),

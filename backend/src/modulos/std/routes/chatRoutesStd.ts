@@ -10,6 +10,7 @@ import {
   postChatDocumento,
   postChatGeneral,
   postReintentarMensajeStd,
+  postValorarMensajeStd,
 } from '../controllers/chatControllerStd';
 import { requiereAuth, requierePermiso } from '../../../compartido/middlewares/authMiddleware';
 
@@ -30,5 +31,7 @@ router.get('/chunks/:id', getChunkCitado);
 router.get('/mensajes/:id/resultados', getResultadosMensaje);
 // Reintento de un turno 'fallido' sobre las citas que ese turno ya guardó.
 router.post('/mensajes/:id/reintentar', postReintentarMensajeStd);
+// 👍/👎 sobre una respuesta (Fase 5). Solo el dueño de la conversación.
+router.post('/mensajes/:id/valoracion', postValorarMensajeStd);
 
 export default router;

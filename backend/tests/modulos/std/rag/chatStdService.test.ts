@@ -215,7 +215,7 @@ describe('responderChatStd — contenido', () => {
     expect(r.tipo).toBe('texto');
     expect(buscarHibridoStd).toHaveBeenCalledWith(
       'ampliación de plazo del contrato 227-2022-MCEBS', undefined, undefined, ['ampliación de plazo'],
-      { consultaVectorial: 'ampliación de plazo del contrato 227-2022-MCEBS', textoHyde: null },
+      { consultaVectorial: 'ampliación de plazo del contrato 227-2022-MCEBS', textoHyde: null, filtrosDoc: null },
     );
     expect(r.citas).toHaveLength(1);
     expect(guardados).toEqual(['pendiente']);

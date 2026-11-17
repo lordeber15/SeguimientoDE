@@ -1,4 +1,6 @@
 import type { Request, Response } from 'express';
+import { estadoReproceso, iniciarReproceso, opcionesReproceso } from '../../../compartido/rag/reprocesoService';
+import { adaptadorReprocesoSgd } from '../rag/reprocesoAdaptador';
 import { crearEmbeddingProvider } from '../../../compartido/ai/providerFactory';
 import { ErrorIA } from '../../../compartido/ai/types';
 import { barrer, BarridoOcupado, esInventarioInicial } from '../rag/barridoService';
@@ -482,4 +484,39 @@ export async function putModeloActivar(req: Request, res: Response) {
   } catch (error) {
     manejar(res, error, `Error al activar el modelo ${id}`);
   }
+}
+
+/** Proveedores y modelos de visión para el selector del reproceso (visor PDF | markdown). */
+export async function getOpcionesReproceso(_req: Request, res: Response) {
+  try {
+    res.json({ proveedores: await opcionesReproceso() });
+  } catch (error) {
+    manejar(res, error, 'Error al listar los proveedores de reproceso');
+  }
+}
+
+/** Lanza el reproceso del markdown con el proveedor elegido; corre en segundo plano (202). */
+export async function postReproceso(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) {
+    return res.status(400).json({ message: 'Id de documento inválido' });
+  }
+
+  try {
+    const reproceso = await iniciarReproceso(adaptadorReprocesoSgd, id, {
+      proveedor: req.body?.proveedor,
+      modelo: req.body?.modelo,
+    });
+    res.status(202).json({ reproceso });
+  } catch (error) {
+    manejar(res, error, `Error al reprocesar el documento ${id}`);
+  }
+}
+
+export function getReproceso(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) {
+    return res.status(400).json({ message: 'Id de documento inválido' });
+  }
+  res.json({ reproceso: estadoReproceso(adaptadorReprocesoSgd.modulo, id) });
 }

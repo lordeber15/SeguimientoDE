@@ -1,5 +1,11 @@
 import { QueryTypes } from 'sequelize';
-import type { OpcionesBusqueda } from '../../../compartido/rag/transformacionConsulta';
+import {
+  hayFiltrosDocumento,
+  sqlFiltrosDocumento,
+  type FiltrosDocumento,
+  type OpcionesBusqueda,
+} from '../../../compartido/rag/transformacionConsulta';
+import { condicionContiene } from '../../../compartido/rag/busquedaTerminos';
 import { stdRagSequelize } from '../config/stdRagDatabase';
 import { consultarStd } from '../config/stdDatabase';
 import { estimarTokens } from '../../../compartido/rag/chunkService';
@@ -51,7 +57,24 @@ export interface ResultadoBusquedaStd {
   degradacionVectorial?: string | null;
   /** Candidatos de la lista HyDE (Fase 4). */
   candidatosHyde?: number;
+  /** Los filtros del plan no dejaban ningún fragmento y se buscó sin ellos. */
+  filtrosRelajados?: boolean;
 }
+
+/**
+ * Filtros del plan sobre `rag.documento_std` (alias `ds`), las mismas columnas que el listado del STD
+ * (`busquedaDocumentosStdService.ts`): en el STD quien remite un documento interno es quien lo firma,
+ * así que remitente y emisor miran la misma persona.
+ */
+const personaStd = (n: number) => `${condicionContiene('ds.remitente', n)} OR ${condicionContiene('ds.remitente_entidad', n)}`;
+const CONDICIONES_STD: { [K in keyof FiltrosDocumento]: (n: number) => string } = {
+  remitente: personaStd,
+  emisor: (n) => `${personaStd(n)} OR ${condicionContiene('ds.area_origen', n)}`,
+  dependencia: (n) => condicionContiene('ds.area_origen', n),
+  tipoDoc: (n) => condicionContiene('ds.tipo_doc', n),
+  desde: (n) => `ds.fecha >= $${n}::date`,
+  hasta: (n) => `ds.fecha <= $${n}::date`,
+};
 
 interface FilaVec { chunk_id: number }
 interface FilaFts { chunk_id: number }
@@ -81,7 +104,15 @@ export async function buscarHibridoStd(
       consulta: consultaTexto, idDocumento: idDocumento ?? null, conjunto: conjunto?.length ?? 0, terminosFts: terminosFts ?? null,
       consultaVectorial: opciones.consultaVectorial ?? null, hyde: opciones.textoHyde ?? null,
     },
-    () => buscarHibridoStdSinTraza(consultaTexto, idDocumento, conjunto, terminosFts, opciones),
+    async () => {
+      const r = await buscarHibridoStdSinTraza(consultaTexto, idDocumento, conjunto, terminosFts, opciones);
+      // Igual que el SGD: un filtro mal extraído no deja al chat sin respuesta.
+      if (r.chunks.length > 0 || !hayFiltrosDocumento(opciones.filtrosDoc)) return r;
+      const sinFiltros = await buscarHibridoStdSinTraza(
+        consultaTexto, idDocumento, conjunto, terminosFts, { ...opciones, filtrosDoc: null },
+      );
+      return { ...sinFiltros, filtrosRelajados: true };
+    },
     { tipo: 'recuperacion', resumir: resumirBusqueda },
   );
 }
@@ -105,6 +136,14 @@ async function buscarHibridoStdSinTraza(
     `AND ($${i}::bigint IS NULL OR d.id_documento = $${i}) AND ($${i + 1}::bigint[] IS NULL OR d.id_documento = ANY($${i + 1}::bigint[]))`;
   const idDoc = idDocumento ?? null;
   const ids = conjunto && conjunto.length > 0 ? conjunto : null;
+  // Filtros del plan: sus binds van AL FINAL de cada consulta, desde el índice indicado.
+  const metaSql = (i: number) => {
+    const f = sqlFiltrosDocumento(opciones.filtrosDoc, i, CONDICIONES_STD);
+    return {
+      sql: f.sql ? `AND EXISTS (SELECT 1 FROM rag.documento_std ds WHERE ds.id_documento = d.id_documento ${f.sql})` : '',
+      binds: f.binds,
+    };
+  };
 
   // Ramas en paralelo, cada una en su conexión — igual que el SGD (retrievalService.ts).
   const ramaVectorial = async (vecLiteral: string | null): Promise<{ filasVec: FilaVec[]; escaneoExacto: boolean }> => {
@@ -113,19 +152,21 @@ async function buscarHibridoStdSinTraza(
       let escaneoExacto = false;
       // Mismo criterio que el SGD (ver ramaVectorial.ts): sin filtro, HNSW; con filtro, conteo con tope
       // ANTES de consultar y escaneo exacto bajo el umbral.
-      if (idDoc !== null || ids !== null) {
+      if (idDoc !== null || ids !== null || hayFiltrosDocumento(opciones.filtrosDoc)) {
+        const meta = metaSql(3);
         const [{ n }] = await stdRagSequelize.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM (
              SELECT 1 FROM rag.documento d
                JOIN rag.chunk c ON c.sha256 = d.contenido_sha256
-              WHERE d.vigente ${filtroDocSql(1)}
+              WHERE d.vigente ${filtroDocSql(1)} ${meta.sql}
               LIMIT ${UMBRAL_ESCANEO_EXACTO + 1}
            ) s`,
-          { bind: [idDoc, ids], type: QueryTypes.SELECT, transaction: tx },
+          { bind: [idDoc, ids, ...meta.binds], type: QueryTypes.SELECT, transaction: tx },
         );
         escaneoExacto = n <= UMBRAL_ESCANEO_EXACTO;
       }
 
+      const metaVec = metaSql(5);
       const filasVec = await conEscaneoVectorial(stdRagSequelize, tx, escaneoExacto, () => stdRagSequelize.query<FilaVec>(
         sqlVecinosOrdenados(
           `SELECT c.id AS chunk_id, e.vec <=> $2::vector AS distancia
@@ -134,17 +175,19 @@ async function buscarHibridoStdSinTraza(
             WHERE e.modelo_id = $1
               AND EXISTS (
                 SELECT 1 FROM rag.documento d
-                 WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${filtroDocSql(3)}
+                 WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${filtroDocSql(3)} ${metaVec.sql}
               )
             ORDER BY distancia
             LIMIT ${LIMITE_RAMA}`,
         ),
-        { bind: [modeloId, vecLiteral, idDoc, ids], type: QueryTypes.SELECT, transaction: tx },
+        { bind: [modeloId, vecLiteral, idDoc, ids, ...metaVec.binds], type: QueryTypes.SELECT, transaction: tx },
       ));
       return { filasVec, escaneoExacto };
     });
   };
 
+  const metaFts = metaSql(5);
+  // `tsv_busqueda` (migración std/007): texto + cabecera con menos peso; `tsv` queda para los listados.
   const ramaFts = () => stdRagSequelize.query<FilaFts>(
     `SELECT c.id AS chunk_id
        FROM rag.chunk c,
@@ -153,14 +196,17 @@ async function buscarHibridoStdSinTraza(
                  FROM unnest($4::text[]) AS t),
               plainto_tsquery('es_unaccent', $1)
             ) AS consulta
-      WHERE c.tsv @@ consulta
+      WHERE c.tsv_busqueda @@ consulta
         AND EXISTS (
           SELECT 1 FROM rag.documento d
-           WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${filtroDocSql(2)}
+           WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${filtroDocSql(2)} ${metaFts.sql}
         )
-      ORDER BY ts_rank_cd(c.tsv, consulta) DESC
+      ORDER BY ts_rank_cd(c.tsv_busqueda, consulta) DESC
       LIMIT ${LIMITE_RAMA}`,
-    { bind: [consultaTexto, idDoc, ids, terminosFts && terminosFts.length > 0 ? terminosFts : null], type: QueryTypes.SELECT },
+    {
+      bind: [consultaTexto, idDoc, ids, terminosFts && terminosFts.length > 0 ? terminosFts : null, ...metaFts.binds],
+      type: QueryTypes.SELECT,
+    },
   );
 
   const [{ filasVec, escaneoExacto }, filasFts, { filasVec: filasHyde }] = await Promise.all([

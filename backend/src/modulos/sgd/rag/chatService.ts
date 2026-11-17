@@ -557,7 +557,12 @@ export async function recuperarContexto(
   const hyde = t.hyde ? await generarHyde(t.hyde, consulta) : null;
   const textoHyde = hyde?.texto ?? null;
   const buscar = (q: string, terminos: string[] | undefined, hyde: string | null) => {
-    const extra = { consultaVectorial: t.sinonimos ? expandirConVocabulario(q, t.sinonimos) : undefined, textoHyde: hyde };
+    const extra = {
+      consultaVectorial: t.sinonimos ? expandirConVocabulario(q, t.sinonimos) : undefined,
+      textoHyde: hyde,
+      // Dentro de un expediente también sirven: "¿qué dice el informe de marzo?" entre sus documentos.
+      filtrosDoc: t.filtrosDoc ?? null,
+    };
     return expediente
       ? buscarHibrido(q, filtro, expediente, undefined, terminos, extra)
       : buscarHibrido(q, filtro, undefined, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO), terminos, extra);

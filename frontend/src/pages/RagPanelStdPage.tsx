@@ -12,6 +12,7 @@ import {
   extraerConVisionStd,
   fetchDocumentosStd,
   fetchJobStd,
+  fetchMarkdownDocumentoStd,
   fetchJobsStd,
   fetchPanelStd,
   iniciarIngestaConversionStd,
@@ -31,7 +32,8 @@ import { ModalContinuarLote, type TipoCadena } from '../components/ModalContinua
 import { PanelJobIngesta } from '../components/PanelJobIngesta';
 import { CalidadChatRag } from '../components/CalidadChatRag';
 import { ConfigChatRag } from '../components/ConfigChatRag';
-import { VisorDocumento } from '../components/VisorDocumento';
+import { VisorDocumento, type MarkdownVisor } from '../components/VisorDocumento';
+import { clienteReproceso, type ClienteReproceso } from '../api/reproceso';
 
 /**
  * Panel de administración del STD (`std.gestionar`) — página propia y más chica que `RagPanelPage`
@@ -187,6 +189,9 @@ function leerCadenaGuardada(): Cadena | null {
 interface DocumentoAbierto {
   url: string;
   titulo: string;
+  /** Presente si el documento ya tiene markdown: el visor lo muestra al costado del archivo. */
+  cargarMarkdown?: () => Promise<MarkdownVisor>;
+  reproceso?: ClienteReproceso;
 }
 
 export function RagPanelStdPage() {
@@ -575,7 +580,14 @@ export function RagPanelStdPage() {
     const titulo = [`STD ${doc.nroStd ?? doc.idDocumento}`, doc.tipoDoc, doc.documento]
       .filter(Boolean)
       .join(' · ');
-    setDocumentoAbierto({ url: rutaAdjuntoStd(doc.idAdjunto), titulo });
+    setDocumentoAbierto({
+      url: rutaAdjuntoStd(doc.idAdjunto),
+      titulo,
+      cargarMarkdown: doc.chars !== null ? () => fetchMarkdownDocumentoStd(doc.id) : undefined,
+      reproceso: doc.chars !== null
+        ? clienteReproceso('/api/std/rag', doc.id, () => iniciarIngestaEmbeddingsStd({ documentoIds: [doc.id] }))
+        : undefined,
+    });
   }
 
   if (estado.tipo === 'cargando') {
@@ -899,7 +911,7 @@ export function RagPanelStdPage() {
                         <td>
                           <div className="lista-documentos-acciones">
                             <button type="button" className="boton-enlace" onClick={() => abrirArchivo(d)}>
-                              Ver archivo
+                              {d.chars !== null ? 'Ver archivo y markdown' : 'Ver archivo'}
                             </button>
                             {ESTADOS_REINTENTABLES.has(d.estado) && (
                               <button
@@ -1043,6 +1055,12 @@ export function RagPanelStdPage() {
           url={documentoAbierto.url}
           titulo={documentoAbierto.titulo}
           visualizable
+          cargarMarkdown={documentoAbierto.cargarMarkdown}
+          reproceso={documentoAbierto.reproceso}
+          onReprocesado={() => {
+            cargarDocumentos();
+            cargar();
+          }}
           onCerrar={() => setDocumentoAbierto(null)}
         />
       )}

@@ -127,7 +127,7 @@ export function App() {
         </nav>
       </aside>
 
-      <div className="app-contenido">
+      <div className={`app-contenido${actualClave === 'chat' || actualClave === 'chatStd' ? ' app-contenido--chat' : ''}`}>
         <header className="app-header">
           <div className="app-header-texto">
             <h1>{actual?.titulo ?? 'Sin acceso'}</h1>

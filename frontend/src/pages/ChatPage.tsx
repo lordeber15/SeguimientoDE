@@ -413,84 +413,86 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
   ];
 
   return (
-    <main className="app-main app-main--ancho">
-      <section className="rag-tarjeta rag-tarjeta--ancha chat-tarjeta">
-        <Pestanas pestanas={pestanas} activa={modo} onCambiar={cambiarModo} etiqueta="Alcance del chat" />
+    <main className="app-main app-main--chat">
+      <section className="chat-tarjeta">
+        <div role="tabpanel" id={idPanel(modo)} aria-labelledby={idPestana(modo)} className="chat-panel">
+          <div className="chat-cabecera">
+            <Pestanas pestanas={pestanas} activa={modo} onCambiar={cambiarModo} etiqueta="Alcance del chat" />
+            {modo === 'general' && <p className="exp-nota">{adaptador.notaGeneral}</p>}
 
-        <div role="tabpanel" id={idPanel(modo)} aria-labelledby={idPestana(modo)}>
-          {modo === 'general' && <p className="exp-nota">{adaptador.notaGeneral}</p>}
-
-          {modo === 'contexto' && !seleccionado && (
-            <form className="busqueda-expediente" onSubmit={buscarEntidad}>
-              <label htmlFor="chat-buscar-entidad">{adaptador.labelBusqueda}</label>
-              <div className="busqueda-expediente-campo">
-                <input
-                  id="chat-buscar-entidad"
-                  type="search"
-                  value={termino}
-                  onChange={(e) => setTermino(e.target.value)}
-                  placeholder={adaptador.placeholderBusqueda}
-                />
-                <button
-                  type="submit"
-                  className="boton-secundario"
-                  disabled={buscando || termino.trim().length < LARGO_MIN_BUSQUEDA}
-                >
-                  {buscando ? 'Buscando…' : 'Buscar'}
-                </button>
-              </div>
-            </form>
-          )}
-
-          {errorBusqueda && (
-            <div className="state-message is-error" role="alert">
-              {errorBusqueda}
-            </div>
-          )}
-
-          {resultados !== null && resultados.length === 0 && (
-            <div className="state-message">{adaptador.notaSinResultados}</div>
-          )}
-
-          {resultados !== null && resultados.length > 0 && (
-            <ul className="resultados-expediente">
-              {resultados.map((r) => (
-                <li key={adaptador.claveEntidad(r)}>
-                  <button type="button" className="boton-enlace" onClick={() => elegirEntidad(r)}>
-                    {adaptador.etiquetaEntidad(r)}
+            {modo === 'contexto' && !seleccionado && (
+              <form className="busqueda-expediente" onSubmit={buscarEntidad}>
+                <label htmlFor="chat-buscar-entidad">{adaptador.labelBusqueda}</label>
+                <div className="busqueda-expediente-campo">
+                  <input
+                    id="chat-buscar-entidad"
+                    type="search"
+                    value={termino}
+                    onChange={(e) => setTermino(e.target.value)}
+                    placeholder={adaptador.placeholderBusqueda}
+                  />
+                  <button
+                    type="submit"
+                    className="boton-secundario"
+                    disabled={buscando || termino.trim().length < LARGO_MIN_BUSQUEDA}
+                  >
+                    {buscando ? 'Buscando…' : 'Buscar'}
                   </button>
-                  <span className="exp-nota">{adaptador.descripcionResultado(r)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+                </div>
+              </form>
+            )}
 
-          {modo === 'contexto' && seleccionado && (
-            <div className="chat-expediente-elegido">
-              <span>{adaptador.etiquetaEntidad(seleccionado)}</span>
-              <button type="button" className="boton-enlace" onClick={cambiarEntidad}>
-                Cambiar
-              </button>
-              {renderModalGestion && puedeGestionar && (
-                <button
-                  type="button"
-                  className="boton-enlace"
-                  onClick={() => setModalGestionAbierto(true)}
-                >
-                  Documentos{estadoIngesta ? ` (${estadoIngesta.total})` : ''}
+            {errorBusqueda && (
+              <div className="state-message is-error" role="alert">
+                {errorBusqueda}
+              </div>
+            )}
+
+            {resultados !== null && resultados.length === 0 && (
+              <div className="state-message">{adaptador.notaSinResultados}</div>
+            )}
+
+            {resultados !== null && resultados.length > 0 && (
+              <ul className="resultados-expediente">
+                {resultados.map((r) => (
+                  <li key={adaptador.claveEntidad(r)}>
+                    <button type="button" className="boton-enlace" onClick={() => elegirEntidad(r)}>
+                      {adaptador.etiquetaEntidad(r)}
+                    </button>
+                    <span className="exp-nota">{adaptador.descripcionResultado(r)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {modo === 'contexto' && seleccionado && (
+              <div className="chat-expediente-elegido">
+                <span>{adaptador.etiquetaEntidad(seleccionado)}</span>
+                <button type="button" className="boton-enlace" onClick={cambiarEntidad}>
+                  Cambiar
                 </button>
-              )}
-            </div>
-          )}
+                {renderModalGestion && puedeGestionar && (
+                  <button
+                    type="button"
+                    className="boton-enlace"
+                    onClick={() => setModalGestionAbierto(true)}
+                  >
+                    Documentos{estadoIngesta ? ` (${estadoIngesta.total})` : ''}
+                  </button>
+                )}
+              </div>
+            )}
 
-          {modo === 'contexto' && seleccionado && estadoIngesta && (
-            <AvisoIngesta
-              estado={estadoIngesta}
-              sustantivoContexto={adaptador.sustantivoContexto}
-              puedeGestionar={puedeGestionar && !!renderModalGestion}
-              onCorregir={() => setModalGestionAbierto(true)}
-            />
-          )}
+            {modo === 'contexto' && seleccionado && estadoIngesta && (
+              <AvisoIngesta
+                estado={estadoIngesta}
+                sustantivoContexto={adaptador.sustantivoContexto}
+                puedeGestionar={puedeGestionar && !!renderModalGestion}
+                onCorregir={() => setModalGestionAbierto(true)}
+              />
+            )}
+
+          </div>
 
           <ol className="chat-lista" aria-live="polite" ref={listaRef}>
             {cargandoInicial && (
@@ -500,12 +502,15 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
               </li>
             )}
             {!cargandoInicial && mensajes.length === 0 && (
-              <li className="exp-nota chat-vacio">
-                {modo === 'general'
-                  ? adaptador.notaVacioGeneral
-                  : seleccionado
-                    ? adaptador.notaVacioConSeleccion
-                    : adaptador.notaVacioSinSeleccion}
+              <li className="chat-vacio">
+                <h2>¿Qué desea consultar hoy?</h2>
+                <p className="exp-nota">
+                  {modo === 'general'
+                    ? adaptador.notaVacioGeneral
+                    : seleccionado
+                      ? adaptador.notaVacioConSeleccion
+                      : adaptador.notaVacioSinSeleccion}
+                </p>
               </li>
             )}
             {mensajes.map((m) => (
@@ -620,26 +625,31 @@ export function ChatPage<E, C extends CitaBasica>({ adaptador, contextoInicial, 
             )}
           </ol>
 
-          {error && (
-            <div className="state-message is-error" role="alert">
-              {error}
-            </div>
-          )}
+          <div className="chat-compositor">
+            {error && (
+              <div className="state-message is-error" role="alert">
+                {error}
+              </div>
+            )}
 
-          <form className="chat-form" onSubmit={enviar}>
-            <textarea
-              ref={entradaRef}
-              rows={1}
-              value={entrada}
-              onChange={(e) => setEntrada(e.target.value)}
-              onKeyDown={alTeclearEntrada}
-              placeholder="Escriba su pregunta…"
-              disabled={enviando}
-            />
-            <button type="submit" className="boton-primario" disabled={!puedeEnviar}>
-              Enviar
-            </button>
-          </form>
+            <form className="chat-form" onSubmit={enviar}>
+              <textarea
+                ref={entradaRef}
+                rows={1}
+                value={entrada}
+                onChange={(e) => setEntrada(e.target.value)}
+                onKeyDown={alTeclearEntrada}
+                placeholder="Escriba su pregunta…"
+                disabled={enviando}
+              />
+              <button type="submit" className="chat-enviar" disabled={!puedeEnviar} aria-label="Enviar" title="Enviar">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </form>
+            <p className="chat-pista">Enter para enviar · Shift + Enter para un salto de línea</p>
+          </div>
         </div>
       </section>
 

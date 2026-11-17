@@ -1,5 +1,11 @@
 import { QueryTypes } from 'sequelize';
-import type { OpcionesBusqueda } from '../../../compartido/rag/transformacionConsulta';
+import {
+  hayFiltrosDocumento,
+  sqlFiltrosDocumento,
+  type FiltrosDocumento,
+  type OpcionesBusqueda,
+} from '../../../compartido/rag/transformacionConsulta';
+import { condicionContiene } from '../../../compartido/rag/busquedaTerminos';
 import { appSequelize } from '../../../compartido/config/appDatabase';
 import { estimarTokens } from '../../../compartido/rag/chunkService';
 import { modeloActivo } from '../../../compartido/rag/embeddingModelService';
@@ -52,7 +58,19 @@ export interface ResultadoBusqueda {
   degradacionVectorial?: string | null;
   /** Candidatos de la lista HyDE (Fase 4); 0 si no se pidió o no se pudo embeber. */
   candidatosHyde?: number;
+  /** Los filtros del plan no dejaban ningún fragmento y se buscó sin ellos. */
+  filtrosRelajados?: boolean;
 }
+
+/** Filtros del plan traducidos a las columnas de `rag.documento` del SGD (las mismas que los listados). */
+const CONDICIONES_SGD: { [K in keyof FiltrosDocumento]: (n: number) => string } = {
+  remitente: (n) => `${condicionContiene('d.remitente_externo', n)} OR d.remitente_doc = $${n}`,
+  emisor: (n) => `${condicionContiene('d.emisor_empleado', n)} OR ${condicionContiene('d.de_dep_emi', n)}`,
+  dependencia: (n) => `${condicionContiene('d.de_dep_emi', n)} OR d.co_dep_emi = $${n}`,
+  tipoDoc: (n) => condicionContiene('d.tipo_doc', n),
+  desde: (n) => `d.fe_emi >= $${n}::date`,
+  hasta: (n) => `d.fe_emi < $${n}::date + 1`,
+};
 
 interface FilaVec { chunk_id: number }
 interface FilaFts { chunk_id: number }
@@ -97,7 +115,16 @@ export async function buscarHibrido(
       conjunto: conjunto?.length ?? 0, terminosFts: terminosFts ?? null,
       consultaVectorial: opciones.consultaVectorial ?? null, hyde: opciones.textoHyde ?? null,
     },
-    () => buscarHibridoSinTraza(consultaTexto, filtro, expediente, conjunto, terminosFts, opciones),
+    async () => {
+      const r = await buscarHibridoSinTraza(consultaTexto, filtro, expediente, conjunto, terminosFts, opciones);
+      // Un filtro mal extraído por el planificador (tipo o fecha equivocados) no debe dejar al chat sin
+      // respuesta: si no queda ningún fragmento, se repite la búsqueda sin los filtros del plan.
+      if (r.chunks.length > 0 || !hayFiltrosDocumento(opciones.filtrosDoc)) return r;
+      const sinFiltros = await buscarHibridoSinTraza(
+        consultaTexto, filtro, expediente, conjunto, terminosFts, { ...opciones, filtrosDoc: null },
+      );
+      return { ...sinFiltros, filtrosRelajados: true };
+    },
     { tipo: 'recuperacion', resumir: resumirBusqueda },
   );
 }
@@ -128,6 +155,8 @@ async function buscarHibridoSinTraza(
   const conjSec = conjunto && conjunto.length > 0 ? conjunto.map((c) => c.nuSecExp) : null;
   const conjuntoSql = (i: number) =>
     `AND ($${i}::text[] IS NULL OR (d.nu_ann_exp, d.nu_sec_exp) IN (SELECT unnest($${i}::text[]), unnest($${i + 1}::text[])))`;
+  // Filtros del plan: sus binds van AL FINAL de cada consulta, desde el índice indicado.
+  const metaSql = (i: number) => sqlFiltrosDocumento(opciones.filtrosDoc, i, CONDICIONES_SGD);
 
   // Las dos ramas corren EN PARALELO, cada una en su conexión (docs/PLAN-RAG-AVANZADO.md, Fase 3):
   // la vectorial necesita su transacción por los `SET LOCAL` de ramaVectorial.ts; la FTS no.
@@ -138,20 +167,26 @@ async function buscarHibridoSinTraza(
       // Sin ningún filtro (admin/jefe, búsqueda general) siempre se usa HNSW: el corpus entero nunca
       // queda bajo el umbral. Con filtro, se cuentan los chunks que deja pasar — con tope, para que el
       // conteo no cueste más que la búsqueda — y bajo el umbral se escanea exacto (ver ramaVectorial.ts).
-      const hayFiltro = filtro.coDependencia !== null || expAnn !== null || conjAnn !== null;
+      const hayFiltro = filtro.coDependencia !== null || expAnn !== null || conjAnn !== null
+        || hayFiltrosDocumento(opciones.filtrosDoc);
       if (hayFiltro) {
+        const meta = metaSql(6);
         const [{ n }] = await appSequelize.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM (
              SELECT 1 FROM rag.documento d
                JOIN rag.chunk c ON c.sha256 = d.contenido_sha256
-              WHERE d.vigente ${permisoSql} ${expedienteSql(2)} ${conjuntoSql(4)}
+              WHERE d.vigente ${permisoSql} ${expedienteSql(2)} ${conjuntoSql(4)} ${meta.sql}
               LIMIT ${UMBRAL_ESCANEO_EXACTO + 1}
            ) s`,
-          { bind: [filtro.coDependencia, expAnn, expSec, conjAnn, conjSec], type: QueryTypes.SELECT, transaction: tx },
+          {
+            bind: [filtro.coDependencia, expAnn, expSec, conjAnn, conjSec, ...meta.binds],
+            type: QueryTypes.SELECT, transaction: tx,
+          },
         );
         escaneoExacto = n <= UMBRAL_ESCANEO_EXACTO;
       }
 
+      const metaVec = metaSql(8);
       const filasVec = await conEscaneoVectorial(appSequelize, tx, escaneoExacto, () => appSequelize.query<FilaVec>(
         sqlVecinosOrdenados(
           `SELECT c.id AS chunk_id, e.vec <=> $3::vector AS distancia
@@ -161,13 +196,13 @@ async function buscarHibridoSinTraza(
               AND EXISTS (
                 SELECT 1 FROM rag.documento d
                  WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(4)}
-                   ${conjuntoSql(6)}
+                   ${conjuntoSql(6)} ${metaVec.sql}
               )
             ORDER BY distancia
             LIMIT ${LIMITE_RAMA}`,
         ),
         {
-          bind: [filtro.coDependencia, modeloId, vecLiteral, expAnn, expSec, conjAnn, conjSec],
+          bind: [filtro.coDependencia, modeloId, vecLiteral, expAnn, expSec, conjAnn, conjSec, ...metaVec.binds],
           type: QueryTypes.SELECT,
           transaction: tx,
         },
@@ -176,6 +211,9 @@ async function buscarHibridoSinTraza(
     });
   };
 
+  const metaFts = metaSql(8);
+  // `tsv_busqueda` (migración 028) = texto del fragmento + su cabecera (título, asunto, expediente) con
+  // menos peso: la FTS ve lo mismo que el vector. `tsv` (solo texto) queda para los listados.
   const ramaFts = () => appSequelize.query<FilaFts>(
     `SELECT c.id AS chunk_id
        FROM rag.chunk c,
@@ -184,18 +222,18 @@ async function buscarHibridoSinTraza(
                  FROM unnest($7::text[]) AS t),
               plainto_tsquery('es_unaccent', $2)
             ) AS consulta
-      WHERE c.tsv @@ consulta
+      WHERE c.tsv_busqueda @@ consulta
         AND EXISTS (
           SELECT 1 FROM rag.documento d
            WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(3)}
-             ${conjuntoSql(5)}
+             ${conjuntoSql(5)} ${metaFts.sql}
         )
-      ORDER BY ts_rank_cd(c.tsv, consulta) DESC
+      ORDER BY ts_rank_cd(c.tsv_busqueda, consulta) DESC
       LIMIT ${LIMITE_RAMA}`,
     {
       bind: [
         filtro.coDependencia, consultaTexto, expAnn, expSec, conjAnn, conjSec,
-        terminosFts && terminosFts.length > 0 ? terminosFts : null,
+        terminosFts && terminosFts.length > 0 ? terminosFts : null, ...metaFts.binds,
       ],
       type: QueryTypes.SELECT,
     },

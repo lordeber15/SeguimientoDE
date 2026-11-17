@@ -574,7 +574,7 @@ describe('responderChat — contexto de la conversación', () => {
     // Sin plan confiable no hay subconsultas ni HyDE; el vocabulario sí (no depende del modelo).
     expect(buscarHibrido.mock.calls[0]).toEqual([
       'texto original', { coDependencia: null }, undefined, undefined, undefined,
-      { consultaVectorial: 'texto original', textoHyde: null },
+      { consultaVectorial: 'texto original', textoHyde: null, filtrosDoc: null },
     ]);
   });
 
@@ -630,7 +630,7 @@ describe('responderChat — contexto de la conversación', () => {
 
     await chat.responderChat(peticionBase());
 
-    expect(buscarHibrido.mock.calls[0][5]).toEqual({ consultaVectorial: 'penalidad por atraso en la obra de Junín', textoHyde: parrafo });
+    expect(buscarHibrido.mock.calls[0][5]).toEqual({ consultaVectorial: 'penalidad por atraso en la obra de Junín', textoHyde: parrafo, filtrosDoc: null });
     const usos = query.mock.calls.filter(([sql]) => String(sql).includes('rag.uso_token'));
     expect(usos.some(([, o]) => (o as { bind: unknown[] }).bind.includes('chat_hyde'))).toBe(true);
   });

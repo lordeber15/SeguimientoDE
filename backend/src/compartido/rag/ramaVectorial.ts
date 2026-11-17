@@ -7,6 +7,40 @@ import { tablaVectores } from './embeddingModelService';
 /** Embedding de la consulta del chat: 1 reintento — si el proveedor está caído, mejor caer a FTS ya. */
 const REINTENTOS_EMBEDDING_CONSULTA = 1;
 
+/**
+ * Caché en memoria de embeddings de consulta (LRU con TTL). Un mismo turno embebe la consulta en cada
+ * subconsulta y en cada reintento sin filtros, y los usuarios repiten preguntas ("reintentar", la misma
+ * pregunta en otro modo). La clave incluye módulo, modelo activo y proveedor: un cambio de modelo nunca
+ * reutiliza un vector de otro espacio. Solo se guardan éxitos.
+ */
+const CACHE_MAX = 500;
+const CACHE_TTL_MS = 60 * 60 * 1000;
+const cacheEmbeddings = new Map<string, { vecLiteral: string; expira: number }>();
+
+function leerCache(clave: string): string | null {
+  const entrada = cacheEmbeddings.get(clave);
+  if (!entrada) return null;
+  cacheEmbeddings.delete(clave);
+  if (entrada.expira < Date.now()) return null;
+  cacheEmbeddings.set(clave, entrada); // al final = usado más recientemente
+  return entrada.vecLiteral;
+}
+
+function guardarCache(clave: string, vecLiteral: string): void {
+  cacheEmbeddings.delete(clave);
+  cacheEmbeddings.set(clave, { vecLiteral, expira: Date.now() + CACHE_TTL_MS });
+  while (cacheEmbeddings.size > CACHE_MAX) {
+    const masViejo = cacheEmbeddings.keys().next().value;
+    if (masViejo === undefined) break;
+    cacheEmbeddings.delete(masViejo);
+  }
+}
+
+/** Solo para pruebas. */
+export function vaciarCacheEmbeddings(): void {
+  cacheEmbeddings.clear();
+}
+
 export interface ConsultaEmbebida {
   vecLiteral: string;
   modeloId: number;
@@ -31,9 +65,15 @@ export async function embeberConsulta(
   try {
     const provider = crearEmbeddingProvider();
     if (provider.dimension === modelo.dimension) {
-      const { vectores } = await conReintentos(REINTENTOS_EMBEDDING_CONSULTA, () => provider.embeber([consultaTexto]));
+      const clave = `${modulo}|${modelo.id}|${provider.nombre}|${provider.modelo}|${consultaTexto}`;
+      let vecLiteral = leerCache(clave);
+      if (!vecLiteral) {
+        const { vectores } = await conReintentos(REINTENTOS_EMBEDDING_CONSULTA, () => provider.embeber([consultaTexto]));
+        vecLiteral = `[${vectores[0].join(',')}]`;
+        guardarCache(clave, vecLiteral);
+      }
       return {
-        consulta: { vecLiteral: `[${vectores[0].join(',')}]`, modeloId: modelo.id, tabla: tablaVectores(modelo.dimension) },
+        consulta: { vecLiteral, modeloId: modelo.id, tabla: tablaVectores(modelo.dimension) },
         degradacion: null,
       };
     }

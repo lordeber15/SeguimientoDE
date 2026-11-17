@@ -18,3 +18,4 @@ docs
 skills-lock.json
 # Corridas de la evaluación del RAG (contienen texto de documentos): solo el dataset se versiona.
 backend/evals/salidas/
+"OCR MEJORADO"/

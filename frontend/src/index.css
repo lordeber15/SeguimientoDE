@@ -1378,6 +1378,81 @@ tbody tr.fila-expandida:hover {
   border: none;
 }
 
+/* Con el markdown al costado, el `display: grid` de `.modal-cuerpo` pasa a dos columnas: el PDF a
+   la izquierda y la extracción a la derecha, cada una con su propio scroll para poder cotejarlas. */
+.visor-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+}
+
+.modal-caja--dividida {
+  width: min(1600px, 100%);
+}
+
+.modal-cuerpo--dividido {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.visor-panel--markdown {
+  display: block;
+  overflow-y: auto;
+  padding: 12px 16px 16px;
+  border-left: 1px solid var(--color-border);
+}
+
+.panel-reproceso {
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.panel-reproceso-controles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+}
+
+.panel-reproceso-controles label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
+.panel-reproceso-controles select,
+.panel-reproceso-controles input:not([type='checkbox']) {
+  min-width: 150px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  font: inherit;
+  font-size: 13px;
+}
+
+.panel-reproceso-controles .panel-reproceso-casilla {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 7px;
+}
+
+@media (max-width: 900px) {
+  .modal-cuerpo--dividido {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .visor-panel--markdown {
+    border-left: none;
+    border-top: 1px solid var(--color-border);
+  }
+}
+
 /* --- Sesión: login, cabecera y administración --- */
 
 .login-pantalla {
@@ -2040,9 +2115,71 @@ tbody tr.fila-destacada > td {
 
 /* ── Chat sobre el corpus RAG (Fase 5) ──────────────────────────────────── */
 
-.chat-tarjeta {
-  max-width: 780px;
-  margin: 0 auto;
+/* --- Chat a pantalla completa (estilo ChatGPT) ---
+ * La página ocupa todo el alto bajo la cabecera: la cabecera del chat (pestañas, expediente) y el
+ * compositor quedan fijos y SOLO la lista de mensajes se desplaza. Antes era una tarjeta de 780px
+ * con la lista topada en 55vh: las tablas de resultados no cabían.
+ *
+ * `--chat-columna` es el ancho de lectura. El relleno lateral centra esa columna pero deja el
+ * contenedor a todo lo ancho, así la barra de desplazamiento queda pegada al borde de la ventana. */
+.app-contenido--chat {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--color-card);
+}
+
+.app-main--chat {
+  --chat-columna: 1180px;
+  --chat-relleno: max(20px, calc((100% - var(--chat-columna)) / 2));
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+}
+
+.chat-tarjeta,
+.chat-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-cabecera {
+  flex: none;
+  padding: 12px var(--chat-relleno) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chat-cabecera .pestanas {
+  border-bottom: none;
+  margin-bottom: 8px;
+}
+
+.chat-cabecera > .exp-nota {
+  margin: 0 0 12px;
+}
+
+.chat-cabecera .chat-aviso {
+  margin: 0 0 12px;
+}
+
+.chat-compositor {
+  flex: none;
+  padding: 8px var(--chat-relleno) 14px;
+  background: linear-gradient(to bottom, transparent, var(--color-card) 18px);
+}
+
+.chat-pista {
+  margin: 6px 0 0;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--color-muted-foreground);
 }
 
 .chat-expediente-elegido {
@@ -2079,12 +2216,12 @@ tbody tr.fila-destacada > td {
 .chat-lista {
   list-style: none;
   margin: 0;
-  padding: 4px 2px;
+  padding: 24px var(--chat-relleno, 2px);
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  min-height: 200px;
-  max-height: 55vh;
+  gap: 22px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   /* El scroll suave del auto-scroll no debe arrastrar a las citas que se despliegan arriba. */
   overscroll-behavior: contain;
@@ -2093,6 +2230,18 @@ tbody tr.fila-destacada > td {
 .chat-vacio {
   margin: auto 0;
   text-align: center;
+}
+
+.chat-vacio h2 {
+  margin: 0 0 8px;
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.chat-vacio .exp-nota {
+  max-width: 560px;
+  margin: 0 auto;
 }
 
 .chat-mensaje {
@@ -2111,19 +2260,22 @@ tbody tr.fila-destacada > td {
 
 .chat-mensaje--user {
   align-self: flex-end;
-  background: var(--color-primary);
-  color: var(--color-on-primary);
-  border-bottom-right-radius: 4px;
+  max-width: min(75%, 720px);
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  border-radius: 18px;
+  padding: 10px 16px;
 }
 
+/* Como en ChatGPT, la respuesta va sin burbuja: texto sobre el fondo, a todo el ancho de la
+   columna — lleva citas, tablas y tarjetas colgando debajo y todas necesitan ese ancho. */
 .chat-mensaje--assistant {
-  align-self: flex-start;
-  background: var(--color-card);
+  align-self: stretch;
+  max-width: 100%;
+  background: transparent;
   color: var(--color-foreground);
-  border: 1px solid var(--color-border);
-  border-bottom-left-radius: 4px;
-  /* La respuesta necesita más ancho que la pregunta: lleva las citas colgando debajo. */
-  max-width: 94%;
+  padding: 0 2px;
+  line-height: 1.6;
 }
 
 /* ── Respuesta tabla (listar / contar) ── */
@@ -2625,30 +2777,60 @@ tbody tr.fila-destacada > td {
 .chat-form {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
-  margin-top: 12px;
+  gap: 8px;
+  padding: 8px 8px 8px 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 26px;
+  background: var(--color-card);
+  box-shadow: 0 4px 18px rgb(30 58 138 / 0.08);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.chat-form:focus-within {
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 3px rgb(30 64 175 / 0.15), 0 4px 18px rgb(30 58 138 / 0.08);
 }
 
 .chat-form textarea {
   flex: 1;
-  min-height: 40px;
+  min-height: 38px;
   max-height: 132px; /* debe calzar con ALTO_MAX_ENTRADA de ChatPage.tsx */
-  padding: 9px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  background: var(--color-card);
+  padding: 8px 0;
+  border: none;
+  background: transparent;
   color: inherit;
   font: inherit;
   line-height: 1.4;
   resize: none;
   overflow-y: auto;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
+/* El anillo de foco lo dibuja la cápsula entera (`:focus-within`), no el campo. */
 .chat-form textarea:focus {
   outline: none;
-  border-color: var(--color-ring);
-  box-shadow: 0 0 0 3px rgb(30 64 175 / 0.15);
+}
+
+.chat-enviar {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  cursor: pointer;
+  transition: filter 150ms ease, opacity 150ms ease;
+}
+
+.chat-enviar:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.chat-enviar:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 @keyframes chat-entrada {

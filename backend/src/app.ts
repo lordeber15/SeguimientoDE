@@ -16,6 +16,7 @@ import chatRoutesStd from './modulos/std/routes/chatRoutesStd';
 import documentoRoutesStd from './modulos/std/routes/documentoRoutesStd';
 import ragRoutesStd from './modulos/std/routes/ragRoutesStd';
 import { requiereAuth, requierePermiso } from './compartido/middlewares/authMiddleware';
+import { montarSwagger, swaggerHabilitado } from './docs/swagger';
 
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
   .split(',')
@@ -37,6 +38,9 @@ app.use(express.json({ limit: '1mb' }));
 app.set('trust proxy', 1);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+// Documentación OpenAPI (docs/PLAN-SWAGGER.md): solo en desarrollo, con SWAGGER_HABILITADO=true.
+if (swaggerHabilitado()) montarSwagger(app);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);

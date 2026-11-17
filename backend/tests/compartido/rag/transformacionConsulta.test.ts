@@ -15,6 +15,9 @@ import {
   fusionarListas,
   generarHyde,
   transformacionesDelTurno,
+  filtrosDocumentoDelPlan,
+  hayFiltrosDocumento,
+  sqlFiltrosDocumento,
 } from '../../../src/compartido/rag/transformacionConsulta';
 import { planDeRespaldo } from '../../../src/compartido/rag/planificadorService';
 import type { ChatProvider } from '../../../src/compartido/ai/types';
@@ -120,21 +123,67 @@ describe('transformacionesDelTurno', () => {
 
   it('con los interruptores encendidos: subconsultas del plan, HyDE con el modelo rápido y vocabulario', async () => {
     leerBooleano.mockResolvedValue(true);
-    expect(await transformacionesDelTurno(plan, rapido, SINONIMOS)).toEqual({ sinonimos: SINONIMOS, subconsultas: ['a', 'b'], hyde: rapido });
+    expect(await transformacionesDelTurno(plan, rapido, SINONIMOS)).toEqual({ sinonimos: SINONIMOS, subconsultas: ['a', 'b'], hyde: rapido, filtrosDoc: null });
   });
 
   it('apagados: solo vocabulario', async () => {
     leerBooleano.mockResolvedValue(false);
-    expect(await transformacionesDelTurno(plan, rapido, SINONIMOS)).toEqual({ sinonimos: SINONIMOS, subconsultas: [], hyde: null });
+    expect(await transformacionesDelTurno(plan, rapido, SINONIMOS)).toEqual({ sinonimos: SINONIMOS, subconsultas: [], hyde: null, filtrosDoc: null });
   });
 
   it('sin plan confiable no hay subconsultas ni HyDE aunque estén encendidos', async () => {
     leerBooleano.mockResolvedValue(true);
-    expect(await transformacionesDelTurno(null, rapido, SINONIMOS)).toEqual({ sinonimos: SINONIMOS, subconsultas: [], hyde: null });
+    expect(await transformacionesDelTurno(null, rapido, SINONIMOS)).toEqual({ sinonimos: SINONIMOS, subconsultas: [], hyde: null, filtrosDoc: null });
   });
 
   it('lee los interruptores con sus valores por defecto: HyDE apagado, descomposición encendida', async () => {
     leerBooleano.mockImplementation((_c: string, porDefecto: boolean) => Promise.resolve(porDefecto));
-    expect(await transformacionesDelTurno(plan, rapido, {})).toEqual({ sinonimos: {}, subconsultas: ['a', 'b'], hyde: null });
+    expect(await transformacionesDelTurno(plan, rapido, {})).toEqual({ sinonimos: {}, subconsultas: ['a', 'b'], hyde: null, filtrosDoc: null });
+  });
+});
+
+describe('filtros del plan en la búsqueda de contenido', () => {
+  const conFiltros = (filtros: Partial<ReturnType<typeof planDeRespaldo>['filtros']>) => {
+    const plan = planDeRespaldo('x');
+    return { ...plan, filtros: { ...plan.filtros, ...filtros } };
+  };
+
+  it('sin plan o sin filtros: null', () => {
+    expect(filtrosDocumentoDelPlan(null)).toBeNull();
+    expect(filtrosDocumentoDelPlan(planDeRespaldo('x'))).toBeNull();
+  });
+
+  it('"actual" no es un filtro de documento y las fechas mal formadas se descartan', () => {
+    expect(filtrosDocumentoDelPlan(conFiltros({ actual: true, desde: 'marzo' }))).toBeNull();
+  });
+
+  it('copia tipo, fechas y quién', () => {
+    expect(filtrosDocumentoDelPlan(conFiltros({ tipoDoc: 'INFORME', desde: '2026-03-01', hasta: '2026-03-31' })))
+      .toEqual({ remitente: null, emisor: null, dependencia: null, tipoDoc: 'INFORME', desde: '2026-03-01', hasta: '2026-03-31' });
+  });
+
+  it('arma las condiciones en orden, con binds desde el índice pedido', () => {
+    const f = filtrosDocumentoDelPlan(conFiltros({ tipoDoc: 'INFORME', hasta: '2026-03-31' }));
+    const r = sqlFiltrosDocumento(f, 8, {
+      remitente: (n) => `r = $${n}`,
+      emisor: (n) => `e = $${n}`,
+      dependencia: (n) => `d = $${n}`,
+      tipoDoc: (n) => `t = $${n}`,
+      desde: (n) => `f >= $${n}`,
+      hasta: (n) => `f <= $${n}`,
+    });
+    expect(r).toEqual({ sql: 'AND (t = $8) AND (f <= $9)', binds: ['INFORME', '2026-03-31'] });
+    expect(hayFiltrosDocumento(f)).toBe(true);
+  });
+
+  it('sin filtros no añade nada', () => {
+    expect(sqlFiltrosDocumento(null, 3, {} as never)).toEqual({ sql: '', binds: [] });
+    expect(hayFiltrosDocumento(null)).toBe(false);
+  });
+
+  it('transformacionesDelTurno pasa los filtros del plan', async () => {
+    leerBooleano.mockResolvedValue(false);
+    const t = await transformacionesDelTurno(conFiltros({ tipoDoc: 'OFICIO' }), proveedor(jest.fn()), {});
+    expect(t.filtrosDoc?.tipoDoc).toBe('OFICIO');
   });
 });

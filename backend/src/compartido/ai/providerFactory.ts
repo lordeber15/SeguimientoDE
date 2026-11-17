@@ -2,6 +2,7 @@ import { AnthropicChat } from './providers/anthropic';
 import { OllamaChat, OllamaEmbedding } from './providers/ollama';
 import { OpenAiChat, OpenAiEmbedding } from './providers/openai';
 import { OpenAiVision } from './providers/openaiVision';
+import { OllamaVision } from './providers/ollamaVision';
 import { CohereRerank, TeiRerank } from './providers/rerank';
 import type { ChatProvider, EmbeddingProvider, NombreProveedor, RerankProvider, VisionProvider } from './types';
 import { paso } from '../observabilidad/traza';
@@ -324,12 +325,31 @@ export function chatDisponible(): { disponible: boolean; motivo: string | null }
 }
 
 /**
- * ¿Se puede extraer texto con IA de visión ahora mismo? Depende solo de `OPENAI_API_KEY` — la
- * capacidad es exclusiva de OpenAI (`OpenAiVision` siempre usa su endpoint, nunca Azure), y es
- * independiente de `CHAT_PROVIDER`/`EMBEDDING_PROVIDER`, que seleccionan capacidades distintas y
- * podrían apuntar a otro proveedor sin que eso deba bloquear esta.
+ * Proveedores de visión elegibles desde el reproceso manual. El botón "Extraer con ChatGPT" sigue
+ * usando siempre OpenAI; el reproceso deja elegir.
  */
-export function visionDisponible(): { disponible: boolean; motivo: string | null } {
+export const PROVEEDORES_VISION = ['openai', 'ollama'] as const;
+export type ProveedorVision = (typeof PROVEEDORES_VISION)[number];
+
+export function esProveedorVision(valor: unknown): valor is ProveedorVision {
+  return (PROVEEDORES_VISION as readonly unknown[]).includes(valor);
+}
+
+/** Modelo que se usa si quien pide el reproceso no elige uno. */
+export function modeloVisionPorDefecto(nombre: ProveedorVision): string {
+  return nombre === 'ollama'
+    ? leer('OLLAMA_VISION_MODEL') || 'qwen2.5vl'
+    : leer('OPENAI_VISION_MODEL') || 'gpt-4o';
+}
+
+/**
+ * ¿Se puede extraer texto con IA de visión ahora mismo? Para OpenAI depende solo de
+ * `OPENAI_API_KEY` (`OpenAiVision` siempre usa su endpoint, nunca Azure), independiente de
+ * `CHAT_PROVIDER`/`EMBEDDING_PROVIDER`. Ollama no necesita clave: si no está levantado o el modelo
+ * no existe se sabrá al llamarlo, igual que en `revisarProveedor`.
+ */
+export function visionDisponible(nombre: ProveedorVision = 'openai'): { disponible: boolean; motivo: string | null } {
+  if (nombre === 'ollama') return { disponible: true, motivo: null };
   if (!leer('OPENAI_API_KEY')) {
     return {
       disponible: false,
@@ -339,6 +359,6 @@ export function visionDisponible(): { disponible: boolean; motivo: string | null
   return { disponible: true, motivo: null };
 }
 
-export function crearVisionProvider(): VisionProvider {
-  return new OpenAiVision();
+export function crearVisionProvider(nombre: ProveedorVision = 'openai', modelo?: string): VisionProvider {
+  return nombre === 'ollama' ? new OllamaVision(modelo || undefined) : new OpenAiVision(modelo || undefined);
 }

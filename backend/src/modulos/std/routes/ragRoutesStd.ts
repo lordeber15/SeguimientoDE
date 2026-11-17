@@ -7,6 +7,9 @@ import {
   getJob,
   getJobs,
   getMarkdownDocumento,
+  getOpcionesReproceso,
+  getReproceso,
+  postReproceso,
   getModelos,
   getPanel,
   postBarrer,
@@ -35,6 +38,9 @@ router.get('/documentos', requierePermiso('std.gestionar'), getDocumentos);
 router.get('/documentos/:id/markdown', requierePermiso('std.gestionar'), getMarkdownDocumento);
 router.post('/documentos/:id/reintentar', requierePermiso('std.gestionar'), postReintentarDocumento);
 router.post('/documentos/:id/vision', requierePermiso('std.gestionar'), postExtraerVision);
+router.post('/documentos/:id/reproceso', requierePermiso('std.gestionar'), postReproceso);
+router.get('/documentos/:id/reproceso', requierePermiso('std.gestionar'), getReproceso);
+router.get('/reproceso/opciones', requierePermiso('std.gestionar'), getOpcionesReproceso);
 router.get('/documentos-std', requierePermiso('std.gestionar'), getDocumentosStdCobertura);
 
 router.post('/barrer', requierePermiso('std.gestionar'), postBarrer);

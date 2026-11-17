@@ -24,5 +24,15 @@ export const sequelize = new Sequelize(
     port: Number(process.env.DB_PORT),
     dialect: 'postgres',
     logging: process.env.NODE_ENV === 'development' ? console.log : false,
+    hooks: {
+      // El SGD es el sistema de producción y esta app solo lo LEE (todas sus escrituras van a la BD
+      // propia, `appSequelize`). Cada conexión nueva del pool queda en solo lectura: si algún día una
+      // consulta intenta escribir, Postgres la rechaza en vez de tocar datos del SGD. Mismo criterio que
+      // `SET SESSION TRANSACTION READ ONLY` del STD (`modulos/std/config/stdDatabase.ts`).
+      afterConnect: async (connection: unknown) => {
+        await (connection as { query: (sql: string) => Promise<unknown> })
+          .query('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY');
+      },
+    },
   },
 );

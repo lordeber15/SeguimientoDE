@@ -7,6 +7,9 @@ import {
   getJob,
   getJobs,
   getMarkdownDocumento,
+  getOpcionesReproceso,
+  getReproceso,
+  postReproceso,
   getModelos,
   getPanel,
   postBarrer,
@@ -38,6 +41,9 @@ router.get('/documentos', requierePermiso('rag.gestionar'), getDocumentos);
 router.get('/documentos/:id/markdown', requierePermiso('rag.gestionar'), getMarkdownDocumento);
 router.post('/documentos/:id/reintentar', requierePermiso('rag.gestionar'), postReintentarDocumento);
 router.post('/documentos/:id/vision', requierePermiso('rag.gestionar'), postExtraerVision);
+router.post('/documentos/:id/reproceso', requierePermiso('rag.gestionar'), postReproceso);
+router.get('/documentos/:id/reproceso', requierePermiso('rag.gestionar'), getReproceso);
+router.get('/reproceso/opciones', requierePermiso('rag.gestionar'), getOpcionesReproceso);
 router.get('/expedientes', requierePermiso('rag.gestionar'), getExpedientes);
 router.post('/barrer', requierePermiso('rag.gestionar'), postBarrer);
 router.get('/config', requierePermiso('rag.gestionar'), getConfig);

@@ -3,6 +3,7 @@ import type { ChatProvider, ResultadoChat } from '../ai/types';
 import { appSequelize } from '../config/appDatabase';
 import { leerBooleano } from './configService';
 import type { PlanConsulta } from './planificadorService';
+import { RE_FECHA } from './busquedaTerminos';
 import { paso } from '../observabilidad/traza';
 
 /**
@@ -24,7 +25,65 @@ export interface OpcionesBusqueda {
   consultaVectorial?: string;
   /** Párrafo hipotético (HyDE): se embebe y entra al RRF como tercera lista. */
   textoHyde?: string | null;
+  /** Filtros del plan sobre los metadatos del documento (tipo, fechas, quién). Si con ellos no queda
+   *  ningún fragmento, la búsqueda se repite sin ellos: un filtro mal extraído no deja sin respuesta. */
+  filtrosDoc?: FiltrosDocumento | null;
 }
+
+/**
+ * Filtros del planificador que también acotan la búsqueda de CONTENIDO (antes solo los usaban los
+ * listados): "¿qué dice el informe de marzo sobre la penalidad?" debe buscar en informes de marzo.
+ * Cada módulo los traduce a sus columnas (`retrievalService` / `retrievalStdService`).
+ */
+export interface FiltrosDocumento {
+  remitente: string | null;
+  emisor: string | null;
+  dependencia: string | null;
+  tipoDoc: string | null;
+  /** AAAA-MM-DD, ya validadas. */
+  desde: string | null;
+  hasta: string | null;
+}
+
+/** Filtros del plan aplicables al contenido, o `null` si no trae ninguno (o no hay plan confiable). */
+export function filtrosDocumentoDelPlan(plan: PlanConsulta | null): FiltrosDocumento | null {
+  if (!plan) return null;
+  const f = plan.filtros;
+  const filtros: FiltrosDocumento = {
+    remitente: f.remitente,
+    emisor: f.emisor,
+    dependencia: f.dependencia,
+    tipoDoc: f.tipoDoc,
+    desde: f.desde && RE_FECHA.test(f.desde) ? f.desde : null,
+    hasta: f.hasta && RE_FECHA.test(f.hasta) ? f.hasta : null,
+  };
+  return Object.values(filtros).some(Boolean) ? filtros : null;
+}
+
+/**
+ * Condiciones SQL de `filtros` a partir del bind `$inicio`, con las columnas de cada módulo. Devuelve
+ * el fragmento (`AND …`, vacío si no hay filtros) y los valores a añadir AL FINAL del bind.
+ */
+export function sqlFiltrosDocumento(
+  filtros: FiltrosDocumento | null | undefined,
+  inicio: number,
+  condiciones: { [K in keyof FiltrosDocumento]: (n: number) => string },
+): { sql: string; binds: unknown[] } {
+  if (!filtros) return { sql: '', binds: [] };
+  const partes: string[] = [];
+  const binds: unknown[] = [];
+  for (const clave of Object.keys(condiciones) as (keyof FiltrosDocumento)[]) {
+    const valor = filtros[clave];
+    if (!valor) continue;
+    binds.push(valor);
+    partes.push(`(${condiciones[clave](inicio + binds.length - 1)})`);
+  }
+  return { sql: partes.map((p) => `AND ${p}`).join(' '), binds };
+}
+
+/** Hay algún filtro activo (para decidir escaneo exacto y el reintento sin filtros). */
+export const hayFiltrosDocumento = (f: FiltrosDocumento | null | undefined): f is FiltrosDocumento =>
+  Boolean(f && Object.values(f).some(Boolean));
 
 const normal = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 const escapar = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -103,6 +162,8 @@ export interface Transformaciones {
   hyde?: ChatProvider | null;
   /** `chat.sinonimos` normalizado (`leerParametros`): expande lo que se embebe. */
   sinonimos?: Record<string, string[]>;
+  /** Filtros del plan sobre metadatos del documento, aplicados también a la búsqueda de contenido. */
+  filtrosDoc?: FiltrosDocumento | null;
 }
 
 /** Interruptores en `app.config` de cada módulo. Descomposición encendida por defecto (solo actúa si el
@@ -129,6 +190,7 @@ export async function transformacionesDelTurno(
     sinonimos,
     subconsultas: plan && descomposicion ? plan.subconsultas : [],
     hyde: plan && hyde ? rapido : null,
+    filtrosDoc: filtrosDocumentoDelPlan(plan),
   };
 }
 

@@ -45,8 +45,8 @@ export class OpenAiVision implements VisionProvider {
   readonly modelo: string;
   private readonly endpoint: ReturnType<typeof endpointOpenai>;
 
-  constructor() {
-    this.modelo = process.env.OPENAI_VISION_MODEL ?? 'gpt-4o';
+  constructor(modelo = process.env.OPENAI_VISION_MODEL ?? 'gpt-4o') {
+    this.modelo = modelo;
     this.endpoint = endpointOpenai();
   }
 

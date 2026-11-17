@@ -45,6 +45,14 @@ export async function registrarSiNoExiste(
   provider: EmbeddingProvider,
   db: Sequelize = appSequelize,
 ): Promise<FilaModelo> {
+  // Las columnas son `vector(1024)`, `vector(1536)` y `halfvec(3072)` (migración 002): pgvector rechaza
+  // cualquier otra dimensión al insertar. Mejor fallar aquí, con un mensaje claro, que a mitad de un job.
+  if (!DIMENSIONES_SOPORTADAS.includes(provider.dimension)) {
+    throw new ModeloError(
+      `El modelo ${provider.modelo} devuelve vectores de ${provider.dimension} dimensiones; solo se `
+        + `admiten ${DIMENSIONES_SOPORTADAS.join(', ')} (una tabla por dimensión, migración 002).`,
+    );
+  }
   const filas = await db.query<FilaModelo>(
     `INSERT INTO rag.embedding_model (proveedor, modelo, dimension)
      VALUES ($1, $2, $3)
@@ -124,6 +132,17 @@ export async function activarModelo(
   );
 }
 
+/** Dimensiones con tabla propia (migración 002). */
+export const DIMENSIONES_SOPORTADAS = [1024, 1536, 3072];
+
+/**
+ * Parámetros del grafo HNSW. pgvector usa m=16 y ef_construction=64 por defecto; 128 da un grafo de
+ * mejor recall a cambio de una construcción más lenta (solo una vez, al terminar el job). Solo afecta
+ * a índices nuevos: uno ya creado se conserva hasta que se borre y se reconstruya a mano.
+ */
+const HNSW_M = 16;
+const HNSW_EF_CONSTRUCTION = 128;
+
 /** Nombre de la tabla física según la dimensión (migración 002: una tabla por dimensión). */
 export function tablaVectores(dimension: number): 'embedding_1024' | 'embedding_1536' | 'embedding_h3072' {
   if (dimension <= 1024) return 'embedding_1024';
@@ -154,6 +173,7 @@ export async function crearIndiceHnsw(
   const opsClass = tabla === 'embedding_h3072' ? 'halfvec_cosine_ops' : 'vector_cosine_ops';
   await db.query(
     `CREATE INDEX IF NOT EXISTS ${tabla}_p${modeloId}_hnsw_idx
-       ON rag.${tabla}_p${modeloId} USING hnsw (vec ${opsClass})`,
+       ON rag.${tabla}_p${modeloId} USING hnsw (vec ${opsClass})
+       WITH (m = ${HNSW_M}, ef_construction = ${HNSW_EF_CONSTRUCTION})`,
   );
 }

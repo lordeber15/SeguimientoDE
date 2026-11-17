@@ -63,13 +63,19 @@ export interface EntradaDocumento {
 /**
  * Capacidad separada de `ChatProvider` a propósito: `MensajeChat.contenido` es siempre texto, y
  * Ollama/Anthropic implementan `ChatProvider` sin soporte de archivos. Ensanchar esa interfaz les
- * impondría una capacidad que no tienen; esta vive aparte y hoy solo la implementa OpenAI.
+ * impondría una capacidad que no tienen; esta vive aparte y la implementan OpenAI (PDF directo) y
+ * Ollama (modelos de visión locales, página a página).
  */
 export interface VisionProvider {
   readonly nombre: NombreProveedor;
   readonly modelo: string;
-  /** Transcribe un documento (PDF o imagen) siguiendo la instrucción dada. */
-  transcribir(archivo: EntradaDocumento, instruccion: string, opciones?: { maxTokens?: number }): Promise<ResultadoChat>;
+  /** Transcribe un documento (PDF o imagen) siguiendo la instrucción dada. `onPagina` solo lo
+   *  llaman los proveedores que transcriben página a página (Ollama). */
+  transcribir(
+    archivo: EntradaDocumento,
+    instruccion: string,
+    opciones?: { maxTokens?: number; onPagina?: (actual: number, total: number) => void },
+  ): Promise<ResultadoChat>;
 }
 
 /**

@@ -494,6 +494,8 @@ export async function recuperarContextoStd(
     buscarHibridoStd(q, idDocumento, conjunto?.slice(0, MAX_CONJUNTO_CONTENIDO) ?? undefined, terminos, {
       consultaVectorial: t.sinonimos ? expandirConVocabulario(q, t.sinonimos) : undefined,
       textoHyde,
+      // En el chat "por documento" ya hay un solo N° STD: filtrar por sus metadatos no acota nada.
+      filtrosDoc: idDocumento ? null : t.filtrosDoc ?? null,
     });
 
   const [principal, timeline, ...porSubconsulta] = await Promise.all([

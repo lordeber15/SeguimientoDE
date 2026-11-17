@@ -10,6 +10,12 @@ blob-report/
 playwright/.cache/
 coverage/
 docs
-.claude
-.agents 
+.claude/*
+!.claude/skills
+.claude/skills/*
+!.claude/skills/std-database
+.agents
 skills-lock.json
+# Corridas de la evaluación del RAG (contienen texto de documentos): solo el dataset se versiona.
+backend/evals/salidas/
+"OCR MEJORADO"/

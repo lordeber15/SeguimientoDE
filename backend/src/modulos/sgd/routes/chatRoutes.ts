@@ -1,0 +1,39 @@
+import { Router } from 'express';
+import {
+  getBuscarExpedientes,
+  getChunkCitado,
+  getEstadoIngestaExpediente,
+  getEstadoIngestaExpedientes,
+  getResultadosMensaje,
+  getSesion,
+  getSesionExpediente,
+  getSesiones,
+  postChatExpediente,
+  postChatGeneral,
+  postReintentarMensaje,
+  postValorarMensaje,
+} from '../controllers/chatController';
+import { requiereAuth, requierePermiso } from '../../../compartido/middlewares/authMiddleware';
+
+const router = Router();
+
+router.use(requiereAuth, requierePermiso('rag.consultar'));
+
+router.post('/general', postChatGeneral);
+router.post('/expediente/:nuAnnExp/:nuSecExp', postChatExpediente);
+router.get('/expedientes/buscar', getBuscarExpedientes);
+router.get('/expedientes/estado', getEstadoIngestaExpedientes);
+router.get('/expediente/:nuAnnExp/:nuSecExp/estado', getEstadoIngestaExpediente);
+router.get('/sesiones/expediente/:nuAnnExp/:nuSecExp', getSesionExpediente);
+router.get('/sesiones', getSesiones);
+router.get('/sesiones/:id', getSesion);
+// Texto completo de un fragmento citado: lo pide el frontend al desplegar la cita, no antes.
+router.get('/chunks/:id', getChunkCitado);
+// "Ver más" de una respuesta tabla: pagina sobre la lista guardada, sin re-buscar ni llamar al modelo.
+router.get('/mensajes/:id/resultados', getResultadosMensaje);
+// Reintento de un turno 'fallido': la respuesta del modelo, sobre las citas que ese turno ya guardó.
+router.post('/mensajes/:id/reintentar', postReintentarMensaje);
+// 👍/👎 sobre una respuesta (Fase 5). Solo el dueño de la conversación.
+router.post('/mensajes/:id/valoracion', postValorarMensaje);
+
+export default router;

@@ -1,0 +1,26 @@
+# Override LOCAL (esta PC, NVIDIA T1000 de 4 GB): rerank del chat con un cross-encoder en la GPU.
+# `docker compose` combina este archivo con docker-compose.yml automáticamente. NO copiarlo a un servidor
+# sin GPU NVIDIA: el reranker no arrancaría (allí basta borrar este archivo y se usa la imagen de CPU).
+#
+# Requisito: driver NVIDIA con CUDA >= 12.9 (`nvidia-smi`, arriba a la derecha).
+#
+# Medido el 2026-11-12 en la T1000, 20 fragmentos de ~2 500 caracteres (lo que manda el chat):
+# - BAAI/bge-reranker-v2-m3: ~33 s (también en float16). Supera el timeout del backend (8 s): inservible aquí.
+# - cross-encoder/mmarco-mMiniLMv2-L12-H384-v1: ~2 s. Es el que queda.
+services:
+  reranker:
+    # Sin perfil: `docker compose up -d --build` lo levanta junto con todo lo demás.
+    profiles: !reset []
+    image: ghcr.io/huggingface/text-embeddings-inference:turing-1.9
+    gpus: all
+    command: ['--model-id', 'cross-encoder/mmarco-mMiniLMv2-L12-H384-v1', '--max-client-batch-size', '64', '--max-batch-tokens', '8192']
+
+  backend:
+    environment:
+      RAG_RERANK_PROVIDER: local
+      RERANK_URL: http://reranker:80
+      RERANK_MODEL: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+      RAG_RERANK_TOP_K: '5'
+      # 0 = solo reordena, no descarta. mmarco da puntajes bajos incluso a lo relevante (0,08 en una prueba):
+      # subirlo solo después de calibrar con `eval:rag` o con el `puntajeMax` de las trazas del rerank.
+      RAG_RERANK_UMBRAL: '0'

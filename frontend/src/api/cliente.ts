@@ -37,21 +37,28 @@ export function registrarCierreDeSesion(callback: () => void) {
 
 export class ApiError extends Error {
   readonly status: number;
+  /** El resto del cuerpo de error del backend (p. ej. `mensajeFallidoId` de un turno reintentable). */
+  readonly datos: Record<string, unknown>;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, datos: Record<string, unknown> = {}) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.datos = datos;
   }
 }
 
-async function mensajeDeError(response: Response, porDefecto: string): Promise<string> {
-  const detalle = await response
+async function cuerpoDeError(response: Response): Promise<Record<string, unknown>> {
+  return response
     .clone()
     .json()
-    .then((j: { message?: string }) => j.message)
-    .catch(() => null);
-  return detalle ?? porDefecto;
+    .then((j: unknown) => (typeof j === 'object' && j !== null ? (j as Record<string, unknown>) : {}))
+    .catch(() => ({}));
+}
+
+async function mensajeDeError(response: Response, porDefecto: string): Promise<string> {
+  const { message } = await cuerpoDeError(response);
+  return typeof message === 'string' && message ? message : porDefecto;
 }
 
 /**
@@ -84,6 +91,7 @@ export async function apiJson<T>(ruta: string, descripcion: string, opciones?: R
     throw new ApiError(
       await mensajeDeError(response, `No se pudo ${descripcion} (HTTP ${response.status})`),
       response.status,
+      await cuerpoDeError(response),
     );
   }
 

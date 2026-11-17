@@ -3,6 +3,8 @@ import toast, { Toaster } from 'react-hot-toast';
 import { ListaDocumentosRag } from '../components/ListaDocumentosRag';
 import { ModalContinuarLote, type TipoCadena } from '../components/ModalContinuarLote';
 import { PanelJobIngesta } from '../components/PanelJobIngesta';
+import { CalidadChatRag } from '../components/CalidadChatRag';
+import { ConfigChatRag } from '../components/ConfigChatRag';
 import { ApiError } from '../api/cliente';
 import {
   activarBarrido,
@@ -21,6 +23,7 @@ import {
   iniciarIngestaEmbeddings,
   iniciarIngestaLargos,
   iniciarIngestaReparacion,
+  reintentarTodosSinArchivo,
   type JobIngesta,
   type PanelRag,
   pausarJobIngesta,
@@ -149,6 +152,9 @@ function leerCadenaGuardada(): Cadena | null {
 export function RagPanelPage() {
   const [estado, setEstado] = useState<Estado>({ tipo: 'cargando' });
   const [jobActivo, setJobActivo] = useState<JobIngesta | null>(null);
+  // Contador que solo existe para volver a disparar el sondeo tras un fallo de red: sin él,
+  // `jobActivo` no cambia en el `catch` y el efecto no vuelve a programar el siguiente tick.
+  const [reintentoPoll, setReintentoPoll] = useState(0);
   const [jobIdFiltro, setJobIdFiltro] = useState<number | null>(null);
   const [barriendo, setBarriendo] = useState(false);
   const [purgando, setPurgando] = useState(false);
@@ -280,13 +286,15 @@ export function RagPanelPage() {
           }
         }
       } catch {
-        // Un fallo de red al sondear no debe tumbar la pantalla; se reintenta en el próximo tick.
+        // Un fallo de red al sondear no debe tumbar la pantalla. El reintento hay que forzarlo:
+        // sin cambio de dependencias el efecto no se re-ejecuta y el sondeo moriría aquí.
+        setReintentoPoll((n) => n + 1);
       }
     }, INTERVALO_POLL_MS);
     return () => {
       if (pollRef.current) clearTimeout(pollRef.current);
     };
-  }, [jobActivo, cargar, cadena, aplicarCadena]);
+  }, [jobActivo, reintentoPoll, cargar, cadena, aplicarCadena]);
 
   async function alternarBarrido(activo: boolean) {
     try {
@@ -328,7 +336,7 @@ export function RagPanelPage() {
     try {
       const r = await ejecutarRetencionAhora();
       toast.success(
-        `Retención ejecutada: ${r.loginIntento} intento(s) de login, ${r.usoToken} uso(s) de token, ${r.retrievalLog} consulta(s) de log purgadas.`,
+        `Retención ejecutada: ${r.loginIntento} intento(s) de login, ${r.usoToken} uso(s) de token, ${r.retrievalLog} consulta(s) de log y ${r.trazas ?? 0} traza(s) del chat purgadas.`,
         { id },
       );
       cargar();
@@ -455,6 +463,22 @@ export function RagPanelPage() {
       setJobIdFiltro(jobId);
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : 'No se pudo iniciar la reparación');
+    }
+  }
+
+  async function reintentarSinArchivo() {
+    const total = panel?.corpus.documentos.noSoportado ?? 0;
+    if (!window.confirm(
+      `Se volverán a intentar los ${total} documento(s) "sin archivo", incluidos los que ya agotaron `
+        + 'sus intentos. Asegúrese de que el repositorio de archivos del SGD esté montado. ¿Continuar?',
+    )) return;
+    try {
+      const { jobId, total: encolados } = await reintentarTodosSinArchivo();
+      toast.success(`${encolados} documento(s) "sin archivo" en cola de reintento.`);
+      setJobActivo(await fetchJob(jobId));
+      setJobIdFiltro(jobId);
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'No se pudieron reintentar los documentos sin archivo');
     }
   }
 
@@ -723,6 +747,21 @@ export function RagPanelPage() {
             <div>
               <button
                 className="boton-secundario"
+                onClick={reintentarSinArchivo}
+                disabled={(!!jobActivo && jobActivo.estado === 'en_curso') || documentos.noSoportado === 0}
+              >
+                Reintentar todos los sin archivo
+              </button>
+              <p className="exp-nota">
+                Vuelve a buscar el archivo de los {documentos.noSoportado} documento(s) "sin
+                archivo", incluidos los que ya agotaron sus intentos (por ejemplo, porque se
+                marcaron con el repositorio de archivos desmontado). Se rechaza si el repositorio
+                sigue sin montar.
+              </p>
+            </div>
+            <div>
+              <button
+                className="boton-secundario"
                 onClick={largos}
                 disabled={(!!jobActivo && jobActivo.estado === 'en_curso') || documentos.largos === 0}
               >
@@ -798,6 +837,16 @@ export function RagPanelPage() {
         </section>
 
         {/* Mantenimiento: retención de logs y recolector de basura (Fase 6) */}
+        <section className="rag-tarjeta rag-tarjeta--ancha">
+          <h2>Chat: transformación de consultas</h2>
+          <ConfigChatRag base="/api/rag" />
+        </section>
+
+        <section className="rag-tarjeta rag-tarjeta--ancha">
+          <h2>Calidad del chat</h2>
+          <CalidadChatRag base="/api/rag" />
+        </section>
+
         <section className="rag-tarjeta rag-tarjeta--ancha">
           <h2>Mantenimiento</h2>
           <div className="rag-acciones">

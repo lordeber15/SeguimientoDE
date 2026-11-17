@@ -1,0 +1,138 @@
+import { textoListado } from '../../../compartido/rag/textosListado';
+import type { PlanConsulta } from '../../../compartido/rag/planificadorService';
+import {
+  buscarExpedientesPorPlan,
+  detallePagina,
+  leerParametros,
+  type CandidatoExpediente,
+  type FilaExpedienteChat,
+  type ResultadoBusquedaExpedientes,
+} from './busquedaExpedientesService';
+import { clave, estadoVivoExpedientes } from './enriquecimientoSgdService';
+import type { FiltroAcceso } from './retrievalService';
+
+/**
+ * Respuestas `listar` / `contar` del chat (docs/PLAN-CHAT-CONSULTAS.md, Fase 3, D6): tabla + una
+ * frase de plantilla, SIN llamar al modelo de respuesta. Lo que se guarda en `chat_mensaje.meta`
+ * (`MetaListado`) es la lista completa y ordenada de expedientes: el "ver más" pagina sobre ella sin
+ * volver a buscar, y la Fase 4 la usará como conjunto activo ("de esos, ¿cuál es el último?").
+ */
+
+export const FILAS_POR_PAGINA = 10;
+
+export interface TablaExpedientes {
+  filas: FilaExpedienteChat[];
+  pagina: number;
+  porPagina: number;
+  total: number;
+  nivel1: number;
+  nivel2: number;
+  hayMas: boolean;
+}
+
+export interface MetaListado {
+  version: 1;
+  plan: PlanConsulta;
+  busqueda: Omit<ResultadoBusquedaExpedientes, 'candidatos'>;
+  expedientes: CandidatoExpediente[];
+  /** Para contar: desglose en trámite / archivados (sobre los candidatos guardados). */
+  estados?: { enTramite: number; archivados: number; sinDato: number };
+}
+
+export interface RespuestaListado {
+  texto: string;
+  tabla: TablaExpedientes;
+  meta: MetaListado;
+}
+
+/** Frase de plantilla (compartida con el STD desde la Fase 7). */
+export { textoListado };
+
+export async function ejecutarListado(
+  intencion: 'listar' | 'contar',
+  plan: PlanConsulta,
+  filtro: FiltroAcceso,
+  opciones: { dentroDe?: { nuAnnExp: string; nuSecExp: string }[] } = {},
+): Promise<RespuestaListado | null> {
+  const parametros = await leerParametros();
+  let dentroDe = opciones.dentroDe && opciones.dentroDe.length > 0 ? opciones.dentroDe : undefined;
+  let resultado = await buscarExpedientesPorPlan(plan, filtro, parametros, {
+    dentroDe,
+    soloActuales: plan.filtros.actual,
+  });
+  // Red de seguridad del contexto (Fase 6): el planificador a veces marca como continuación una
+  // pregunta que cambia de obra ("¿y los de Huancavelica?" tras Junín). Si dentro del listado
+  // anterior no hay nada, se busca en toda la base y la frase lo dice.
+  let anteriorSinResultados: number | undefined;
+  if (resultado.total === 0 && dentroDe) {
+    anteriorSinResultados = dentroDe.length;
+    dentroDe = undefined;
+    resultado = await buscarExpedientesPorPlan(plan, filtro, parametros, { soloActuales: plan.filtros.actual });
+  }
+  if (resultado.total === 0) return null;
+
+  const { candidatos, ...busqueda } = resultado;
+
+  let estados: MetaListado['estados'];
+  if (intencion === 'contar') {
+    const vivos = await estadoVivoExpedientes(
+      candidatos.map((c) => ({ nuAnnExp: c.a, nuSecExp: c.s })), parametros.mesesActual,
+    ).catch(() => null);
+    if (vivos) {
+      let enTramite = 0;
+      let archivados = 0;
+      for (const c of candidatos) {
+        const e = vivos.get(clave(c.a, c.s));
+        if (!e) continue;
+        if (e.archivado) archivados++;
+        else enTramite++;
+      }
+      estados = { enTramite, archivados, sinDato: candidatos.length - enTramite - archivados };
+    }
+  }
+
+  const meta: MetaListado = { version: 1, plan, busqueda, expedientes: candidatos, estados };
+  const tabla = await paginaDesdeMeta(meta, 1, filtro);
+  return {
+    texto: textoListado(intencion, plan, busqueda, parametros.mesesActual, estados, dentroDe?.length, anteriorSinResultados),
+    tabla,
+    meta,
+  };
+}
+
+/** Una página de la lista guardada en `meta`, con el estado en vivo de esas filas. */
+export async function paginaDesdeMeta(meta: MetaListado, pagina: number, filtro: FiltroAcceso): Promise<TablaExpedientes> {
+  const parametros = await leerParametros();
+  const desde = (pagina - 1) * FILAS_POR_PAGINA;
+  const tramo = meta.expedientes.slice(desde, desde + FILAS_POR_PAGINA);
+  const filas = await detallePagina(
+    tramo, meta.busqueda.terminos, filtro, parametros.mesesActual, meta.busqueda.consultas ?? meta.busqueda.terminos,
+  );
+  return {
+    filas,
+    pagina,
+    porPagina: FILAS_POR_PAGINA,
+    total: meta.expedientes.length,
+    nivel1: meta.busqueda.nivel1,
+    nivel2: meta.busqueda.nivel2,
+    hayMas: desde + FILAS_POR_PAGINA < meta.expedientes.length,
+  };
+}
+
+/** Lo mínimo que el historial necesita para volver a pintar la tabla sin re-buscar. */
+export function resumenTabla(meta: MetaListado): TablaExpedientes {
+  return {
+    filas: [],
+    pagina: 0,
+    porPagina: FILAS_POR_PAGINA,
+    total: meta.expedientes.length,
+    nivel1: meta.busqueda.nivel1,
+    nivel2: meta.busqueda.nivel2,
+    hayMas: meta.expedientes.length > 0,
+  };
+}
+
+export function esMetaListado(meta: unknown): meta is MetaListado {
+  return typeof meta === 'object' && meta !== null && (meta as MetaListado).version === 1
+    && Array.isArray((meta as MetaListado).expedientes);
+}

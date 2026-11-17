@@ -1,0 +1,536 @@
+import { QueryTypes } from 'sequelize';
+import {
+  hayFiltrosDocumento,
+  sqlFiltrosDocumento,
+  type FiltrosDocumento,
+  type OpcionesBusqueda,
+} from '../../../compartido/rag/transformacionConsulta';
+import { condicionContiene } from '../../../compartido/rag/busquedaTerminos';
+import { appSequelize } from '../../../compartido/config/appDatabase';
+import { estimarTokens } from '../../../compartido/rag/chunkService';
+import { modeloActivo } from '../../../compartido/rag/embeddingModelService';
+import { paso } from '../../../compartido/observabilidad/traza';
+import {
+  conEscaneoVectorial,
+  embeberConsulta,
+  resumirBusqueda,
+  sqlVecinosOrdenados,
+  UMBRAL_ESCANEO_EXACTO,
+} from '../../../compartido/rag/ramaVectorial';
+import { getDocumentosExpediente } from '../services/documentoService';
+
+/**
+ * Retrieval híbrido (vectorial + full-text español) para el chat sobre el corpus RAG.
+ *
+ * Ver docs/PLAN-RAG.md §9: fusión por RRF (los embeddings son malos con identificadores
+ * literales — oficios, DNIs, expedientes — y el FTS es malo con paráfrasis), tope de chunks por
+ * documento, y el filtro de permisos SOBRE `documento`, nunca sobre `chunk` (con el ~13% de
+ * contenido compartido por sha256, filtrar el chunk equivocado puede dejar pasar o tapar el
+ * documento equivocado).
+ */
+
+const K_RRF = 60;
+const LIMITE_RAMA = 50;
+export const LIMITE_RESULTADO = 20;
+export const TOPE_POR_DOCUMENTO = 3;
+
+export interface FiltroAcceso {
+  /** `null` = sin restricción (admin/jefe ven todo). Si no, `co_dep_emi` exigido en `rag.documento`. */
+  coDependencia: string | null;
+}
+
+export interface ChunkRecuperado {
+  chunkId: number;
+  texto: string;
+  rutaTitulos: string | null;
+  ord: number;
+  sha256: string;
+  score: number;
+}
+
+export interface ResultadoBusqueda {
+  chunks: ChunkRecuperado[];
+  candidatosVec: number;
+  candidatosFts: number;
+  /** La rama vectorial corrió con escaneo exacto (filtro bajo el umbral). `false` también si no corrió. */
+  escaneoExacto: boolean;
+  /** Motivo por el que la rama vectorial NO corrió habiendo modelo activo (FTS puro). `null` = normal. */
+  degradacionVectorial?: string | null;
+  /** Candidatos de la lista HyDE (Fase 4); 0 si no se pidió o no se pudo embeber. */
+  candidatosHyde?: number;
+  /** Los filtros del plan no dejaban ningún fragmento y se buscó sin ellos. */
+  filtrosRelajados?: boolean;
+}
+
+/** Filtros del plan traducidos a las columnas de `rag.documento` del SGD (las mismas que los listados). */
+const CONDICIONES_SGD: { [K in keyof FiltrosDocumento]: (n: number) => string } = {
+  remitente: (n) => `${condicionContiene('d.remitente_externo', n)} OR d.remitente_doc = $${n}`,
+  emisor: (n) => `${condicionContiene('d.emisor_empleado', n)} OR ${condicionContiene('d.de_dep_emi', n)}`,
+  dependencia: (n) => `${condicionContiene('d.de_dep_emi', n)} OR d.co_dep_emi = $${n}`,
+  tipoDoc: (n) => condicionContiene('d.tipo_doc', n),
+  desde: (n) => `d.fe_emi >= $${n}::date`,
+  hasta: (n) => `d.fe_emi < $${n}::date + 1`,
+};
+
+interface FilaVec { chunk_id: number }
+interface FilaFts { chunk_id: number }
+interface FilaFusionada {
+  chunk_id: number;
+  score: number;
+  texto: string;
+  ruta_titulos: string | null;
+  ord: number;
+  sha256: string;
+}
+
+/**
+ * Recupera los chunks más relevantes para `consultaTexto`, ya filtrados por permisos.
+ *
+ * Si no hay modelo de embedding activo (o su dimensión ya no coincide con el proveedor
+ * configurado — arrastre de `.env`), la rama vectorial se omite sin error: el resultado es FTS
+ * puro. Es intencional (D8 aplicado aquí): el chat debe funcionar hoy mismo, sin ninguna clave,
+ * aunque peor que con retrieval híbrido completo.
+ */
+export async function buscarHibrido(
+  consultaTexto: string,
+  filtro: FiltroAcceso,
+  /** Chat "Por expediente": solo chunks de documentos de ESTE expediente. Sin él, la búsqueda
+   *  recorría todo el corpus y respondía con documentos de otros expedientes. */
+  expediente?: { nuAnnExp: string; nuSecExp: string },
+  /** Conjunto activo de la conversación (el listado anterior, docs/PLAN-CHAT-CONSULTAS.md Fase 4):
+   *  "de esos, ¿cuál habla de penalidades?" busca solo dentro de esos expedientes. */
+  conjunto?: { nuAnnExp: string; nuSecExp: string }[],
+  /** Términos del planificador para la rama FTS, unidos con OR (ts_rank_cd premia los fragmentos
+   *  que traen más de ellos). Sin esto, la consulta REESCRITA — más larga que el mensaje original —
+   *  iba entera a `plainto_tsquery`, que exige TODAS sus palabras: "qué dicen sobre la resolución del
+   *  contrato de la obra de Junín" encontraba 3 fragmentos. La rama vectorial sigue usando la
+   *  consulta completa, que es donde la paráfrasis sí ayuda. */
+  terminosFts?: string[],
+  opciones: OpcionesBusqueda = {},
+): Promise<ResultadoBusqueda> {
+  return paso(
+    'retrieval',
+    {
+      consulta: consultaTexto, coDependencia: filtro.coDependencia, expediente: expediente ?? null,
+      conjunto: conjunto?.length ?? 0, terminosFts: terminosFts ?? null,
+      consultaVectorial: opciones.consultaVectorial ?? null, hyde: opciones.textoHyde ?? null,
+    },
+    async () => {
+      const r = await buscarHibridoSinTraza(consultaTexto, filtro, expediente, conjunto, terminosFts, opciones);
+      // Un filtro mal extraído por el planificador (tipo o fecha equivocados) no debe dejar al chat sin
+      // respuesta: si no queda ningún fragmento, se repite la búsqueda sin los filtros del plan.
+      if (r.chunks.length > 0 || !hayFiltrosDocumento(opciones.filtrosDoc)) return r;
+      const sinFiltros = await buscarHibridoSinTraza(
+        consultaTexto, filtro, expediente, conjunto, terminosFts, { ...opciones, filtrosDoc: null },
+      );
+      return { ...sinFiltros, filtrosRelajados: true };
+    },
+    { tipo: 'recuperacion', resumir: resumirBusqueda },
+  );
+}
+
+async function buscarHibridoSinTraza(
+  consultaTexto: string,
+  filtro: FiltroAcceso,
+  expediente?: { nuAnnExp: string; nuSecExp: string },
+  conjunto?: { nuAnnExp: string; nuSecExp: string }[],
+  terminosFts?: string[],
+  opciones: OpcionesBusqueda = {},
+): Promise<ResultadoBusqueda> {
+  const modelo = await modeloActivo();
+  const [{ consulta: embebida, degradacion }, hyde] = await Promise.all([
+    embeberConsulta(modelo, opciones.consultaVectorial ?? consultaTexto, 'sgd'),
+    opciones.textoHyde ? embeberConsulta(modelo, opciones.textoHyde, 'sgd') : Promise.resolve(null),
+  ]);
+  const modeloId = embebida?.modeloId ?? null;
+  const tabla = embebida?.tabla ?? null;
+
+  const permisoSql = 'AND ($1::text IS NULL OR d.co_dep_emi = $1)';
+  const expAnn = expediente?.nuAnnExp ?? null;
+  const expSec = expediente?.nuSecExp ?? null;
+  // Los índices de bind cambian por rama (la vectorial usa $2/$3), de ahí que se arme por rama.
+  const expedienteSql = (i: number) =>
+    `AND ($${i}::text IS NULL OR (d.nu_ann_exp = $${i} AND d.nu_sec_exp = $${i + 1}))`;
+  const conjAnn = conjunto && conjunto.length > 0 ? conjunto.map((c) => c.nuAnnExp) : null;
+  const conjSec = conjunto && conjunto.length > 0 ? conjunto.map((c) => c.nuSecExp) : null;
+  const conjuntoSql = (i: number) =>
+    `AND ($${i}::text[] IS NULL OR (d.nu_ann_exp, d.nu_sec_exp) IN (SELECT unnest($${i}::text[]), unnest($${i + 1}::text[])))`;
+  // Filtros del plan: sus binds van AL FINAL de cada consulta, desde el índice indicado.
+  const metaSql = (i: number) => sqlFiltrosDocumento(opciones.filtrosDoc, i, CONDICIONES_SGD);
+
+  // Las dos ramas corren EN PARALELO, cada una en su conexión (docs/PLAN-RAG-AVANZADO.md, Fase 3):
+  // la vectorial necesita su transacción por los `SET LOCAL` de ramaVectorial.ts; la FTS no.
+  const ramaVectorial = async (vecLiteral: string | null): Promise<{ filasVec: FilaVec[]; escaneoExacto: boolean }> => {
+    if (!vecLiteral || !tabla) return { filasVec: [], escaneoExacto: false };
+    return appSequelize.transaction(async (tx) => {
+      let escaneoExacto = false;
+      // Sin ningún filtro (admin/jefe, búsqueda general) siempre se usa HNSW: el corpus entero nunca
+      // queda bajo el umbral. Con filtro, se cuentan los chunks que deja pasar — con tope, para que el
+      // conteo no cueste más que la búsqueda — y bajo el umbral se escanea exacto (ver ramaVectorial.ts).
+      const hayFiltro = filtro.coDependencia !== null || expAnn !== null || conjAnn !== null
+        || hayFiltrosDocumento(opciones.filtrosDoc);
+      if (hayFiltro) {
+        const meta = metaSql(6);
+        const [{ n }] = await appSequelize.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM (
+             SELECT 1 FROM rag.documento d
+               JOIN rag.chunk c ON c.sha256 = d.contenido_sha256
+              WHERE d.vigente ${permisoSql} ${expedienteSql(2)} ${conjuntoSql(4)} ${meta.sql}
+              LIMIT ${UMBRAL_ESCANEO_EXACTO + 1}
+           ) s`,
+          {
+            bind: [filtro.coDependencia, expAnn, expSec, conjAnn, conjSec, ...meta.binds],
+            type: QueryTypes.SELECT, transaction: tx,
+          },
+        );
+        escaneoExacto = n <= UMBRAL_ESCANEO_EXACTO;
+      }
+
+      const metaVec = metaSql(8);
+      const filasVec = await conEscaneoVectorial(appSequelize, tx, escaneoExacto, () => appSequelize.query<FilaVec>(
+        sqlVecinosOrdenados(
+          `SELECT c.id AS chunk_id, e.vec <=> $3::vector AS distancia
+             FROM rag.${tabla} e
+             JOIN rag.chunk c ON c.id = e.chunk_id
+            WHERE e.modelo_id = $2
+              AND EXISTS (
+                SELECT 1 FROM rag.documento d
+                 WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(4)}
+                   ${conjuntoSql(6)} ${metaVec.sql}
+              )
+            ORDER BY distancia
+            LIMIT ${LIMITE_RAMA}`,
+        ),
+        {
+          bind: [filtro.coDependencia, modeloId, vecLiteral, expAnn, expSec, conjAnn, conjSec, ...metaVec.binds],
+          type: QueryTypes.SELECT,
+          transaction: tx,
+        },
+      ));
+      return { filasVec, escaneoExacto };
+    });
+  };
+
+  const metaFts = metaSql(8);
+  // `tsv_busqueda` (migración 028) = texto del fragmento + su cabecera (título, asunto, expediente) con
+  // menos peso: la FTS ve lo mismo que el vector. `tsv` (solo texto) queda para los listados.
+  const ramaFts = () => appSequelize.query<FilaFts>(
+    `SELECT c.id AS chunk_id
+       FROM rag.chunk c,
+            COALESCE(
+              (SELECT NULLIF(string_agg(NULLIF(rag.tsq_alternativas(t)::text, ''), ' | '), '')::tsquery
+                 FROM unnest($7::text[]) AS t),
+              plainto_tsquery('es_unaccent', $2)
+            ) AS consulta
+      WHERE c.tsv_busqueda @@ consulta
+        AND EXISTS (
+          SELECT 1 FROM rag.documento d
+           WHERE d.contenido_sha256 = c.sha256 AND d.vigente ${permisoSql} ${expedienteSql(3)}
+             ${conjuntoSql(5)} ${metaFts.sql}
+        )
+      ORDER BY ts_rank_cd(c.tsv_busqueda, consulta) DESC
+      LIMIT ${LIMITE_RAMA}`,
+    {
+      bind: [
+        filtro.coDependencia, consultaTexto, expAnn, expSec, conjAnn, conjSec,
+        terminosFts && terminosFts.length > 0 ? terminosFts : null, ...metaFts.binds,
+      ],
+      type: QueryTypes.SELECT,
+    },
+  );
+
+  const [{ filasVec, escaneoExacto }, filasFts, { filasVec: filasHyde }] = await Promise.all([
+    ramaVectorial(embebida?.vecLiteral ?? null), ramaFts(), ramaVectorial(hyde?.consulta?.vecLiteral ?? null),
+  ]);
+
+  const rangoVec = new Map(filasVec.map((f, i) => [f.chunk_id, i + 1]));
+  const rangoFts = new Map(filasFts.map((f, i) => [f.chunk_id, i + 1]));
+  const rangoHyde = new Map(filasHyde.map((f, i) => [f.chunk_id, i + 1]));
+  const idsUnicos = [...new Set([...rangoVec.keys(), ...rangoFts.keys(), ...rangoHyde.keys()])];
+  const cifras = {
+    candidatosVec: filasVec.length, candidatosFts: filasFts.length, candidatosHyde: filasHyde.length,
+    escaneoExacto, degradacionVectorial: degradacion,
+  };
+
+  if (idsUnicos.length === 0) return { chunks: [], ...cifras };
+
+  const puntuados = idsUnicos
+    .map((chunkId) => ({
+      chunkId,
+      score:
+        (rangoVec.has(chunkId) ? 1 / (K_RRF + rangoVec.get(chunkId)!) : 0)
+        + (rangoFts.has(chunkId) ? 1 / (K_RRF + rangoFts.get(chunkId)!) : 0)
+        + (rangoHyde.has(chunkId) ? 1 / (K_RRF + rangoHyde.get(chunkId)!) : 0),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const filasChunk = await appSequelize.query<FilaFusionada>(
+    `SELECT id AS chunk_id, texto, ruta_titulos, ord, sha256
+       FROM rag.chunk WHERE id = ANY($1::bigint[])`,
+    { bind: [puntuados.map((p) => p.chunkId)], type: QueryTypes.SELECT },
+  );
+  const porId = new Map(filasChunk.map((f) => [f.chunk_id, f]));
+
+  // Tope de 3 chunks por documento de origen (sha256): un expediente de 80 páginas no debe
+  // llenar el contexto entero con fragmentos del mismo documento.
+  const porSha = new Map<string, number>();
+  const chunks: ChunkRecuperado[] = [];
+  for (const p of puntuados) {
+    const fila = porId.get(p.chunkId);
+    if (!fila) continue;
+    const usados = porSha.get(fila.sha256) ?? 0;
+    if (usados >= TOPE_POR_DOCUMENTO) continue;
+    porSha.set(fila.sha256, usados + 1);
+
+    chunks.push({
+      chunkId: fila.chunk_id,
+      texto: fila.texto,
+      rutaTitulos: fila.ruta_titulos,
+      ord: fila.ord,
+      sha256: fila.sha256,
+      score: p.score,
+    });
+    if (chunks.length >= LIMITE_RESULTADO) break;
+  }
+
+  return { chunks, ...cifras };
+}
+
+export interface DocumentoCitado {
+  id: number;
+  nuAnn: string;
+  nuEmi: string;
+  /** 0 = documento principal (centinela de la migración 004), >0 = anexo con ese nu_ane literal. */
+  nuAne: number;
+}
+
+/**
+ * Documento accesible por el que se cita un chunk (nunca solo el chunk_id: ver comentario de
+ * cabecera). Trae también `nu_ann/nu_emi/nu_ane`: sin ellos el frontend no puede abrir el
+ * documento real desde la cita — reutiliza el mismo `rutaDocumento`/`rutaAnexo` que ya usa el
+ * visor de Seguimiento, no una URL nueva. Si varios documentos accesibles comparten el mismo
+ * contenido, se prefiere uno del expediente en curso (modo expediente) y, si no, el de emisión
+ * más reciente — arbitrario pero determinista.
+ */
+export async function elegirDocumentoParaCita(
+  sha256: string,
+  filtro: FiltroAcceso,
+  expedienteEnCurso?: { nuAnnExp: string; nuSecExp: string },
+): Promise<DocumentoCitado | null> {
+  const filas = await appSequelize.query<{ id: number; nu_ann: string; nu_emi: string; nu_ane: number }>(
+    `SELECT d.id, d.nu_ann, d.nu_emi, d.nu_ane
+       FROM rag.documento d
+      WHERE d.contenido_sha256 = $1
+        AND d.vigente
+        AND ($2::text IS NULL OR d.co_dep_emi = $2)
+      ORDER BY (d.nu_ann_exp = $3 AND d.nu_sec_exp = $4) DESC, d.fe_emi DESC NULLS LAST
+      LIMIT 1`,
+    {
+      bind: [
+        sha256,
+        filtro.coDependencia,
+        expedienteEnCurso?.nuAnnExp ?? null,
+        expedienteEnCurso?.nuSecExp ?? null,
+      ],
+      type: QueryTypes.SELECT,
+    },
+  );
+  const fila = filas[0];
+  return fila ? { id: fila.id, nuAnn: fila.nu_ann, nuEmi: fila.nu_emi, nuAne: fila.nu_ane } : null;
+}
+
+export interface LineaTiempo {
+  fecha: string | null;
+  tipoDocumento: string | null;
+  numeroDocumento: string | null;
+  asunto: string | null;
+  dependenciaEmisora: string | null;
+  dependenciaDestino: string | null;
+  estado: string | null;
+}
+
+/**
+ * "¿En qué estado está el expediente?" es una respuesta ESTRUCTURADA (línea de tiempo por SQL),
+ * no un chunk recuperado — mezclar ambos es lo que separa un chat útil de un buscador semántico
+ * con adornos (PLAN-RAG.md §9). Reusa `getDocumentosExpediente`, que ya arma exactamente esta
+ * cronología para el PDF unificado: no se reimplementa.
+ */
+export async function estadoExpediente(nuAnnExp: string, nuSecExp: string): Promise<LineaTiempo[]> {
+  const documentos = await getDocumentosExpediente(nuAnnExp, nuSecExp);
+  return documentos.map((d) => ({
+    fecha: d.fechaEmision,
+    tipoDocumento: d.tipoDocumento,
+    numeroDocumento: d.numeroDocumento,
+    asunto: d.asunto,
+    dependenciaEmisora: d.dependenciaEmisora,
+    dependenciaDestino: d.dependenciaDestino,
+    estado: d.estado,
+  }));
+}
+
+export interface EstadoIngestaExpediente {
+  total: number;
+  listos: number;
+  convertidos: number;
+  pendientes: number;
+  sinTexto: number;
+  error: number;
+  noSoportado: number;
+  /** `true` solo si hay al menos un documento y todos están `estado='ok'` (convertido + con embedding). */
+  completo: boolean;
+}
+
+export interface EstadoIngestaConClave extends EstadoIngestaExpediente {
+  nuAnnExp: string;
+  nuSecExp: string;
+}
+
+/**
+ * Cobertura de ingesta de un lote de expedientes, en vivo — a propósito no reusa los contadores
+ * cacheados de `rag.expediente` (`docs_ingestados`/`docs_pendientes`), porque
+ * `refrescarContadores()` (`barridoService.ts`) solo corre dentro del ciclo de barrido: con el
+ * barrido apagado (su modo por defecto) esos contadores pueden quedar desactualizados minutos u
+ * horas después de generar embeddings a mano desde el panel. Para avisar justo antes de chatear
+ * (o de pintar el badge de una tabla), una cifra vieja sería peor que no avisar nada.
+ *
+ * `estado='ok'` (ver `ingestaService.marcarDocumentosCompletos`) es el único estado que significa
+ * "convertido en chunks Y con embedding generado" — la señal correcta de "listo para el chat".
+ *
+ * Devuelve una entrada por cada par pedido, en el mismo orden y con el mismo `nuAnnExp`/`nuSecExp`
+ * tal cual se pasaron (no lo que reporte la BD): un expediente sin ninguna fila en `rag.documento`
+ * vuelve con todo en cero — "sin indexar" es un estado legítimo que hay que poder pintar, no una
+ * ausencia silenciosa que el llamador tenga que adivinar.
+ */
+export async function estadoIngestaExpedientes(
+  pares: { nuAnnExp: string; nuSecExp: string }[],
+): Promise<EstadoIngestaConClave[]> {
+  if (pares.length === 0) return [];
+
+  // Dedup antes de bindear: si el llamador repite un par, la consulta no debe hacer el trabajo dos
+  // veces (aunque el resultado sería el mismo, GROUP BY ya lo colapsaría).
+  const unicos = new Map(pares.map((p) => [`${p.nuAnnExp}|${p.nuSecExp}`, p]));
+  const anns = [...unicos.values()].map((p) => p.nuAnnExp);
+  const secs = [...unicos.values()].map((p) => p.nuSecExp);
+
+  const filas = await appSequelize.query<{
+    ann: string; sec: string; total: string; listos: string; convertidos: string;
+    pendientes: string; sin_texto: string; error: string; no_soportado: string;
+  }>(
+    `SELECT nu_ann_exp AS ann, nu_sec_exp AS sec,
+            count(*)::text AS total,
+            count(*) FILTER (WHERE estado = 'ok')::text AS listos,
+            count(*) FILTER (WHERE estado = 'convertido')::text AS convertidos,
+            count(*) FILTER (WHERE estado IN ('pendiente','en_proceso'))::text AS pendientes,
+            count(*) FILTER (WHERE estado = 'sin_texto')::text AS sin_texto,
+            count(*) FILTER (WHERE estado = 'error')::text AS error,
+            count(*) FILTER (WHERE estado = 'no_soportado')::text AS no_soportado
+       FROM rag.documento
+      WHERE vigente
+        AND (nu_ann_exp, nu_sec_exp) IN (SELECT unnest($1::text[]), unnest($2::text[]))
+      GROUP BY nu_ann_exp, nu_sec_exp`,
+    { bind: [anns, secs], type: QueryTypes.SELECT },
+  );
+
+  const porClave = new Map(filas.map((f) => [`${f.ann}|${f.sec}`, f]));
+
+  return [...unicos.values()].map((p) => {
+    const fila = porClave.get(`${p.nuAnnExp}|${p.nuSecExp}`);
+    const total = Number(fila?.total ?? 0);
+    const listos = Number(fila?.listos ?? 0);
+    return {
+      nuAnnExp: p.nuAnnExp,
+      nuSecExp: p.nuSecExp,
+      total,
+      listos,
+      convertidos: Number(fila?.convertidos ?? 0),
+      pendientes: Number(fila?.pendientes ?? 0),
+      sinTexto: Number(fila?.sin_texto ?? 0),
+      error: Number(fila?.error ?? 0),
+      noSoportado: Number(fila?.no_soportado ?? 0),
+      completo: total > 0 && listos === total,
+    };
+  });
+}
+
+export async function estadoIngestaExpediente(
+  nuAnnExp: string,
+  nuSecExp: string,
+): Promise<EstadoIngestaExpediente> {
+  const [estado] = await estadoIngestaExpedientes([{ nuAnnExp, nuSecExp }]);
+  return estado;
+}
+
+export interface ExpedienteEncontradoChat {
+  nuAnnExp: string;
+  nuSecExp: string;
+  /** Número visible del SGD (`numero_sgd`). `null` si el barrido nunca lo trajo. */
+  numeroExpediente: string | null;
+  documentos: number;
+  ingestados: number;
+}
+
+const LIMITE_BUSQUEDA_EXPEDIENTE = 20;
+
+/**
+ * Busca expedientes por su número visible del SGD (`DE000020260000062`, `OGAUL020260000058`,
+ * `2026-0000325`) para el chat: el prefijo varía de largo según la dependencia, así que ese número
+ * NO se puede partir en (año, secuencia) sin consultar — hay que resolverlo contra la BD.
+ *
+ * Se busca en `rag.expediente` (BD propia) y no en el SGD: es el conjunto sobre el que el chat
+ * puede responder algo, y no obliga a que el usuario tenga `seguimiento.ver`.
+ *
+ * `par` lo resuelve el controlador cuando el término YA es un par año-secuencia (`2026-325`). Cubre
+ * los expedientes que el barrido no recorrió todavía o cuyo `numero_sgd` quedó en NULL, que si no
+ * serían inalcanzables desde aquí — es el mismo acceso directo que daban las dos casillas de antes.
+ */
+export async function buscarExpedientes(
+  termino: string,
+  par: { nuAnnExp: string; nuSecExp: string } | null,
+): Promise<ExpedienteEncontradoChat[]> {
+  // Los comodines de LIKE que el usuario haya tecleado se escapan para que se busquen literales, no
+  // patrones — el bind ya cubre la inyección, esto es solo semántica de búsqueda. (Mismo escapado
+  // que `buscarExpedientePorNumero` en services/seguimientoService.ts, sobre la otra BD.)
+  const escapado = termino.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+
+  const filas = await appSequelize.query<{
+    nuAnnExp: string; nuSecExp: string; numeroExpediente: string | null;
+    documentos: number; ingestados: number;
+  }>(
+    `SELECT nu_ann_exp AS "nuAnnExp", nu_sec_exp AS "nuSecExp", numero_sgd AS "numeroExpediente",
+            doc_count_sgd AS "documentos", docs_ingestados AS "ingestados"
+       FROM rag.expediente
+      WHERE numero_sgd ILIKE '%' || $1 || '%' ESCAPE '\\'
+         OR (nu_ann_exp = $2 AND nu_sec_exp = $3 AND numero_sgd IS NULL)
+      ORDER BY (nu_ann_exp = $2 AND nu_sec_exp = $3) DESC,
+               nu_ann_exp DESC, nu_sec_exp DESC
+      LIMIT $4`,
+    {
+      // Con `par = null` esa rama del OR queda en NULL — nunca `true`, así que no aporta filas.
+      bind: [escapado, par?.nuAnnExp ?? null, par?.nuSecExp ?? null, LIMITE_BUSQUEDA_EXPEDIENTE],
+      type: QueryTypes.SELECT,
+    },
+  );
+
+  // `nu_sec_exp` es texto con ceros a la izquierda: el orden lexicográfico ya coincide con el
+  // numérico, y los contadores vuelven como number desde columnas `integer`.
+  return filas.map((f) => ({
+    nuAnnExp: f.nuAnnExp,
+    nuSecExp: f.nuSecExp,
+    numeroExpediente: f.numeroExpediente,
+    documentos: Number(f.documentos),
+    ingestados: Number(f.ingestados),
+  }));
+}
+
+/** Recorta chunks al presupuesto de tokens del prompt, en orden de score (ya vienen ordenados). */
+export function recortarPorPresupuesto(chunks: ChunkRecuperado[], presupuestoTokens: number): ChunkRecuperado[] {
+  const resultado: ChunkRecuperado[] = [];
+  let usado = 0;
+  for (const c of chunks) {
+    const tokens = estimarTokens(c.texto);
+    if (usado + tokens > presupuestoTokens && resultado.length > 0) break;
+    resultado.push(c);
+    usado += tokens;
+  }
+  return resultado;
+}

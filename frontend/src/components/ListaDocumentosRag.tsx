@@ -6,10 +6,10 @@ import {
   iniciarIngestaEmbeddings,
   reintentarDocumento,
   type DocumentoRag,
-  type MarkdownDocumento,
 } from '../api/rag';
 import { rutaAnexo, rutaDocumento } from '../api/documentos';
-import { VisorDocumento } from './VisorDocumento';
+import { clienteReproceso, type ClienteReproceso } from '../api/reproceso';
+import { VisorDocumento, type MarkdownVisor } from './VisorDocumento';
 
 const ETIQUETA_ESTADO: Record<string, string> = {
   pendiente: 'Pendiente',
@@ -52,12 +52,10 @@ interface DocumentoAbierto {
   url: string;
   titulo: string;
   visualizable: boolean;
+  /** Presente si el documento ya tiene markdown: el visor lo muestra al costado del archivo. */
+  cargarMarkdown?: () => Promise<MarkdownVisor>;
+  reproceso?: ClienteReproceso;
 }
-
-type EstadoMarkdown =
-  | { tipo: 'cargando' }
-  | { tipo: 'error'; mensaje: string }
-  | { tipo: 'listo'; datos: MarkdownDocumento };
 
 /** Estados en los que reintentar de verdad puede cambiar algo. */
 const ESTADOS_REINTENTABLES = new Set(['no_soportado', 'sin_texto', 'error', 'pendiente']);
@@ -124,8 +122,6 @@ export function ListaDocumentosRag({
   const [porPagina, setPorPagina] = useState(50);
 
   const [documentoAbierto, setDocumentoAbierto] = useState<DocumentoAbierto | null>(null);
-  const [markdownAbierto, setMarkdownAbierto] = useState<{ titulo: string } | null>(null);
-  const [estadoMarkdown, setEstadoMarkdown] = useState<EstadoMarkdown>({ tipo: 'cargando' });
 
   // Una sola acción manual en vuelo a la vez, en todo el componente — así un despiste no encadena
   // varios reintentos a la vez contra un pipeline de concurrencia 1.
@@ -176,7 +172,15 @@ export function ListaDocumentosRag({
 
   function abrirDocumento(doc: DocumentoRag) {
     const url = doc.nuAne > 0 ? rutaAnexo(doc.nuAnn, doc.nuEmi, doc.nuAne) : rutaDocumento(doc.nuAnn, doc.nuEmi);
-    setDocumentoAbierto({ url, titulo: doc.titulo ?? `${doc.nuAnn}-${doc.nuEmi}`, visualizable: true });
+    setDocumentoAbierto({
+      url,
+      titulo: doc.titulo ?? `${doc.nuAnn}-${doc.nuEmi}`,
+      visualizable: true,
+      cargarMarkdown: doc.chars !== null ? () => fetchMarkdownDocumento(doc.id) : undefined,
+      reproceso: doc.chars !== null
+        ? clienteReproceso('/api/rag', doc.id, () => iniciarIngestaEmbeddings({ documentoIds: [doc.id] }))
+        : undefined,
+    });
   }
 
   /**
@@ -313,16 +317,6 @@ export function ListaDocumentosRag({
     if (marcar) siguiente.add(id);
     else siguiente.delete(id);
     onSeleccionCambio(siguiente);
-  }
-
-  function abrirMarkdown(doc: DocumentoRag) {
-    setMarkdownAbierto({ titulo: doc.titulo ?? `${doc.nuAnn}-${doc.nuEmi}` });
-    setEstadoMarkdown({ tipo: 'cargando' });
-    fetchMarkdownDocumento(doc.id)
-      .then((datos) => setEstadoMarkdown({ tipo: 'listo', datos }))
-      .catch((err: unknown) =>
-        setEstadoMarkdown({ tipo: 'error', mensaje: err instanceof Error ? err.message : 'Error desconocido' }),
-      );
   }
 
   const totalPaginas = Math.max(1, Math.ceil(total / porPagina));
@@ -462,13 +456,8 @@ export function ListaDocumentosRag({
                         <td>{doc.metodo ?? '—'}</td>
                         <td>
                           <div className="lista-documentos-acciones">
-                            {doc.chars !== null && (
-                              <button type="button" className="boton-enlace" onClick={() => abrirMarkdown(doc)}>
-                                Ver markdown
-                              </button>
-                            )}
                             <button type="button" className="boton-enlace" onClick={() => abrirDocumento(doc)}>
-                              Ver documento
+                              {doc.chars !== null ? 'Ver documento y markdown' : 'Ver documento'}
                             </button>
                             {ESTADOS_REINTENTABLES.has(doc.estado) && (
                               <button
@@ -558,51 +547,16 @@ export function ListaDocumentosRag({
           url={documentoAbierto.url}
           titulo={documentoAbierto.titulo}
           visualizable={documentoAbierto.visualizable}
+          cargarMarkdown={documentoAbierto.cargarMarkdown}
+          reproceso={documentoAbierto.reproceso}
+          onReprocesado={() => {
+            setRecarga((r) => r + 1);
+            onCambio?.();
+          }}
           onCerrar={() => setDocumentoAbierto(null)}
         />
       )}
 
-      {markdownAbierto && (
-        <div
-          className="modal-fondo"
-          role="dialog"
-          aria-modal="true"
-          aria-label={`Markdown de ${markdownAbierto.titulo}`}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setMarkdownAbierto(null);
-          }}
-        >
-          <div className="modal-caja modal-caja--estrecha">
-            <header className="modal-cabecera">
-              <h2>Markdown — {markdownAbierto.titulo}</h2>
-              <button className="boton-cerrar" onClick={() => setMarkdownAbierto(null)} aria-label="Cerrar">
-                ✕
-              </button>
-            </header>
-            <div className="modal-cuerpo modal-cuerpo--markdown">
-              {estadoMarkdown.tipo === 'cargando' && <div className="state-message">Cargando…</div>}
-              {estadoMarkdown.tipo === 'error' && (
-                <div className="state-message is-error" role="alert">
-                  {estadoMarkdown.mensaje}
-                </div>
-              )}
-              {estadoMarkdown.tipo === 'listo' && (
-                <>
-                  <p className="exp-nota">
-                    {estadoMarkdown.datos.chars} caracteres · método: {estadoMarkdown.datos.metodo ?? '—'}
-                    {estadoMarkdown.datos.truncado && ' · mostrando solo el inicio'}
-                  </p>
-                  {estadoMarkdown.datos.markdown.trim() === '' ? (
-                    <p className="exp-nota is-error">El markdown quedó completamente vacío.</p>
-                  ) : (
-                    <pre className="markdown-crudo">{estadoMarkdown.datos.markdown}</pre>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

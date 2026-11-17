@@ -1,0 +1,1199 @@
+{
+  "modulo": "sgd",
+  "casos": [
+    {
+      "id": "hist-88",
+      "pregunta": "Dame los detalles del proyecto junin",
+      "historial": [],
+      "ground_truth": "El proyecto en Junín se denomina \"Mejoramiento de los Servicios de Educación Superior Tecnológica del IESTP Santiago Antúnez de Mayolo\", situado en el distrito y provincia de Huancayo, departamento de Junín.\n\nLos detalles relevantes sobre el plan de trabajo son:\n\n- **Profesional a cargo:** Henry Rodolfo Chipana Enriquez.\n  \n|DIA|ACTIVIDADES|\n|---|---|\n|Miércoles 03/06/2026|• 09:45 pm; Salida de Lima a Huancayo vía terrestre.|\n|Jueves 04/06/2026|• 11:00 am; Constatación física e inventario de la obra.<br>• 09.00 pm; Salida del terminal terrestre Cruz del Sur (Huancayo).|\n|Viernes 05/06/2026|• 06:00 am; Arribo a la ciudad de Lima, Terminal terrestre Cruz del Sur.|\n\nAdemás, se solicita la gestión de viáticos para los profesionales designados para la visita a la obra, que está programada para el 4 de junio de 2026 .",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000009948",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": []
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "historial",
+      "revisado": false,
+      "nota": "ground_truth = la respuesta que dio el chat: verifíquela contra el documento antes de revisar."
+    },
+    {
+      "id": "hist-82",
+      "pregunta": "hablame de la obra de huancavelixa",
+      "historial": [],
+      "ground_truth": "La obra mencionada se refiere al \"PLAN DE REUBICACIÓN TEMPORAL DEL PROYECTO MEJORAMIENTO DE LOS SERVICIOS DE EDUCACIÓN SUPERIOR TECNOLÓGICA DEL IESTP HUANCAVELICA\", que se sitúa en el distrito de Ascensión, provincia de Huancavelica, en el departamento de Huancavelica. Esta obra tiene como objetivo mejorar la infraestructura educativa para la calidad de la educación básica y superior.\n\nDentro del presupuesto y los planos, se detallan aspectos arquitectónicos, como muros, tabiques de albañilería, cielorrasos, y pisos y pavimentos, buscando optimizar los espacios educativos de varias aulas y laboratorios, además de garantizar accesibilidad a diferentes servicios, como baños y áreas de profesores , , , .",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000033216",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000044017",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": []
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "historial",
+      "revisado": false,
+      "nota": "ground_truth = la respuesta que dio el chat: verifíquela contra el documento antes de revisar."
+    },
+    {
+      "id": "hist-80",
+      "pregunta": "Hablame de la obra en huancavelica",
+      "historial": [],
+      "ground_truth": "La obra en Huancavelica se refiere al proyecto de \"Mejoramiento de los servicios de educación superior tecnológica del IESTP Huancavelica\", ubicado en el distrito de Ascensión, provincia de Huancavelica. Este proyecto incluye la elaboración de un expediente técnico bajo la modalidad de \"Administración Directa\" o \"In House\". \n\nSe ha establecido un cronograma con hitos claves de ejecución. El inicio de la obra está programado para enero de 2028, con una culminación prevista para junio de 2029 . Para el Plan de Reubicación Temporal (PRT), que contempla la demolición de la infraestructura existente y la conformación de terraplenes, se espera que la elaboración del expediente técnico esté finalizada para el 31 de julio de 2026. Posteriormente, el proceso de selección para la ejecución de esta obra iniciará en agosto de 2026 y la ejecución de la PRT, así como la demolición, comenzará en marzo de 2027, previniéndose su culminación a finales de agosto de 2027 . \n\nAsimismo, la obra principal del IESTP Huancavelica también tiene su expediente técnico elaborado por administración directa y está programada para iniciarse en octubre de 2027, finalizando en marzo de 2029, incluyendo el equipamiento y mobiliario necesario para su funcionamiento .",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000003673",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000025190",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": []
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "historial",
+      "revisado": false,
+      "nota": "ground_truth = la respuesta que dio el chat: verifíquela contra el documento antes de revisar."
+    },
+    {
+      "id": "hist-78",
+      "pregunta": "bien ahora hablame del proyecto de huancavelica",
+      "historial": [],
+      "ground_truth": "El proyecto de Huancavelica incluye la elaboración del Expediente Técnico bajo la modalidad de Administración Directa, lo cual ha sido aprobado por el BID el 18 de mayo. Este enfoque tiene como objetivo optimizar los plazos de ejecución, permitiendo culminar el proyecto lo más pronto posible. El cronograma actualizado establece que la obra del IESTP Huancavelica iniciará en enero de 2028 y culminará en junio de 2029 .\n\nEsta obra principal implicará la ejecución de una infraestructura educativa, que incluirá todo el equipamiento y mobiliario necesario para su funcionamiento. La elaboración del Expediente Técnico debe culminar en la primera quincena de marzo de 2027, seguida de un proceso de selección que comenzará en abril de 2027, con la meta de firmar el contrato en diciembre de 2027 .\n\nAdicionalmente, también se desarrolla un Plan de Reubicación Temporal (PRT) que abarca actividades como la demolición de la infraestructura existente y la conformación de terraplenes; este proceso está programado para culminar el 31 de julio de 2026, con la ejecución de la obra del PRT prevista para marzo de 2027 y finalizando en agosto de 2027 . Durante el desarrollo del expediente técnico, se llevarán a cabo coordinaciones con el BID y la DIGESUTPA para asegurar cumplir con los plazos establecidos .",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000003673",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000025190",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": []
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "historial",
+      "revisado": false,
+      "nota": "ground_truth = la respuesta que dio el chat: verifíquela contra el documento antes de revisar."
+    },
+    {
+      "id": "hist-76",
+      "pregunta": "Dame un resumen del los pagos de Eberson Palomino",
+      "historial": [],
+      "ground_truth": "Eberson Palomino Aguilar tiene varios pagos registrados en diferentes documentos. A continuación se presenta un resumen de los pagos:\n\n1. **Pago de honorarios mes de mayo 2026**:\n   - **Contratos**: N° 027-2026-MCEBS.\n   - **Emitido por**: Diferentes unidades de contabilidad entre el 26 y el 28 de mayo de 2026.\n   - **Destinos**:\n     - **Unidad de Contabilidad**: Se realizaron gestiones para revisar y devengar los pagos en varias ocasiones. Se solicitó también la modificación de un cuadro de control de pago y se mencionó que el acta de conformidad no tenía fecha .\n     - **Unidad de Tesorería**: Se indicaron indicaciones para proceder con el giro de los pagos correspondientes .\n\n2. **Presentación de pago por honorarios junio 2026**:\n   - **Contrato**: N° 121-2026.\n   - **Emitido por**: Diferentes unidades, con documentos generados el 30 de junio de 2026.\n   - Se emitieron referencias para informar, revisar y proceder con el giro de estas presentaciones de pago en la Unidad de Tesorería y la Unidad de Contabilidad .\n\nEstos pagos están relacionados con la ejecución de servicios contratados por la ONPE, y las distintas unidades involucradas en la gestión han trabajado para asegurar que todos los trámites y documentos requeridos estén en orden para su efectiva liquidación.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000007130",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000007966",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000007977",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000008101",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000008126",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000020622",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000021283",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000021333",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": []
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "historial",
+      "revisado": false,
+      "nota": "ground_truth = la respuesta que dio el chat: verifíquela contra el documento antes de revisar."
+    },
+    {
+      "id": "hist-72",
+      "pregunta": "servicios en la nube",
+      "historial": [],
+      "ground_truth": "Los servicios en la nube, como el Software como Servicio (SaaS) y la Infraestructura como Servicio (IaaS), permiten a las organizaciones depender de terceros para la infraestructura tecnológica. Sin embargo, esto implica que la seguridad de la información se basa en la seguridad del proveedor de la nube, y puede generar redundancias si ya existen servicios similares internamente. Además, el uso no regulado de estos servicios puede exponer datos confidenciales de la organización a brechas de seguridad .",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000035424",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000045478",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": []
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "historial",
+      "revisado": false,
+      "nota": "ground_truth = la respuesta que dio el chat: verifíquela contra el documento antes de revisar."
+    },
+    {
+      "id": "hist-68",
+      "pregunta": "mantenimiento de impresora",
+      "historial": [],
+      "ground_truth": "El mantenimiento de la impresora multifuncional Konica Minolta Bizhub 658e del área de patrimonio incluye el mantenimiento preventivo y correctivo, así como la descripción de las actividades realizadas, que incluyen la revisión y mantenimiento de varios componentes como el Drum Unit, Fusing Unit, Transfer Belt, Developing Unit, Ruedas Alimentador ADF, y Roller de Caseteras, todos cumpliendo con las especificaciones establecidas en los Términos de Referencia (TDR) . Si necesitas información adicional específica, por favor indícalo.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000036878",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": []
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "historial",
+      "revisado": false,
+      "nota": "ground_truth = la respuesta que dio el chat: verifíquela contra el documento antes de revisar."
+    },
+    {
+      "id": "hist-66",
+      "pregunta": "dame todo sobre SERVICIO DE DIAGNÓSTICO, MANTENIMIENTO Y REPARACIÓN DE IMPRESORA}",
+      "historial": [],
+      "ground_truth": "El SERVICIO DE DIAGNÓSTICO, MANTENIMIENTO Y REPARACIÓN DE IMPRESORA MULTIFUNCIONAL DEL ÁREA DE PATRIMONIO Y ALMACÉN DE LA UNIDAD EJECUTORA 118 fue sujeto de una evaluación técnica. Este servicio está orientado a garantizar el correcto funcionamiento de las impresoras en el área mencionada. Sin embargo, no se proporciona más información específica sobre los resultados o detalles adicionales de este servicio en los fragmentos disponibles .",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000017024",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": []
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "historial",
+      "revisado": false,
+      "nota": "ground_truth = la respuesta que dio el chat: verifíquela contra el documento antes de revisar."
+    },
+    {
+      "id": "hist-60",
+      "pregunta": "Reparacion de impresora",
+      "historial": [],
+      "ground_truth": "La información sobre la reparación de la impresora se encuentra en el \"Informe Técnico correspondiente al Servicio de Diagnóstico, Mantenimiento y Reparación de Impresora Multifuncional del Área de Patrimonio y Almacén de la Unidad Ejecutora 118\". Se menciona que se realizó un mantenimiento preventivo y correctivo a la impresora multifuncional Konica Minolta Bizhub 658e, de acuerdo a los términos de referencia establecidos, que incluyen la identificación de fallas, determinación de repuestos e insumos necesarios, y asegurar el correcto funcionamiento del equipo al término del servicio . \n\nSi necesitas información específica sobre el proceso o detalles adicionales, por favor, indícalo.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000036878",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": []
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "historial",
+      "revisado": false,
+      "nota": "ground_truth = la respuesta que dio el chat: verifíquela contra el documento antes de revisar."
+    },
+    {
+      "id": "sint-0eca3c2935",
+      "pregunta": "¿Qué especialista se recomienda contratar para el problema de flujo en el IESTP 4 de Junio de 1821?",
+      "historial": [],
+      "ground_truth": "Consultor Especialista en Hidrogeología",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000041791",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "se sustentó y recomendó la contratación inmediata de un Consultor Especialista en Hidrogeología"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-04ad548d10",
+      "pregunta": "¿Quién es el especialista propuesto para la consultoría del Programa de Inversión respecto a la educación en Lima?",
+      "historial": [],
+      "ground_truth": "Mauro Esteban Arias Ayamamani",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000052177",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "se propone al señor Mauro Esteban Arias Ayamamani como Especialista en Arquitectura II"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-02fb8e4ef8",
+      "pregunta": "¿Cuál es el plazo de ejecución del servicio de consultoría para la Oficina de Gestión Administrativa?",
+      "historial": [],
+      "ground_truth": "El servicio de consultoría será hasta el 31 de diciembre de 2026.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000017929",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "El servicio de consultoría será hasta el 31 de diciembre de 2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-092b9f742b",
+      "pregunta": "¿Cuál es la fecha de elaboración del memorando N° 000024-2026-MINEDU-VMGP/UE118/PMESUT-OCP?",
+      "historial": [],
+      "ground_truth": "30 de Julio de 2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000033191",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Fecha Elaboración: San Isidro, 30 de Julio de 2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-032d936d92",
+      "pregunta": "¿Cuál es la dirección de la mesa de partes del PMESUT?",
+      "historial": [],
+      "ground_truth": "Calle Los Laureles 399, San Isidro - Lima",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000053783",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "la siguiente documentación física en mesa de partes del PMESUT sito en Calle Los Laureles 399, San Isidro - Lima"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-12fe23d902",
+      "pregunta": "¿Cuál es el costo total de la descripción de los proyectos del Programa de Inversión?",
+      "historial": [],
+      "ground_truth": "Información complementaria respecto al costo total de la descripción de los proyectos.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000005147",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Información complementaria respecto al costo total de la descripción de los proyectos."
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-1340097a68",
+      "pregunta": "¿Cuál es la fecha de emisión del Proveído N° 002517-2026-OGA-UL?",
+      "historial": [],
+      "ground_truth": "15/07/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000027217",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Fecha de emisión: 15/07/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-0ccd43903e",
+      "pregunta": "¿Cuántos documentos técnicos fueron emitidos en total por la USEI durante abril y mayo de 2026?",
+      "historial": [],
+      "ground_truth": "22 documentos",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000005725",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Documentos técnicos emitidos (Informes + Comunicaciones Internas + Val. Técnicas)|22 documentos"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-07705a1402",
+      "pregunta": "¿Cuál es el número de contrato relacionado con la consultoría de septiembre de 2026?",
+      "historial": [],
+      "ground_truth": "Contrato N°135-2026-MCEBS",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000055394",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Ref.: Contrato N°135-2026-MCEBS"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "codigo",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-0a9787e21f",
+      "pregunta": "¿Cuál es la nueva fecha de término del contrato mencionado en el Informe N° 000006-2026-MINEDU-VMGP/UE118/PMESUT-OFGI?",
+      "historial": [],
+      "ground_truth": "31 de julio de 2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000015876",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "ampliación del plazo del mencionado contrato, hasta el 31 de julio de 2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-0e43e16125",
+      "pregunta": "¿Cuál es el número de DNI de José Enrique Phun Llap?",
+      "historial": [],
+      "ground_truth": "21406689",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000003969",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "D.N.I. : 21406689"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "codigo",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-060eb3909a",
+      "pregunta": "¿Cuál es el número de contrato mencionado en la carta N°082-2026/HOSPIPLAN-CPS/GO-JEVE?",
+      "historial": [],
+      "ground_truth": "N°352-2025-MCEBS",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000023666",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Contrato N°352-2025-MCEBS de fecha 22.dic.2025"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "codigo",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-0ee1796b38",
+      "pregunta": "¿Cuál es el plazo máximo que tiene la Gerencia de Obras para emitir un pronunciamiento técnico sobre cualquier variación?",
+      "historial": [],
+      "ground_truth": "catorce (14) días calendario",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000058503",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "un plazo máximo de catorce (14) días calendario"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-09966ec1b6",
+      "pregunta": "¿Cuál es la fecha de emisión del Proveído N° 003562-2026-OGA-UL?",
+      "historial": [],
+      "ground_truth": "17/08/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000038723",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Fecha de emisión: 17/08/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-0dff113d8b",
+      "pregunta": "¿Cuál es el monto de la Carta Fianza de Fiel Cumplimiento que la empresa China Civil Engineering Construction Corporation Sucursal del Perú está solicitando?",
+      "historial": [],
+      "ground_truth": "S/ 4,494,258.00",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000012309",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "la devolución de la Carta Fianza de Fiel Cumplimiento por S/ 4,494,258.00"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-0536b607f6",
+      "pregunta": "¿Cuál es el número del contrato para la obra 'Creación del Parque de Tecnología e Innovación para el Agro de la Universidad Nacional Agraria La Molina'?",
+      "historial": [],
+      "ground_truth": "Contrato1 28-2022-MCEBS",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000028494",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Contrato1 28-2022-MCEBS del 26.08.2022"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "codigo",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-142acc56f0",
+      "pregunta": "¿Cuál es la experiencia específica requerida para el consultor en el sector público?",
+      "historial": [],
+      "ground_truth": "04 años en actividades relacionadas con contabilidad.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000053209",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Experiencia específica en el sector público de 04 años en actividades relacionadas con contabilidad."
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-03460fe3a5",
+      "pregunta": "¿Qué material se utiliza para el piso del aula 2?",
+      "historial": [],
+      "ground_truth": "Porcelanato 60x60cm, antideslizante, alto tránsito.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000031912",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "PISO: DE PORCELANATO 60x60cm, ANTIDESLIZANTE, ALTO TRANSITO"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-10f92cf4ba",
+      "pregunta": "¿Cuál es la fecha de emisión del PROVEÍDO N° 001386-2026-OGA?",
+      "historial": [],
+      "ground_truth": "12/06/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000013094",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Fecha de emisión: 12/06/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-0d6443cb3a",
+      "pregunta": "¿Cuál es el número de contrato relacionado con la construcción y equipamiento del Instituto de Medicina Tropical de la UNTRM en Chachapoyas?",
+      "historial": [],
+      "ground_truth": "CONTRATO N° 038-2026-MCEBS",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000029737",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "CONTRATO N° 038-2026-MCEBS – Contrato de Supervisión"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "codigo",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-0aed125789",
+      "pregunta": "¿Cuál es la fecha del PROVEIDO 001108-2026-MINEDU-VMGP/UE118/OGA (SGD)?",
+      "historial": [],
+      "ground_truth": "04/06/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000010705",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "04/06/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-01a3678ce2",
+      "pregunta": "¿Cuál es la fecha de atención para el trámite del contrato de consultoría PE-L1268-P00643-2026-UE.118-PMESTP-CI?",
+      "historial": [],
+      "ground_truth": "13/05/26",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000002734",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "PLAZO DE ATENCION 13/05/26"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-07545a2698",
+      "pregunta": "¿Cuál es la fecha de elaboración del informe sobre la valorización de obra N°47?",
+      "historial": [],
+      "ground_truth": "29 de Mayo de 2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000008677",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Lima, 29 de Mayo de 2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-145737f629",
+      "pregunta": "¿Cuál es la fecha de la carta que envió APCA CONSULTORES ASOCIADOS?",
+      "historial": [],
+      "ground_truth": "02 de octubre de 2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000058613",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Lima, 02 de octubre de 2026. Carta N° 270-2026-RO-CHB-UNIFIEE"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-0bb451bed5",
+      "pregunta": "¿Cuál es la fecha de la evaluación de la Consultoría Individual N° PE-L1227-P00474?",
+      "historial": [],
+      "ground_truth": "30/07/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000033169",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "30/07/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-13d831144b",
+      "pregunta": "¿Cuál es el código de la plaza del Director General del IESTP Huamachuco?",
+      "historial": [],
+      "ground_truth": "115112C436H8",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000004768",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "CODIGO DE PLAZA :115112C436H8"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "codigo",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-03979c0fb5",
+      "pregunta": "¿Cuál es la fecha de emisión de la hoja de envío N° 001022-2026-OGA-UT?",
+      "historial": [],
+      "ground_truth": "19/08/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000039340",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Fecha de emisión: 19/08/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-08cddcb0c1",
+      "pregunta": "¿Cuál es el documento de identidad de la persona mencionada?",
+      "historial": [],
+      "ground_truth": "DNI 43278160",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000028722",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Documento de Identidad DNI 43278160"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "codigo",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-137dbe3cd5",
+      "pregunta": "¿Cuál es el asunto del informe con referencia 075?",
+      "historial": [],
+      "ground_truth": "Requerimiento de Virginia Lourdes Veliz Zavala – TDR Servicio de Arrendamiento de Equipos Proyecto In House",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000005407",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Asunto|Requerimiento de Virginia Lourdes Veliz Zavala – TDR Servicio de Arrendamiento de Equipos Proyecto In House"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "factual",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "sint-109354d111",
+      "pregunta": "¿Cuál es el CUI del Proyecto de Inversión de Mejoramiento y Ampliación del Servicio de Educación Superior Pedagógica en I.S.P.P. de Azángaro?",
+      "historial": [],
+      "ground_truth": "2538005",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000053320",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "CUI N° 2538005"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "codigo",
+      "origen": "sintetico",
+      "revisado": false
+    },
+    {
+      "id": "comp-c12f407f3a",
+      "pregunta": "¿Qué especialista se recomienda contratar para el problema de flujo en el IESTP 4 de Junio de 1821 y, además, cuál es el número del contrato para la obra 'Creación del Parque de Tecnología e Innovación para el Agro de la Universidad Nacional Agraria La Molina'?",
+      "historial": [],
+      "ground_truth": "Consultor Especialista en Hidrogeología Contrato1 28-2022-MCEBS",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000041791",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000028494",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "se sustentó y recomendó la contratación inmediata de un Consultor Especialista en Hidrogeología",
+          "Contrato1 28-2022-MCEBS del 26.08.2022"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-0eca3c2935 + sint-0536b607f6"
+    },
+    {
+      "id": "comp-2d95add6f0",
+      "pregunta": "¿Quién es el especialista propuesto para la consultoría del Programa de Inversión respecto a la educación en Lima y, además, cuál es la experiencia específica requerida para el consultor en el sector público?",
+      "historial": [],
+      "ground_truth": "Mauro Esteban Arias Ayamamani 04 años en actividades relacionadas con contabilidad.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000052177",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000053209",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "se propone al señor Mauro Esteban Arias Ayamamani como Especialista en Arquitectura II",
+          "Experiencia específica en el sector público de 04 años en actividades relacionadas con contabilidad."
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-04ad548d10 + sint-142acc56f0"
+    },
+    {
+      "id": "comp-cef72286f9",
+      "pregunta": "¿Cuál es el plazo de ejecución del servicio de consultoría para la Oficina de Gestión Administrativa y, además, qué material se utiliza para el piso del aula 2?",
+      "historial": [],
+      "ground_truth": "El servicio de consultoría será hasta el 31 de diciembre de 2026. Porcelanato 60x60cm, antideslizante, alto tránsito.",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000017929",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000031912",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "El servicio de consultoría será hasta el 31 de diciembre de 2026",
+          "PISO: DE PORCELANATO 60x60cm, ANTIDESLIZANTE, ALTO TRANSITO"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-02fb8e4ef8 + sint-03460fe3a5"
+    },
+    {
+      "id": "comp-c60d07d61f",
+      "pregunta": "¿Cuál es la fecha de elaboración del memorando N° 000024-2026-MINEDU-VMGP/UE118/PMESUT-OCP y, además, cuál es la fecha de emisión del PROVEÍDO N° 001386-2026-OGA?",
+      "historial": [],
+      "ground_truth": "30 de Julio de 2026 12/06/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000033191",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000013094",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Fecha Elaboración: San Isidro, 30 de Julio de 2026",
+          "Fecha de emisión: 12/06/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-092b9f742b + sint-10f92cf4ba"
+    },
+    {
+      "id": "comp-8c653d9d0f",
+      "pregunta": "¿Cuál es la dirección de la mesa de partes del PMESUT y, además, cuál es el número de contrato relacionado con la construcción y equipamiento del Instituto de Medicina Tropical de la UNTRM en Chachapoyas?",
+      "historial": [],
+      "ground_truth": "Calle Los Laureles 399, San Isidro - Lima CONTRATO N° 038-2026-MCEBS",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000053783",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000029737",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "la siguiente documentación física en mesa de partes del PMESUT sito en Calle Los Laureles 399, San Isidro - Lima",
+          "CONTRATO N° 038-2026-MCEBS – Contrato de Supervisión"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-032d936d92 + sint-0d6443cb3a"
+    },
+    {
+      "id": "comp-02bbe1c8f5",
+      "pregunta": "¿Cuál es el costo total de la descripción de los proyectos del Programa de Inversión y, además, cuál es la fecha del PROVEIDO 001108-2026-MINEDU-VMGP/UE118/OGA (SGD)?",
+      "historial": [],
+      "ground_truth": "Información complementaria respecto al costo total de la descripción de los proyectos. 04/06/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000005147",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000010705",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Información complementaria respecto al costo total de la descripción de los proyectos.",
+          "04/06/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-12fe23d902 + sint-0aed125789"
+    },
+    {
+      "id": "comp-510cfc2220",
+      "pregunta": "¿Cuál es la fecha de emisión del Proveído N° 002517-2026-OGA-UL y, además, cuál es la fecha de atención para el trámite del contrato de consultoría PE-L1268-P00643-2026-UE.118-PMESTP-CI?",
+      "historial": [],
+      "ground_truth": "15/07/2026 13/05/26",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000027217",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000002734",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Fecha de emisión: 15/07/2026",
+          "PLAZO DE ATENCION 13/05/26"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-1340097a68 + sint-01a3678ce2"
+    },
+    {
+      "id": "comp-c08068cdf8",
+      "pregunta": "¿Cuántos documentos técnicos fueron emitidos en total por la USEI durante abril y mayo de 2026 y, además, cuál es la fecha de elaboración del informe sobre la valorización de obra N°47?",
+      "historial": [],
+      "ground_truth": "22 documentos 29 de Mayo de 2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000005725",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000008677",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Documentos técnicos emitidos (Informes + Comunicaciones Internas + Val. Técnicas)|22 documentos",
+          "Lima, 29 de Mayo de 2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-0ccd43903e + sint-07545a2698"
+    },
+    {
+      "id": "comp-8562979355",
+      "pregunta": "¿Cuál es el número de contrato relacionado con la consultoría de septiembre de 2026 y, además, cuál es la fecha de la carta que envió APCA CONSULTORES ASOCIADOS?",
+      "historial": [],
+      "ground_truth": "Contrato N°135-2026-MCEBS 02 de octubre de 2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000055394",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000058613",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "Ref.: Contrato N°135-2026-MCEBS",
+          "Lima, 02 de octubre de 2026. Carta N° 270-2026-RO-CHB-UNIFIEE"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-07705a1402 + sint-145737f629"
+    },
+    {
+      "id": "comp-bb70e6be91",
+      "pregunta": "¿Cuál es la nueva fecha de término del contrato mencionado en el Informe N° 000006-2026-MINEDU-VMGP/UE118/PMESUT-OFGI y, además, cuál es la fecha de la evaluación de la Consultoría Individual N° PE-L1227-P00474?",
+      "historial": [],
+      "ground_truth": "31 de julio de 2026 30/07/2026",
+      "relevantes": {
+        "documentos": [
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000015876",
+            "nuAne": 0
+          },
+          {
+            "nuAnn": "2026",
+            "nuEmi": "0000033169",
+            "nuAne": 0
+          }
+        ],
+        "evidencias": [
+          "ampliación del plazo del mencionado contrato, hasta el 31 de julio de 2026",
+          "30/07/2026"
+        ]
+      },
+      "sin_respuesta": false,
+      "tipo": "compuesta",
+      "origen": "sintetico",
+      "revisado": false,
+      "nota": "Compuesto de sint-0a9787e21f + sint-0bb451bed5"
+    }
+  ]
+}

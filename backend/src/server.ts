@@ -1,21 +1,30 @@
-import './config/env';
+import './compartido/config/env';
 import app from './app';
-import { appSequelize } from './config/appDatabase';
-import { aplicarMigraciones } from './config/migraciones';
-import { validarEntorno } from './config/validarEntorno';
-import { sequelize } from './models';
-import { iniciarPlanificadorResumen } from './services/dashboardResumenService';
-import { iniciarPlanificadorBarrido } from './rag/barridoService';
-import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './rag/ingestaService';
-import { iniciarMantenimientoPeriodico } from './rag/mantenimientoService';
-import { revisarConfiguracionIA } from './ai/providerFactory';
-import { iniciarLimpiezaPeriodica } from './services/unirPdfService';
+import { appSequelize } from './compartido/config/appDatabase';
+import { aplicarMigraciones } from './compartido/config/migraciones';
+import { validarEntorno } from './compartido/config/validarEntorno';
+import { sequelize } from './modulos/sgd/models';
+import { STD_HABILITADO, stdDisponible, stdSequelize } from './modulos/std/config/stdDatabase';
+import { asegurarBaseStdRag, aplicarMigracionesStd } from './modulos/std/config/stdRagDatabase';
+import { iniciarPlanificadorBarridoStd } from './modulos/std/rag/barridoStdService';
+import { sincronizarMetadatosPendientesStd } from './modulos/std/rag/metadatosStdService';
+import { iniciarSupervisorIngestaStd, reanudarJobsInterrumpidosStd } from './modulos/std/rag/ingestaStdService';
+import { iniciarMantenimientoPeriodicoStd } from './modulos/std/rag/mantenimientoStdService';
+import { iniciarPlanificadorResumen } from './modulos/sgd/services/dashboardResumenService';
+import { iniciarPlanificadorBarrido } from './modulos/sgd/rag/barridoService';
+import { iniciarSupervisorIngesta, reanudarJobsInterrumpidos } from './modulos/sgd/rag/ingestaService';
+import { iniciarMantenimientoPeriodico } from './modulos/sgd/rag/mantenimientoService';
+import { revisarConfiguracionIA } from './compartido/ai/providerFactory';
+import { activarPublicacionDeTrazas } from './compartido/observabilidad/publicacion';
+import { iniciarLimpiezaPeriodica } from './modulos/sgd/services/unirPdfService';
 
 const PORT = Number(process.env.PORT ?? 3012);
 
 async function start() {
   // Antes que nada: si falta una variable crítica, mejor no arrancar que fallar en el primer login.
   validarEntorno();
+  // Trazas del chat a la BD (y a Langfuse si está configurado). Solo aquí: tests y scripts no publican.
+  activarPublicacionDeTrazas();
 
   try {
     await sequelize.authenticate();
@@ -28,6 +37,53 @@ async function start() {
         ? `BD propia lista. Migraciones aplicadas: ${nuevas.join(', ')}`
         : 'BD propia lista. Sin migraciones pendientes.',
     );
+
+    // El STD es opcional (sistema legado, casi solo de consulta): nada de esto bloquea el
+    // arranque del resto del backend, a diferencia del SGD y la BD propia de arriba.
+    if (STD_HABILITADO) {
+      // La base `std_rag` (vectores, chunks, chat del STD) es infraestructura PROPIA — solo
+      // necesita las credenciales de APP_DB_*, que ya son obligatorias, así que se prepara
+      // aunque todavía no haya credenciales de MariaDB del STD cargadas.
+      try {
+        await asegurarBaseStdRag();
+        const nuevasStd = await aplicarMigracionesStd();
+        console.log(
+          nuevasStd.length > 0
+            ? `BD std_rag lista. Migraciones aplicadas: ${nuevasStd.join(', ')}`
+            : 'BD std_rag lista. Sin migraciones pendientes.',
+        );
+      } catch (error) {
+        console.error('No se pudo preparar la base std_rag; el módulo STD queda sin RAG:', error);
+      }
+
+      const std = stdDisponible();
+      if (std.disponible) {
+        try {
+          await stdSequelize.authenticate();
+          console.log('Conexión de solo lectura al STD (MariaDB) establecida correctamente.');
+          // Metadatos por documento para el chat (migración std/003): solo los que faltan, en
+          // segundo plano — la primera vez son ~60 mil documentos, después casi nunca hay alguno.
+          void sincronizarMetadatosPendientesStd().then((n) => {
+            if (n > 0) console.log(`Metadatos del STD sincronizados: ${n} documentos.`);
+          });
+        } catch (error) {
+          console.error('STD configurado pero no se pudo conectar:', error);
+        }
+      } else {
+        console.log(`STD sin conexión de lectura (${std.motivo}); std_rag sigue disponible igual.`);
+      }
+
+      // Mismo patrón que el SGD: el planificador y el supervisor siempre corren, los
+      // interruptores (`rag.barrido.activo`, que arranca en 'false') se leen en cada tick. Que la
+      // conexión a MariaDB no esté lista todavía no impide arrancarlos — un tick que falle por
+      // eso simplemente se registra y se reintenta en el siguiente.
+      iniciarPlanificadorBarridoStd();
+      await reanudarJobsInterrumpidosStd();
+      iniciarSupervisorIngestaStd();
+      iniciarMantenimientoPeriodicoStd();
+    } else {
+      console.log('STD_HABILITADO no está activado; el backend arranca sin el módulo STD.');
+    }
 
     // Barre los PDF unidos caducados y los huérfanos que dejó una ejecución anterior.
     iniciarLimpiezaPeriodica();

@@ -1,0 +1,206 @@
+/**
+ * Formas mínimas compartidas entre el chat del SGD (`api/chat.ts`) y el chat del STD (`api/std.ts`)
+ * — lo que `ChatPage.tsx` y los componentes de cita (`CitaBadge`, `RespuestaConCitas`) necesitan
+ * para funcionar sobre CUALQUIERA de los dos sistemas, sin conocer sus campos propios (expediente
+ * frente a N° STD). `ChatPage` se parametriza con un `AdaptadorChat<E, C>` en vez de duplicarse:
+ * ver la cabecera de `ChatPage.tsx`.
+ */
+
+/** Lo que `CitaBadge`/`ListaCitas` necesitan de una cita — ni `CitaChat` (SGD) ni `CitaChatStd`
+ *  traen nada menos que esto, así que ambas satisfacen esta forma sin conversión. */
+export interface CitaBasica {
+  numero: number;
+  chunkId: number;
+  extracto: string;
+  chars: number;
+  rutaTitulos: string | null;
+  usada: boolean;
+}
+
+export interface EstadoIngestaBase {
+  total: number;
+  listos: number;
+  convertidos: number;
+  pendientes: number;
+  sinTexto: number;
+  error: number;
+  noSoportado: number;
+  completo: boolean;
+}
+
+/** 'fijo' = mensaje de cierre sin LLM (fuera de alcance, ayuda, sin resultados). */
+export type TipoRespuestaChat = 'texto' | 'tabla' | 'fijo' | 'documento' | 'participantes';
+
+/**
+ * Fila de una respuesta tabla (listar / contar): lo común a cualquier sistema. Cada adaptador
+ * extiende esta forma con su identidad (expediente del SGD, documento del STD) y sabe convertirla
+ * en su entidad con `entidadDesdeFila`.
+ */
+export interface FilaResultadoChat {
+  asunto: string | null;
+  /** Quién originó el expediente: remitente externo, o dependencia · empleado. */
+  origen: string | null;
+  remitentes: string[];
+  documentos: number;
+  /** AAAA-MM-DD. */
+  ultimoMovimiento: string | null;
+  dependenciaActual: string | null;
+  archivado: boolean;
+  feArchivo: string | null;
+  /** 1 = coincidencia directa (asunto/remitente), 2 = solo dentro del contenido. */
+  nivel: 1 | 2;
+  /** "remitente · asunto: Huancavelica · contenido: controversia". */
+  coincidencia: string;
+}
+
+/**
+ * Referencia a la unidad del sistema, para "Chatear" desde una tarjeta o un trámite. SGD: año y
+ * secuencia del expediente. STD: `nuAnnExp` = N° STD y `nuSecExp` = null (la interpreta su adaptador).
+ */
+export interface ReferenciaExpediente {
+  nuAnnExp: string | null;
+  nuSecExp: string | null;
+  numeroExpediente: string | null;
+}
+
+/** Derivación de un documento: a quién y con qué indicación (en vivo del SGD al responder). */
+export interface IndicacionDestinoChat {
+  destino: string | null;
+  persona: string | null;
+  tramite: string | null;
+  indicacion: string | null;
+  estado: string | null;
+  fecha: string | null;
+}
+
+/** En el STD, `nuAnn` = 'STD' y `nuEmi` = id del adjunto principal (lo abre su adaptador). */
+export interface DocumentoChat extends ReferenciaExpediente {
+  nuAnn: string;
+  nuEmi: string;
+  titulo: string | null;
+  asunto: string | null;
+  fecha: string | null;
+  emisor: string | null;
+  remitente: string | null;
+  terminosCoinciden: number;
+}
+
+/** Respuesta `documento` ("el último documento de…"). */
+export interface TarjetaDocumentoChat extends DocumentoChat {
+  totalTerminos: number;
+  indicaciones: IndicacionDestinoChat[];
+  anteriores: DocumentoChat[];
+}
+
+export interface MovimientoChat {
+  fecha: string | null;
+  documento: string | null;
+  emisor: string | null;
+  destino: string | null;
+  persona: string | null;
+  tramite: string | null;
+  indicacion: string | null;
+  estado: string | null;
+}
+
+/** Respuesta `participantes`. */
+export interface BloqueParticipantesChat {
+  totalExpedientes: number;
+  remitentes: { nombre: string; documento: string | null; documentos: number; expedientes: number }[];
+  emisores: { dependencia: string | null; empleado: string | null; documentos: number; expedientes: number }[];
+  destinatarios: { dependencia: string | null; persona: string | null; veces: number; expedientes: number }[];
+  tramites: (ReferenciaExpediente & { movimientos: MovimientoChat[] })[];
+}
+
+/** Una página de resultados. `pagina: 0` + `filas: []` = viene del historial, falta pedir la 1. */
+export interface TablaResultadosChat<F extends FilaResultadoChat = FilaResultadoChat> {
+  filas: F[];
+  pagina: number;
+  porPagina: number;
+  total: number;
+  nivel1: number;
+  nivel2: number;
+  hayMas: boolean;
+}
+
+export interface RespuestaChatBase<C extends CitaBasica> {
+  sesionId: number;
+  mensajeId: number;
+  tipo?: TipoRespuestaChat;
+  texto: string;
+  citas: C[];
+  tabla?: TablaResultadosChat;
+  documento?: TarjetaDocumentoChat;
+  participantes?: BloqueParticipantesChat;
+  candidatosVec: number;
+  candidatosFts: number;
+  marcadoresAlucinados: number;
+}
+
+export interface MensajeHistorialBase<C extends CitaBasica> {
+  id: number;
+  rol: 'user' | 'assistant';
+  tipo?: TipoRespuestaChat;
+  /** 'fallido' = el modelo no respondió; se puede reintentar sin volver a escribir la pregunta. */
+  estado?: 'ok' | 'fallido';
+  /** 👍 (1) / 👎 (-1) que el usuario dio a la respuesta; null o ausente si no la valoró. */
+  valoracion?: 1 | -1 | null;
+  texto: string;
+  citas: C[];
+  tabla?: TablaResultadosChat;
+  documento?: TarjetaDocumentoChat;
+  participantes?: BloqueParticipantesChat;
+}
+
+/**
+ * Todo lo que varía entre el chat del SGD (por expediente) y el del STD (por N° STD): de dónde
+ * salen los datos, cómo se buscan y etiquetan, y cómo se abre el documento citado. `E` es el tipo
+ * de la entidad elegida en el buscador (expediente o documento STD); `C`, el tipo de cita de ese
+ * sistema.
+ */
+export interface AdaptadorChat<E, C extends CitaBasica> {
+  sistema: 'sgd' | 'std';
+  etiquetaPestanaGeneral: string;
+  etiquetaPestanaContexto: string;
+  notaGeneral: string;
+  labelBusqueda: string;
+  placeholderBusqueda: string;
+  notaVacioGeneral: string;
+  notaVacioSinSeleccion: string;
+  notaVacioConSeleccion: string;
+  notaSinResultados: string;
+  /** "expediente" / "documento" — para el aviso de cobertura ("N de M documentos de este
+   *  {sustantivoContexto} están indexados"). */
+  sustantivoContexto: string;
+
+  claveEntidad(e: E): string;
+  etiquetaEntidad(e: E): string;
+  descripcionResultado(e: E): string;
+
+  buscar(termino: string): Promise<E[]>;
+  fetchSesion(e: E): Promise<{ id: number } | null>;
+  fetchEstadoIngesta(e: E): Promise<EstadoIngestaBase>;
+  fetchHistorial(sesionId: number): Promise<MensajeHistorialBase<C>[]>;
+  enviarGeneral(mensaje: string, sesionId?: number): Promise<RespuestaChatBase<C>>;
+  enviarContexto(e: E, mensaje: string, sesionId?: number): Promise<RespuestaChatBase<C>>;
+  /** Reintenta la respuesta de un turno 'fallido' sobre las citas que ese turno ya guardó. */
+  reintentar(mensajeId: number): Promise<RespuestaChatBase<C>>;
+  /** 👍/👎 sobre una respuesta del asistente; `0` retira la valoración. */
+  valorar(mensajeId: number, valor: 1 | -1 | 0): Promise<{ ok: true }>;
+  fetchTexto(chunkId: number): Promise<{ texto: string }>;
+  abrirCita(cita: C): { url: string; titulo: string; visualizable: boolean };
+
+  /** Respuestas tabla — opcionales: un sistema sin listados no las define. */
+  fetchResultados?(mensajeId: number, pagina: number): Promise<TablaResultadosChat>;
+  /** Etiqueta de la primera columna (N° de expediente / N° STD). */
+  etiquetaFila?(fila: FilaResultadoChat): string;
+  /** Entidad para "Chatear" con esa fila en el modo por contexto. */
+  entidadDesdeFila?(fila: FilaResultadoChat): E | null;
+  /** Igual, desde la referencia de una tarjeta de documento o de un trámite. */
+  entidadDesdeExpediente?(ref: ReferenciaExpediente): E | null;
+  /** Abrir el documento de una tarjeta `documento` en el visor. */
+  abrirDocumento?(doc: DocumentoChat): { url: string; titulo: string; visualizable: boolean };
+
+  /** Permiso que habilita el enlace "Documentos (n)" hacia el panel de gestión. */
+  permisoGestionar: string;
+}

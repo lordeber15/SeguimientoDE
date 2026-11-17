@@ -51,6 +51,10 @@ services:
       # volumen con nombre vacío sgd_storage_vacio; el sshfs se monta encima y al desmontar
       # vuelve a verse vacío.
       - ${STORAGE_HOST_PATH:-sgd_storage_vacio}:${STORAGE_PATH:-/mnt/sgd/storage}:ro
+      # Repositorio de archivos del STD (tbl_adjunto), también SOLO LECTURA. Mismo mecanismo que
+      # el de arriba: si STD_STORAGE_HOST_PATH no está definido (módulo STD apagado o sin
+      # configurar todavía), se monta el volumen vacío en su lugar.
+      - ${STD_STORAGE_HOST_PATH:-std_storage_vacio}:${STD_STORAGE_PATH:-/mnt/std/uploads}:ro
       # Temporales del PDF unificado. Lectura/escritura: es nuestro directorio de trabajo, no
       # el repositorio del SGD. El servicio solo crea y borra ahí archivos "Union_*.pdf".
       - ${UNION_TMP_DIR}:${UNION_TMP_PATH:-/mnt/sgd/tmp}
@@ -69,7 +73,44 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Cross-encoder del rerank del chat (docs/PLAN-RAG-AVANZADO.md, Fase 3): Text Embeddings Inference
+  # sirviendo un reranker multilingüe, local — los fragmentos no salen del servidor. Lo usa el backend
+  # con RAG_RERANK_PROVIDER=local y RERANK_URL=http://reranker:80. Perfil `rerank`: no arranca si no
+  # se pide (`docker compose --profile rerank up -d`).
+  #
+  # Medido el 2026-10-06 (16 núcleos, sin GPU, 20 fragmentos por consulta):
+  # - CPU: solo sirven modelos con pesos ONNX. `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (118M,
+  #   el valor por defecto) tarda ~2,8 s p50 / 3,9 s p95. `BAAI/bge-reranker-v2-m3` no trae ONNX: corre
+  #   en candle y tarda ~48 s; con --max-batch-tokens > 2048 además lo mata el OOM al calentar.
+  # - GPU NVIDIA (driver con CUDA >= 12.9): imagen `turing-1.9` (T4/T1000) o `1.9` (Ampere+), `gpus: all`
+  #   y RERANK_MODEL=BAAI/bge-reranker-v2-m3 — el modelo que el plan apunta para calidad.
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:${RERANK_IMAGEN:-cpu-1.9}
+    profiles: ['rerank']
+    command: ['--model-id', '${RERANK_MODEL:-cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}', '--max-client-batch-size', '64', '--max-batch-tokens', '2048']
+    ports:
+      - '${RERANK_HOST_PORT:-8082}:80'
+    volumes:
+      # Pesos del modelo: se descargan una vez de Hugging Face y quedan aquí.
+      - reranker_modelos:/data
+    restart: unless-stopped
+
+  # Métricas LLM de Ragas sobre las corridas de `npm run eval:rag` (docs/PLAN-RAG-AVANZADO.md,
+  # Fase 1). Perfil `evals`: no arranca con `docker compose up`, solo a pedido:
+  #   docker compose --profile evals run --rm rag-evals /evals/salidas/sgd-12.json
+  rag-evals:
+    build: ./backend/evals/ragas
+    profiles: ['evals']
+    env_file: .env
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - ./backend/evals:/evals
+
 volumes:
   db_app_data:
   # Punto de montaje vacío para el backend cuando no hay STORAGE_HOST_PATH (ver servicio backend).
   sgd_storage_vacio:
+  # Igual, para cuando no hay STD_STORAGE_HOST_PATH.
+  std_storage_vacio:
+  reranker_modelos:

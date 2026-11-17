@@ -1,17 +1,22 @@
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
-import adminRoutes from './routes/adminRoutes';
-import authRoutes from './routes/authRoutes';
-import calidadProcesosRoutes from './routes/calidadProcesosRoutes';
-import chatRoutes from './routes/chatRoutes';
-import dashboardRoutes from './routes/dashboardRoutes';
-import dependenciaRoutes from './routes/dependenciaRoutes';
-import documentoRoutes from './routes/documentoRoutes';
-import ragRoutes from './routes/ragRoutes';
-import seguimientoRoutes from './routes/seguimientoRoutes';
-import unirPdfRoutes from './routes/unirPdfRoutes';
-import { requiereAuth, requierePermiso } from './middlewares/authMiddleware';
+import adminRoutes from './modulos/sgd/routes/adminRoutes';
+import authRoutes from './modulos/sgd/routes/authRoutes';
+import calidadProcesosRoutes from './modulos/sgd/routes/calidadProcesosRoutes';
+import chatRoutes from './modulos/sgd/routes/chatRoutes';
+import dashboardRoutes from './modulos/sgd/routes/dashboardRoutes';
+import dependenciaRoutes from './modulos/sgd/routes/dependenciaRoutes';
+import documentoRoutes from './modulos/sgd/routes/documentoRoutes';
+import ragRoutes from './modulos/sgd/routes/ragRoutes';
+import seguimientoRoutes from './modulos/sgd/routes/seguimientoRoutes';
+import unirPdfRoutes from './modulos/sgd/routes/unirPdfRoutes';
+import archivoRoutesStd from './modulos/std/routes/archivoRoutesStd';
+import chatRoutesStd from './modulos/std/routes/chatRoutesStd';
+import documentoRoutesStd from './modulos/std/routes/documentoRoutesStd';
+import ragRoutesStd from './modulos/std/routes/ragRoutesStd';
+import { requiereAuth, requierePermiso } from './compartido/middlewares/authMiddleware';
+import { montarSwagger, swaggerHabilitado } from './docs/swagger';
 
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
   .split(',')
@@ -34,6 +39,9 @@ app.set('trust proxy', 1);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
+// Documentación OpenAPI (docs/PLAN-SWAGGER.md): solo en desarrollo, con SWAGGER_HABILITADO=true.
+if (swaggerHabilitado()) montarSwagger(app);
+
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/rag', ragRoutes);
@@ -47,5 +55,12 @@ app.use('/api/dependencias', requiereAuth, requierePermiso('seguimiento.ver'), d
 app.use('/api/seguimiento', requiereAuth, requierePermiso('seguimiento.ver'), seguimientoRoutes);
 app.use('/api/documentos', requiereAuth, requierePermiso('documentos.ver'), documentoRoutes);
 app.use('/api/unir-pdf', requiereAuth, requierePermiso('pdf.unificar'), unirPdfRoutes);
+
+// Módulo STD: el permiso se exige DENTRO de cada router (`std.consultar` para chat/documentos/
+// adjuntos, `std.gestionar` para el panel RAG) — mismo patrón que `ragRoutes`/`chatRoutes` del SGD.
+app.use('/api/std/chat', chatRoutesStd);
+app.use('/api/std/documentos', documentoRoutesStd);
+app.use('/api/std/adjuntos', archivoRoutesStd);
+app.use('/api/std/rag', ragRoutesStd);
 
 export default app;

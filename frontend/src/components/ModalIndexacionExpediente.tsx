@@ -47,6 +47,8 @@ export function ModalIndexacionExpediente({
   const [resumen, setResumen] = useState<EstadoResumen>({ tipo: 'cargando' });
   const [panelInfo, setPanelInfo] = useState<PanelRag | null>(null);
   const [jobActivo, setJobActivo] = useState<JobIngesta | null>(null);
+  // Solo sirve para volver a disparar el sondeo tras un fallo de red (ver el `catch` del sondeo).
+  const [reintentoPoll, setReintentoPoll] = useState(0);
   const [aviso, setAviso] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
   const [seleccion, setSeleccion] = useState<Set<number>>(new Set());
   const [recargaSenal, setRecargaSenal] = useState(0);
@@ -138,7 +140,9 @@ export function ModalIndexacionExpediente({
           onCambio();
         }
       } catch {
-        // Un fallo de red al sondear no debe tumbar el modal; se reintenta en el próximo tick.
+        // Un fallo de red al sondear no debe tumbar el modal. El reintento hay que forzarlo:
+        // sin cambio de dependencias el efecto no se re-ejecuta y el sondeo moriría aquí.
+        if (vigente) setReintentoPoll((n) => n + 1);
       }
     }, INTERVALO_POLL_MS);
 
@@ -146,7 +150,7 @@ export function ModalIndexacionExpediente({
       vigente = false;
       clearTimeout(temporizador);
     };
-  }, [jobActivo, cargarResumen, onCambio]);
+  }, [jobActivo, reintentoPoll, cargarResumen, onCambio]);
 
   // Bloquea lanzar tanto si YA hay un job propio como si hay uno ajeno (ingesta general): el
   // conversor es un semáforo de 1, y el backend rechazaría igual con 409 — esto solo evita el

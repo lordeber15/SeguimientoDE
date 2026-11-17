@@ -233,6 +233,7 @@ export function DependenciasPage() {
               <DependenciaTable
                 dependencias={dependenciasFiltradas}
                 etiquetaJefe={categoria === 'comite' ? 'Presidente / Encargado' : 'Jefe / Responsable'}
+                etiquetaMiembros={categoria === 'comite' ? 'Miembros' : 'Consultores'}
               />
             )}
           </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchTextoChunk, type CitaChat } from '../api/chat';
+import type { CitaBasica } from '../api/chatComun';
 import { TextoChunk } from './TextoChunk';
 
 /**
@@ -7,11 +7,17 @@ import { TextoChunk } from './TextoChunk';
  *
  * Antes cada cita volcaba el fragmento entero debajo del enlace: tres o cuatro citas por respuesta
  * llenaban varias pantallas de markdown crudo y la conversación se volvía ilegible. Ahora la cita
- * ocupa una línea y el texto se pide al backend (`fetchTextoChunk`) la PRIMERA vez que se despliega
- * — cerrada no cuesta ni red ni DOM.
+ * ocupa una línea y el texto se pide al backend (`fetchTexto`, inyectado por `ChatPage` según el
+ * sistema — SGD o STD, cada uno con su propia ruta de API) la PRIMERA vez que se despliega —
+ * cerrada no cuesta ni red ni DOM.
  *
  * Una vez cargado, el cuerpo se queda montado aunque se cierre: es lo que permite que el plegado
  * anime en los dos sentidos, y el texto ya está en memoria, así que desmontarlo no ahorraría nada.
+ *
+ * Genérico sobre `C` (el tipo de cita de cada sistema, SGD o STD): solo usa los campos de
+ * `CitaBasica`, nunca los propios de cada uno (`nuAnn`/`nuEmi`/`nuAne` del SGD,
+ * `idAdjunto`/`idDocumento` del STD) — esos solo le interesan a `onAbrirDocumento`, que los recibe
+ * intactos en la cita completa.
  */
 
 /** `id` del elemento de una cita — los marcadores `[Dn]` del texto saltan hasta aquí. */
@@ -19,15 +25,18 @@ export function idCita(mensajeId: string, numero: number): string {
   return `cita-${mensajeId}-${numero}`;
 }
 
-interface Props {
-  cita: CitaChat;
+interface Props<C extends CitaBasica> {
+  cita: C;
   mensajeId: string;
   abierta: boolean;
   onToggle: () => void;
-  onAbrirDocumento: (cita: CitaChat) => void;
+  onAbrirDocumento: (cita: C) => void;
+  fetchTexto: (chunkId: number) => Promise<{ texto: string }>;
 }
 
-export function CitaBadge({ cita, mensajeId, abierta, onToggle, onAbrirDocumento }: Props) {
+export function CitaBadge<C extends CitaBasica>({
+  cita, mensajeId, abierta, onToggle, onAbrirDocumento, fetchTexto,
+}: Props<C>) {
   const [texto, setTexto] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +50,7 @@ export function CitaBadge({ cita, mensajeId, abierta, onToggle, onAbrirDocumento
     setCargando(true);
     setError(null);
 
-    fetchTextoChunk(cita.chunkId)
+    fetchTexto(cita.chunkId)
       .then((r) => vigente && setTexto(r.texto))
       .catch((e) => {
         if (vigente) setError(e instanceof Error ? e.message : 'No se pudo cargar el fragmento');
@@ -128,14 +137,15 @@ export function CitaBadge({ cita, mensajeId, abierta, onToggle, onAbrirDocumento
   );
 }
 
-interface PropsLista {
-  citas: CitaChat[];
+interface PropsLista<C extends CitaBasica> {
+  citas: C[];
   mensajeId: string;
   /** Número de la cita desplegada en este mensaje, o `null`. Vive en `ChatPage` porque los
    *  marcadores `[Dn]` del propio texto también pueden abrirla. */
   abierta: number | null;
   onToggle: (numero: number) => void;
-  onAbrirDocumento: (cita: CitaChat) => void;
+  onAbrirDocumento: (cita: C) => void;
+  fetchTexto: (chunkId: number) => Promise<{ texto: string }>;
 }
 
 /**
@@ -143,7 +153,9 @@ interface PropsLista {
  * ofrecieron. `usada` venía del backend desde el principio pero la interfaz la ignoraba, así que
  * los fragmentos que el modelo descartó ocupaban tanto sitio como los que sustentan la respuesta.
  */
-export function ListaCitas({ citas, mensajeId, abierta, onToggle, onAbrirDocumento }: PropsLista) {
+export function ListaCitas<C extends CitaBasica>({
+  citas, mensajeId, abierta, onToggle, onAbrirDocumento, fetchTexto,
+}: PropsLista<C>) {
   const [verNoUsadas, setVerNoUsadas] = useState(false);
 
   const usadas = citas.filter((c) => c.usada);
@@ -153,7 +165,7 @@ export function ListaCitas({ citas, mensajeId, abierta, onToggle, onAbrirDocumen
   const principales = usadas.length > 0 ? usadas : noUsadas;
   const secundarias = usadas.length > 0 ? noUsadas : [];
 
-  const pintar = (c: CitaChat) => (
+  const pintar = (c: C) => (
     <CitaBadge
       key={c.numero}
       cita={c}
@@ -161,6 +173,7 @@ export function ListaCitas({ citas, mensajeId, abierta, onToggle, onAbrirDocumen
       abierta={abierta === c.numero}
       onToggle={() => onToggle(c.numero)}
       onAbrirDocumento={onAbrirDocumento}
+      fetchTexto={fetchTexto}
     />
   );
 

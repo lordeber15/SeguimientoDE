@@ -261,6 +261,9 @@ async function historialReciente(sesionId: number, antesDe: number | null = null
   const filas = await appSequelize.query<FilaHistorial>(
     `SELECT rol, texto FROM rag.chat_mensaje
       WHERE sesion_id = $1 AND ($2::bigint IS NULL OR id < $2) AND estado = 'ok'
+        -- Los mensajes fijos ("no encontré…", "esa consulta no es…") no aportan contexto y, vistos en el
+        -- historial, el planificador los imitaba: tras uno, cerraba TODA pregunta como fuera de alcance.
+        AND NOT (rol = 'assistant' AND tipo IS NOT DISTINCT FROM 'fijo')
       ORDER BY id DESC LIMIT $3`,
     { bind: [sesionId, antesDe, MENSAJES_HISTORIAL], type: QueryTypes.SELECT },
   );

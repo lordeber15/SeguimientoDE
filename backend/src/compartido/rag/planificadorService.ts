@@ -166,6 +166,13 @@ tienen controversias?"). "¿Qué expedientes hablan de…?" es "listar", no "agr
 - "fuera_de_alcance": no tiene relación con expedientes, documentos o trámites de la entidad \
 (cultura general, programación, chistes, opiniones, matemáticas, redactar textos libres, el clima…).
 Ante la duda entre "contenido" y "fuera_de_alcance", elige "contenido".
+Son SIEMPRE del alcance (nunca "fuera_de_alcance") los temas de gestión pública y contrataciones: \
+adjudicación, buena pro, licitación, concurso, comparación de precios, proceso de selección, \
+contratación directa, órdenes de compra o de servicio, requerimientos, pagos, conformidades, \
+penalidades, garantías, adendas, liquidaciones, presupuesto, personal, convenios. Un mensaje corto \
+que solo nombra un tema ("comparación de precios", "de adjudicaciones") o que corrige/precisa la \
+pregunta anterior es una consulta sobre los documentos: "listar" si antes se pidieron expedientes, \
+si no "contenido". Decide por la pregunta, no por lo que respondió antes el asistente.
 
 Campos:
 - "consulta": la pregunta reescrita para que se entienda SOLA, resolviendo referencias al historial \
@@ -205,6 +212,10 @@ obligatorios ["controversia", "Huancavelica"].
 - "dame todos los expedientes del alquiler de computadoras para el in house" → "listar", \
 obligatorios ["alquiler", "computadoras", "in house"], sinonimos {"alquiler": ["arrendamiento"], \
 "computadoras": ["equipos de cómputo"]}.
+- "dame los expedientes de adjudicación de un proceso de comparación de precios" → "listar", \
+obligatorios ["adjudicación", "comparación de precios"], sinonimos {"adjudicación": ["buena pro", \
+"otorgamiento de la buena pro"]}.
+- (tras esa pregunta) "de comparación de precios" → "listar", obligatorios ["comparación de precios"].
 - "dame todos los expedientes relacionados con proyectos in house" → "listar", obligatorios \
 ["in house"] ("proyectos" es genérico).
 - "quiénes participaron en las controversias de la obra Junín" → "participantes", \

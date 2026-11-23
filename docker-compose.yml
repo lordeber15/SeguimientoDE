@@ -1,3 +1,8 @@
+# Nombre de proyecto FIJO: sin él, Compose lo deriva de la carpeta desde la que se lanza, y los
+# volúmenes se llaman `<proyecto>_db_app_data`. Al cambiar la carpeta se creaba una BD nueva y vacía
+# (el RAG respondía "No encontré información" a todo). Este es el volumen con los datos reales.
+name: sistemasseguimientode
+
 services:
   # Base de datos PROPIA del sistema: usuarios de la aplicación, roles, auditoría y (más
   # adelante) los embeddings del RAG. Aquí SÍ se escribe — no contradice la política de solo

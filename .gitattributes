@@ -1,2 +1,4 @@
 # Scripts que se copian a la imagen Alpine: con CRLF el shebang `#!/bin/sh\r` no arranca.
 *.sh text eol=lf
+# Migraciones: su hash queda registrado en la BD al aplicarse; con LF fijo no cambia según la máquina.
+*.sql text eol=lf

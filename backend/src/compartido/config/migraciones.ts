@@ -48,7 +48,9 @@ export async function aplicarMigraciones(db: Sequelize = appSequelize, dir: stri
 
   for (const archivo of archivos) {
     const sql = fs.readFileSync(path.join(dir, archivo), 'utf8');
-    const hash = crypto.createHash('sha256').update(sql).digest('hex');
+    // Hash sobre saltos de línea LF: un checkout de git en Windows (core.autocrlf) convierte los .sql
+    // a CRLF sin cambiar su contenido, y eso no debe pasar por "migración editada" e impedir arrancar.
+    const hash = crypto.createHash('sha256').update(sql.replace(/\r\n/g, '\n')).digest('hex');
     const hashPrevio = porNombre.get(archivo);
 
     if (hashPrevio) {

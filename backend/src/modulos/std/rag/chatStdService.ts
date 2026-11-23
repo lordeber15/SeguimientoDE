@@ -224,6 +224,8 @@ async function historialReciente(sesionId: number, antesDe: number | null = null
   const filas = await stdRagSequelize.query<FilaHistorial>(
     `SELECT rol, texto FROM rag.chat_mensaje
       WHERE sesion_id = $1 AND ($2::bigint IS NULL OR id < $2) AND estado = 'ok'
+        -- Igual que en el chat del SGD: los mensajes fijos en el historial sesgaban al planificador.
+        AND NOT (rol = 'assistant' AND tipo IS NOT DISTINCT FROM 'fijo')
       ORDER BY id DESC LIMIT $3`,
     { bind: [sesionId, antesDe, MENSAJES_HISTORIAL], type: QueryTypes.SELECT },
   );
